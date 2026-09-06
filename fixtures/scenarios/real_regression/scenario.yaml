@@ -1,0 +1,32 @@
+name: real_regression
+description: >
+  An off-by-one edit to discount() (an extra "+ 1" after the rounding division) makes
+  test_discount_applies fail with assert 91 == 90. The diff contains exactly that one-line
+  change to src/pricing/discount.py and nothing else; there is a genuine prior green run on
+  the same branch to diff against.
+expected:
+  category: real_regression
+  # 0.85, not 0.75: policy.yaml's open-fix-pr rule requires
+  # diagnosis.final_confidence >= 0.85 for effect: require_approval to match; in
+  # [0.75, 0.85) no rule matches and default_effect: deny applies, which would make
+  # this label self-contradictory (min_confidence passes, effect fails) for any run
+  # scoring in that gap. This fixture is deliberately the "deterministic match" case
+  # (PLAN.md's confidence rubric, 0.90-1.00: "the error string and the diff
+  # independently name the same cause") with no adjustment that would pull it down
+  # in Phase 1 (baseline_kind is branch_green, not cold_start; the diff is non-empty,
+  # so no empty_diff_contradiction; Evaluator-driven adjustments aren't wired until
+  # Phase 4+), so 0.85 is a floor this scenario's own design should clear, not a
+  # bar it merely hopes to. Raising this (rather than dropping `effect`) also keeps
+  # >= 0.85 as a strictly stronger bound than PLAN.md's Phase 1 Verify block
+  # (line 360, EXPECT conf >= 0.75) so a passing eval run still satisfies that
+  # manual check. Wave 3 audit finding 7.
+  min_confidence: 0.85
+  commit: e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df
+  cites_any_of:
+    - "discount"
+    - "test_discount_applies"
+    - "assert 91 == 90"
+  action: open_fix_pr
+  effect: require_approval
+  baseline_kind: branch_green
+  cold_start: false

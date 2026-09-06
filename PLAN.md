@@ -287,7 +287,7 @@ initialised with `PLAN.md` as the first commit.
 ```powershell
 uv sync
 uv run ruff check . ; uv run mypy src/harness
-uv run pytest -q                      # expect: test_layering passes, 1 passed
+uv run pytest -q                      # expect: test_layering passes (count grows as later phases add tests)
 docker compose up -d --build
 curl.exe -s localhost:8000/healthz    # {"status":"ok","db":"ok","version":"0.1.0"}
 ```
@@ -1487,10 +1487,10 @@ class Adjustment(BaseModel):
     name: str; delta: float; reason: str
 
 class Diagnosis(BaseModel):                   # the Diagnostician's stage output
+    reasoning: str = Field(max_length=1200)   # FIRST via propertyOrdering — the model reasons before it concludes
     category: Literal["flaky_test","real_regression","dependency_break",
                       "infra_transient","config_issue","unknown"]
     summary: str = Field(max_length=280)
-    reasoning: str = Field(max_length=1200)   # ordered BEFORE the conclusion via propertyOrdering
     self_confidence: float = Field(ge=0.0, le=1.0)
     citations: list[Citation] = Field(max_length=6)
     suspected_commit_sha: str | None = None

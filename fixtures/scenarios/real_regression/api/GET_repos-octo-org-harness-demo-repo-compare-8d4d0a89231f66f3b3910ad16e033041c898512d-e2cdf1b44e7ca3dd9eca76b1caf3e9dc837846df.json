@@ -1,0 +1,52 @@
+{
+  "url": "https://api.github.com/repos/octo-org/harness-demo-repo/compare/8d4d0a89231f66f3b3910ad16e033041c898512d...e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df",
+  "html_url": "https://github.com/octo-org/harness-demo-repo/compare/8d4d0a89231f66f3b3910ad16e033041c898512d...e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df",
+  "permalink_url": "https://github.com/octo-org/harness-demo-repo/compare/octo-org:8d4d0a8...octo-org:e2cdf1b",
+  "diff_url": "https://github.com/octo-org/harness-demo-repo/compare/8d4d0a89231f66f3b3910ad16e033041c898512d...e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df.diff",
+  "patch_url": "https://github.com/octo-org/harness-demo-repo/compare/8d4d0a89231f66f3b3910ad16e033041c898512d...e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df.patch",
+  "base_commit": {
+    "sha": "8d4d0a89231f66f3b3910ad16e033041c898512d",
+    "commit": {
+      "message": "Add checkout total helper",
+      "author": {"name": "Jordan Lee", "email": "jordan@harness-demo-repo.example", "date": "2026-09-05T09:10:12Z"},
+      "committer": {"name": "Jordan Lee", "email": "jordan@harness-demo-repo.example", "date": "2026-09-05T09:10:12Z"}
+    }
+  },
+  "merge_base_commit": {
+    "sha": "8d4d0a89231f66f3b3910ad16e033041c898512d",
+    "commit": {
+      "message": "Add checkout total helper",
+      "author": {"name": "Jordan Lee", "email": "jordan@harness-demo-repo.example", "date": "2026-09-05T09:10:12Z"},
+      "committer": {"name": "Jordan Lee", "email": "jordan@harness-demo-repo.example", "date": "2026-09-05T09:10:12Z"}
+    }
+  },
+  "status": "ahead",
+  "ahead_by": 1,
+  "behind_by": 0,
+  "total_commits": 1,
+  "commits": [
+    {
+      "sha": "e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df",
+      "commit": {
+        "message": "Round savings up to avoid undercharging on odd cents",
+        "author": {"name": "Jordan Lee", "email": "jordan@harness-demo-repo.example", "date": "2026-09-05T14:01:40Z"},
+        "committer": {"name": "Jordan Lee", "email": "jordan@harness-demo-repo.example", "date": "2026-09-05T14:01:40Z"}
+      },
+      "html_url": "https://github.com/octo-org/harness-demo-repo/commit/e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df"
+    }
+  ],
+  "files": [
+    {
+      "sha": "3f786850e387550fdab836ed7e6dc881de23001b",
+      "filename": "src/pricing/discount.py",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 1,
+      "changes": 2,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df/src/pricing/discount.py",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df/src/pricing/discount.py",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/src/pricing/discount.py?ref=e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df",
+      "patch": "@@ -8,7 +8,7 @@ def discount(price: int, percent: int) -> int:\n     \"\"\"\n     Apply a percent discount to price, rounded down to the nearest integer.\n     \"\"\"\n-    return price - (price * percent) // 100\n+    return price - (price * percent) // 100 + 1\n"
+    }
+  ]
+}

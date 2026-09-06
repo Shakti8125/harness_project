@@ -1,0 +1,68 @@
+[project]
+name = "harness"
+version = "0.1.0"
+description = "Agent Harness — domain-agnostic multi-agent control plane, CI/CD triage as first integration"
+requires-python = "==3.12.*"
+dependencies = [
+    "pydantic>=2",
+    "pydantic-settings",
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "aiosqlite",
+    "google-genai",
+    "jinja2",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "mypy",
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+    "freezegun",
+    "types-pyyaml",
+]
+
+# This project is an application, not a library: nothing under src/ is meant to be
+# built into a wheel or installed into site-packages. uv therefore treats it as a
+# "virtual" (non-package) project — it manages the dependency set in .venv only.
+# Imports resolve via `pythonpath = ["."]` below (pytest) and via uvicorn/uv run
+# inserting the current working directory on sys.path at runtime. This also means
+# `uv sync` never needs src/harness or src/integrations to exist yet, which matters
+# while those trees are being built by other agents in parallel.
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["data", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "."
+namespace_packages = true
+explicit_package_bases = true
+warn_unused_configs = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+
+# PLAN.md line 282: strict mode applies to src/harness only. The rest of the tree
+# (api/, integrations/, settings.py) is typed but not held to --strict.
+# Wave-3 audit cleanup (test-verifier): "harness.*" was dead weight — every module in
+# this repo is imported as "src.harness.*", never bare "harness.*", so mypy warned
+# `unused section(s): module = ['harness.*']`. "src.harness.*" alone does the work.
+[[tool.mypy.overrides]]
+module = ["src.harness.*"]
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]

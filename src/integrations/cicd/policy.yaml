@@ -1,0 +1,45 @@
+# src/integrations/cicd/policy.yaml
+version: 1
+integration: cicd
+default_effect: deny          # anything not matched is denied
+
+# Hard denies evaluated FIRST, cannot be overridden by any allow rule below.
+forbidden:
+  - merge_pull_request
+  - force_push
+  - delete_branch
+  - delete_workflow_run
+  - create_deployment
+  - update_branch_protection
+
+rules:
+  - id: retry-suspected-flaky
+    tools: [rerun_failed_jobs]
+    effect: allow
+    when:
+      diagnosis.category:            {in: [flaky_test, infra_transient]}
+      diagnosis.final_confidence:    {gte: 0.75}
+      evaluation.verdict:            {in: [pass, skipped]}
+      memory.retries_for_signature_24h: {lt: 2}
+      context.cold_start:            {eq: false}
+    obligations: [record_observation, annotate_run]
+
+  - id: open-fix-pr
+    tools: [create_branch, create_or_update_file, open_pull_request]
+    effect: require_approval
+    when:
+      diagnosis.category:         {in: [real_regression, dependency_break, config_issue]}
+      diagnosis.final_confidence: {gte: 0.85}
+      evaluation.verdict:         {eq: pass}
+    obligations: [draft_only, label:agent-generated, no_auto_merge, assign_human_reviewer]
+
+  - id: file-ticket
+    tools: [create_issue]
+    effect: allow
+    when:
+      diagnosis.final_confidence: {gte: 0.0}
+    obligations: [label:agent-triage]
+
+  - id: read-only-always
+    tools: ["read:*"]        # any tool whose ToolSpec.side_effect == "read"
+    effect: allow
