@@ -75,12 +75,27 @@ async def _db_writable(db_path: Path) -> bool:
 
 
 @app.get("/healthz")
-async def healthz() -> dict[str, str]:
+async def healthz(response: Response) -> dict[str, str]:
     settings = get_settings()
     db_status = await _db_reachable(settings.database_path)
     # A healthy db keeps "status" == "ok" byte-for-byte (DoD's exact-body requirement);
     # any other db value is surfaced in "status" too rather than a hardcoded "ok" papering
     # over it (Wave-3 audit finding 10).
+    #
+    # Re-audit finding 1: HTTP status must not be a blanket 200. `fly.toml`'s
+    # `[[http_service.checks]]` and the Dockerfile `HEALTHCHECK` both point at this route
+    # and both key rotation-out-of-service purely on the HTTP status code, not the JSON
+    # body — repointing them at `/readyz` isn't viable yet because `readyz` hardcodes
+    # `policy_loaded = False` until Phase 2, which would fail it permanently. So: "ok" and
+    # "degraded" both stay 200 (PLAN.md Appendix B.3 — a degraded-but-serving machine
+    # belongs in rotation), and only "error" (db unreachable in a way that isn't the
+    # known disk-full case) returns 503, pulling an unopenable-database machine out of
+    # rotation instead of 500ing every request that reaches it.
+    response.status_code = (
+        status.HTTP_503_SERVICE_UNAVAILABLE
+        if db_status == "error"
+        else status.HTTP_200_OK
+    )
     return {
         "status": "ok" if db_status == "ok" else db_status,
         "db": db_status,

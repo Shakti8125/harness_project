@@ -189,8 +189,9 @@ class TicketDraft(BaseModel):
 class RemediationPlan(BaseModel):  # the Remediator's LLM output
     model_config = _MODEL_CONFIG
 
-    action: Literal["retry_job", "open_fix_pr", "open_revert_pr", "file_ticket", "no_action"]
+    # ordered first, via propertyOrdering, so the model reasons before concluding
     rationale: str = Field(max_length=800)
+    action: Literal["retry_job", "open_fix_pr", "open_revert_pr", "file_ticket", "no_action"]
     tool_calls: list[ToolCall] = Field(max_length=5)  # PROPOSED, never pre-executed
     pr_draft: PrDraft | None = None
     ticket_draft: TicketDraft | None = None

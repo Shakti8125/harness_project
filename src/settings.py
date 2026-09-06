@@ -17,6 +17,7 @@ from typing import Literal
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.exceptions import SettingsError as PydanticSettingsSourceError
 
 
 class Settings(BaseSettings):
@@ -68,6 +69,15 @@ class Settings(BaseSettings):
 
         The error text below names only variable *names*, never values — see finding 5
         and `get_settings()`'s handling of the `ValidationError` this raises into.
+
+        Assumes no non-config `HARNESS_`-prefixed variables are injected by the platform.
+        This holds for this project's actual targets (Docker Compose, Fly.io) but not for
+        Kubernetes: a `Service` named `harness` in the same namespace, combined with the
+        default `enableServiceLinks: true`, injects `HARNESS_SERVICE_HOST` /
+        `HARNESS_PORT_8000_TCP_*` into every pod, and legacy Docker `--link` with alias
+        `harness` does the same — either would hard-crash the app at boot via this
+        validator. K8s is not a deployment target of this plan, so this is accepted, not
+        worked around.
         """
         prefix = self.model_config["env_prefix"]
         known = {f"{prefix}{name}".upper() for name in type(self).model_fields}
@@ -87,6 +97,10 @@ class Settings(BaseSettings):
 class SettingsError(RuntimeError):
     """Raised by `get_settings()` in place of pydantic's `ValidationError`.
 
+    Note: this is a distinct class from `pydantic_settings.exceptions.SettingsError`
+    (imported above as `PydanticSettingsSourceError` to keep the two apart), which is
+    also caught and redacted through here — see `get_settings()`.
+
     Wave-3 audit finding 5: a mistyped `.env` key (e.g. `HARNESS_GITHUBTOKEN` instead of
     `HARNESS_GITHUB_TOKEN`) trips `extra="forbid"` and pydantic's `ValidationError`
     carries the offending *value* — a real secret — in its `input_value` field. Because
@@ -96,13 +110,31 @@ class SettingsError(RuntimeError):
     """
 
 
+# Re-audit finding 3: `err["type"] == "value_error"` is not, by itself, proof that
+# `err["msg"]` is safe to print — it only proves the message came from a `ValueError`
+# raised inside one of *our* validators. Today `_no_unrecognised_harness_env_vars` is the
+# only such validator and its message is values-withheld by construction, but a plausible
+# Phase 1 addition (e.g. a `@field_validator` that interpolates the offending value into
+# its error text) would print secrets through this exact same "trusted" branch. Rather
+# than trust the error *type*, allowlist the specific *message* we know is safe — pydantic
+# prepends "Value error, " to every custom `ValueError` raised in a validator, so this
+# checks the literal prefix of the one message we've audited. Anything else, including a
+# `value_error` from a future validator, falls through to the generic type-only branch
+# below and never has its `msg` printed.
+_SAFE_VALUE_ERROR_MESSAGE_PREFIX = (
+    "Value error, unrecognised environment variable name(s)"
+)
+
+
 def _redact_validation_error(exc: ValidationError) -> SettingsError:
     lines = []
     for err in exc.errors(include_url=False):
         loc = ".".join(str(part) for part in err["loc"]) or "<settings>"
-        if err["type"] == "value_error":
-            # Raised by our own model_validator(s) above (e.g. the unrecognised-env-var
-            # check): the message is authored by us and already contains field *names*
+        if err["type"] == "value_error" and str(err["msg"]).startswith(
+            _SAFE_VALUE_ERROR_MESSAGE_PREFIX
+        ):
+            # Raised by our own `_no_unrecognised_harness_env_vars` validator: the
+            # message is authored by us and already contains field/variable *names*
             # only, never raw values, so it is safe — and far more useful — to surface
             # verbatim rather than collapsing it to a bare type code.
             lines.append(f"  {loc}: {err['msg']}")
@@ -130,8 +162,25 @@ def get_settings() -> Settings:
     suppresses Python's default "the above exception was the direct cause" chaining, so
     the original `ValidationError` — and any secret value it carries — never reaches a
     traceback printed to stdout/stderr.
+
+    Re-audit finding 3: `pydantic_settings.exceptions.SettingsError` (caught below as
+    `PydanticSettingsSourceError`) is a *different* class raised by pydantic-settings
+    itself — not by field validation — when a complex-typed field (e.g. `allowed_repos:
+    list[str]`) can't be JSON-decoded from its env-var string, which is exactly what
+    happens if an operator sets `HARNESS_ALLOWED_REPOS=owner/name` instead of
+    `HARNESS_ALLOWED_REPOS=["owner/name"]` (see `.env.example`). Left uncaught, it
+    escapes as an uncaught third-party exception with a chained `json.JSONDecodeError`
+    traceback, bypassing this whole redaction barrier. No secret field is complex-typed
+    today, so no secret is actually at risk from this specific path, but the exception's
+    own message names only the field and source, so it's cheap to route through the same
+    fail-closed, readable-message barrier as every other boot-time config error.
     """
     try:
         return Settings()  # type: ignore[call-arg]
     except ValidationError as exc:
         raise _redact_validation_error(exc) from None
+    except PydanticSettingsSourceError as exc:
+        raise SettingsError(
+            "Settings failed to validate (values withheld from this message):\n"
+            f"  {exc}"
+        ) from None

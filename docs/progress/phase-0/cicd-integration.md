@@ -327,3 +327,118 @@ wave).
   proximate failure is near the end of the log). Also still outstanding at composition
   time: register `{"empty_diff_contradiction": -0.10}` into `ConfidenceModel.deltas`,
   since that row is deliberately absent from the harness's `DEFAULT_ADJUSTMENT_DELTAS`.
+
+## Post-ship residue — Re-audit finding 2 [LOW-MED]
+
+`RemediationPlan` (PLAN.md:189-196 / Appendix A.11) emitted `action` before `rationale`,
+the identical defect the Wave 3 fix round corrected in `Diagnosis` — reasoning must
+precede conclusion for `propertyOrdering` to do its job. PLAN.md's Appendix A.11 was
+already amended by the dispatching agent before I touched anything; this is the matching
+code fix.
+
+### Diff
+
+```diff
+--- a/src/integrations/cicd/schemas.py
++++ b/src/integrations/cicd/schemas.py
+@@ class RemediationPlan(BaseModel):  # the Remediator's LLM output
+     model_config = _MODEL_CONFIG
+
+-    action: Literal["retry_job", "open_fix_pr", "open_revert_pr", "file_ticket", "no_action"]
++    # ordered first, via propertyOrdering, so the model reasons before concluding
+     rationale: str = Field(max_length=800)
++    action: Literal["retry_job", "open_fix_pr", "open_revert_pr", "file_ticket", "no_action"]
+     tool_calls: list[ToolCall] = Field(max_length=5)  # PROPOSED, never pre-executed
+     pr_draft: PrDraft | None = None
+     ticket_draft: TicketDraft | None = None
+```
+
+Reordering only — same treatment as `Diagnosis.reasoning` in Wave 3 (the "ordered first,
+via propertyOrdering" comment on its own line above the field, to stay under the
+project's `E501` 100-char limit). No field's type, `Field(...)` constraint, or default
+changed.
+
+### Verification
+
+```
+$ export PATH="/c/Users/Shakti/.local/bin:$PATH"
+
+$ git diff -- src/integrations/cicd/schemas.py
+    -> exactly the eight-line diff above; no other lines touched
+
+$ uv run --no-sync python -c "
+    from src.integrations.cicd.schemas import RemediationPlan
+    print(list(RemediationPlan.model_fields.keys()))
+    print(list(RemediationPlan.model_json_schema()['properties'].keys()))"
+-> model_fields order:        ['rationale', 'action', 'tool_calls', 'pr_draft', 'ticket_draft']
+-> json schema properties:    ['rationale', 'action', 'tool_calls', 'pr_draft', 'ticket_draft']
+
+# full-dump diff against the pre-fix model, loaded from git HEAD under a separate module
+# name so both classes coexist in one interpreter:
+$ uv run --no-sync python -c "
+    <load old schemas.py via importlib, compare RemediationPlan.model_json_schema()
+     old vs new with keys/lists sort-normalized so only ordering differences are ignored>"
+-> normalized (order-insensitive) schema comparison: True (identical)
+-> per-field (annotation, default, is_required, metadata) comparison: identical for
+   every field except pr_draft/ticket_draft's *annotation repr*, which differs only in
+   module qualname (`old_schemas.PrDraft` vs `src.integrations.cicd.schemas.PrDraft`) —
+   an artifact of loading the same file under two module names, not a real type change;
+   confirmed by inspecting both reprs by hand.
+-> raw field order differs as expected: old = ['action', 'rationale', ...],
+   new = ['rationale', 'action', ...]
+
+$ uv run --no-sync ruff check .           -> All checks passed!
+$ uv run --no-sync pytest -q              -> 99 passed
+```
+
+`to_gemini_schema()` in `src/harness/llm.py` is still `raise NotImplementedError` as of
+this check (unchanged from Phase 0/Wave 3 — harness-core's territory, not a regression I
+introduced), so I could not additionally verify `propertyOrdering` through that function
+directly; `model_json_schema()`'s property order (which is what `to_gemini_schema()` will
+derive `propertyOrdering` from, per PLAN.md:171) is confirmed correct.
+
+### Ruling on `InvestigationNotes` — do NOT change unilaterally, flagging for your decision
+
+I checked `InvestigationNotes` (`observations`, `additional_tool_calls`, `narrative`) as
+asked and did **not** touch it. My reading:
+
+**The general rule this whole finding class enforces** (PLAN.md:171-172): "output quality
+measurably improves when *the reasoning field* precedes *the conclusion field*." That
+phrasing assumes one free-prose reasoning field and one committed-decision field per
+model. In `Diagnosis` that's `reasoning` → `category`; in `RemediationPlan` that's now
+`rationale` → `action`. In `InvestigationNotes` the only field that plays the role of a
+committed decision is `additional_tool_calls` — a decision about which (read-only)
+evidence to go fetch next, chosen from the gateway catalog. There are two candidate
+"reasoning-shaped" fields ahead of/around it: `observations` (`list[str]`, capped at 8)
+and `narrative` (`str`, capped at 800 — the identical cap `rationale` carries).
+
+Two readings, argued against each other:
+
+1. **"Already fine" reading.** `observations` is free-text-in-list-form and already
+   precedes `additional_tool_calls`, so the model has "thought out loud" (as short bullet
+   observations) before it commits to requesting more tool calls. `narrative` trailing
+   last would then be a post-hoc human/Diagnostician-readable recap, structurally like
+   `Diagnosis.summary` — which itself trails `Diagnosis.category` (the conclusion), so a
+   summary-shaped field trailing the decision has precedent and isn't itself a defect.
+
+2. **"Needs the same fix" reading, which I favor.** `observations` reads as short,
+   itemized, discrete facts pulled straight from the bundle (e.g. "test X asserts 91 == 90",
+   "diff touches foo.py") — in shape and role that's much closer to `Diagnosis.citations`
+   (structured supporting evidence, `list[...]`, and notably `citations` sits *after*
+   `reasoning` in the fixed `Diagnosis` order, not before it) than to a genuine connective
+   chain-of-thought. `narrative` is the only unbounded-prose field in the model, shares
+   `rationale`'s exact 800-char cap, and is the one place the model could actually reason
+   in full sentences about *why* it wants the three extra tool calls it's requesting.
+   Nothing about `narrative`'s content causally depends on `observations` or on
+   `additional_tool_calls` being decided first: per PLAN.md:319-321 the requested tool
+   calls are executed and merged *after* this single LLM call returns, so the model never
+   sees their results within the same completion — there is no ordering constraint forcing
+   `narrative` to come last, only the current field declaration order. Under this reading
+   the fix is the same shape as `RemediationPlan`'s: move `narrative` to lead (with the
+   same "ordered first, via propertyOrdering" comment), ahead of both `observations` and
+   `additional_tool_calls`.
+
+**My ruling: reading 2. I believe `InvestigationNotes` has the same defect and `narrative`
+should be moved first.** I have not changed `schemas.py` for this — per your instruction
+I'm stopping here and reporting so you can amend PLAN.md Appendix A.11 first, as you did
+for the other two models, before I make the corresponding code change.

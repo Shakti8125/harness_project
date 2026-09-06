@@ -338,3 +338,195 @@ model shape from Appendix A/E changed.
   this environment; the string-match on `sqlite3.OperationalError`'s message is the
   mechanism available at Phase 0 (no schema, no dedicated disk-full simulation harness
   yet) and should be revisited once Phase 3's SQLite failure-injection tests exist.
+
+---
+
+## Post-ship residue (re-audit findings 1 and 3, plus the K8s documentation caveat)
+
+Scope: no Phase 1 work started. No `deps.py`, no new routes, no `fly deploy`. Only
+`src/api/main.py`, `src/settings.py`, and `.env.example` were touched.
+
+### Finding 1 [LOW-MED] — an unopenable database still passed both health checks
+
+`src/api/main.py`'s `healthz()` now takes a `Response` param and sets
+`response.status_code = 503` when (and only when) `db_status == "error"`; `"ok"` and
+`"degraded"` both stay 200, matching PLAN.md Appendix B.3 ("a degraded-but-serving
+machine belongs in rotation"). The JSON body shape and byte-identical happy-path
+content are unchanged — this is purely an HTTP-status change layered on top of the
+existing body logic. No change was needed to `fly.toml` or the Dockerfile `HEALTHCHECK`:
+both already key rotation purely off the HTTP status code of `GET /healthz`, so a 503
+response is sufficient to pull an unopenable-database machine out of rotation without
+touching either file.
+
+Verified against a real container (not just unit-level): started `harness:local` with
+`HARNESS_DATABASE_PATH=/app/data` (an existing directory, so `sqlite3.connect(...).execute(...)`
+fails with `OperationalError: unable to open database file`, the same failure class as a
+Fly volume that fails to mount) — `/healthz` returned `503` with
+`{"status":"error","db":"error","version":"0.1.0"}`. The original healthy compose
+container, unmodified, still returns `200` with the byte-identical
+`{"status":"ok","db":"ok","version":"0.1.0"}`. Both outputs are in the Commands-run
+section below.
+
+### Finding 3 [LOW] — hardening the one leak-safe barrier (`get_settings()`)
+
+Three changes, all inside `src/settings.py`:
+
+1. **Caught `pydantic_settings.exceptions.SettingsError`** (imported as
+   `PydanticSettingsSourceError` to avoid colliding with our own `SettingsError` name).
+   This is what pydantic-settings itself raises — not a field `ValidationError` — when a
+   complex-typed field (here, `allowed_repos: list[str]`) can't be JSON-decoded from its
+   env-var string. Reproduced the exact case from the finding,
+   `HARNESS_ALLOWED_REPOS=octo-org/harness-demo-repo` (the natural-but-wrong way to spell
+   a list value), before and after the fix — see Commands run. Before: an uncaught
+   `pydantic_settings.exceptions.SettingsError` with a chained `json.JSONDecodeError`
+   traceback escaping the barrier entirely. After: a clean
+   `src.settings.SettingsError: ... error parsing value for field "allowed_repos" from
+   source "EnvSettingsSource"`, `from None` (no chained traceback), same shape as every
+   other boot-time config error. No secret field is complex-typed today so nothing was
+   actually leaking, but it now fails through the same redaction path instead of around
+   it.
+
+2. **`.env.example`** now shows the real JSON-list syntax next to the existing `[]`
+   default (`HARNESS_ALLOWED_REPOS=["octo-org/harness-demo-repo"]`), since a bare `[]`
+   with no worked example is exactly what invites the malformed spelling above.
+
+3. **`err["msg"]` passthrough for `value_error`, decided and hardened, not left alone.**
+   The prior code trusted `err["type"] == "value_error"` as proof a message was
+   safe-to-print — safe only by accident, because only our own validator produces that
+   type today. Replaced the type-based trust with a message-based allowlist:
+   `_redact_validation_error` now also requires `err["msg"]` to start with the literal,
+   audited prefix `"Value error, unrecognised environment variable name(s)"` (pydantic
+   prepends `"Value error, "` to every custom `ValueError` message) before printing it
+   verbatim; anything else — including a `value_error` from some future Phase 1
+   `@field_validator` — falls through to the existing type-only branch (`err['type']`,
+   never `err['msg']`) exactly like a `missing` or `extra_forbidden` error does today. This
+   closes the trap named in the finding (a hypothetical
+   `raise ValueError(f"key must start with AIza, got {v}")`) without needing that
+   validator to exist yet to prove it: any `value_error` whose message doesn't match the
+   one known-safe prefix is now collapsed, not trusted.
+
+   I did not attempt to redact *inside* an arbitrary future message (e.g. regex-strip
+   anything token-shaped) — that would be guessing at a shape we don't have yet and could
+   both over- and under-redact. The allowlist is deliberately narrow and rejects-by-default
+   instead, which is the safer failure direction for a barrier whose whole job is "never
+   print a secret."
+
+Documentation caveat (not a fix): added a paragraph to
+`_no_unrecognised_harness_env_vars`'s docstring stating the validator assumes no
+non-config `HARNESS_`-prefixed variables are injected by the platform, and naming the two
+concrete cases that would violate that (Kubernetes `enableServiceLinks: true` against a
+`Service` named `harness`; legacy Docker `--link` with alias `harness`) as accepted, not
+worked around, since K8s is not a deployment target of this plan.
+
+Constraint honored: did not attempt to make `Settings()` un-callable from outside
+`src/settings.py` — that guard is test-verifier's grep gate, and a runtime guard here
+would only fight pydantic for no benefit.
+
+### Commands run (post-ship residue)
+
+```
+$ uv run ruff check src/api src/settings.py
+All checks passed!
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy src/harness src/settings.py src/api
+Success: no issues found in 16 source files
+
+$ uv run pytest -q
+99 passed in 0.71s
+
+$ uv run pytest tests/unit/test_no_env_access.py -q
+33 passed in 0.36s
+
+# --- Finding 1: healthy path stays byte-identical ---
+$ curl.exe -s -w "\nhttp=%{http_code}\n" localhost:8000/healthz   # live compose container
+{"status":"ok","db":"ok","version":"0.1.0"}
+http=200
+
+# --- Finding 1: error path now 503 (real container, unopenable db) ---
+$ MSYS_NO_PATHCONV=1 docker run --rm -d --env-file .env \
+    -e HARNESS_DATABASE_PATH=/app/data -p 8003:8000 harness:local
+$ curl.exe -s -w "\nhttp=%{http_code}\n" localhost:8003/healthz
+{"status":"error","db":"error","version":"0.1.0"}
+http=503
+# container log: sqlite3.OperationalError: unable to open database file
+#                "GET /healthz HTTP/1.1" 503 Service Unavailable
+
+# --- Finding 3: malformed HARNESS_ALLOWED_REPOS now redacted, not a raw crash ---
+$ env HARNESS_ALLOWED_REPOS="octo-org/harness-demo-repo" \
+    uv run python -c "from src.settings import get_settings; get_settings()"
+src.settings.SettingsError: Settings failed to validate (values withheld from this message):
+  error parsing value for field "allowed_repos" from source "EnvSettingsSource"
+# (no chained JSONDecodeError traceback; `from None` suppressed it)
+
+$ env HARNESS_ALLOWED_REPOS='["octo-org/harness-demo-repo"]' \
+    uv run python -c "from src.settings import get_settings; print(get_settings().allowed_repos)"
+['octo-org/harness-demo-repo']
+
+# --- Regression: findings 5 and 6 still hold after the value_error allowlist change ---
+$ env HARNESS_ESCALATION_TRESHOLD=0.9 \
+    uv run python -c "from src.settings import get_settings; get_settings()"
+src.settings.SettingsError: ... <settings>: Value error, unrecognised environment
+variable name(s), values withheld: HARNESS_ESCALATION_TRESHOLD
+
+$ env HARNESS_GITHUBTOKEN="ghp_TYPOED_SECRET_ABCDEFGH" HARNESS_GITHUB_WEBHOOK_SECRET=whsec_abc \
+    HARNESS_GEMINI_API_KEY=AIzaTest uv run python -c "from src.settings import get_settings; get_settings()" \
+    | grep -c "ghp_TYPOED_SECRET_ABCDEFGH"
+0
+
+# --- DoD: container with no .env fails loudly, readable, no secret ---
+$ MSYS_NO_PATHCONV=1 docker run --rm harness:local
+src.settings.SettingsError: Settings failed to validate (values withheld from this message):
+  gemini_api_key: missing
+  github_token: missing
+  github_webhook_secret: missing
+```
+
+### Contract deviations
+
+None. Finding 1 changes only the HTTP status code returned alongside an unchanged JSON
+body (Appendix A.12 specifies the happy-path row, not a prohibition on other statuses;
+the healthy-path body is unchanged byte-for-byte, satisfying the Phase 0 DoD's exact-body
+requirement). Finding 3 changes only error-handling and documentation inside the
+`Settings`/`get_settings()` barrier — no field, default, or `model_config` value from
+Appendix E changed. `.env.example`'s new line is a comment plus a second commented
+example value; no default changed.
+
+### Handoffs
+
+- **Reviewer**: `fly.toml`'s `[[http_service.checks]]` and the Dockerfile `HEALTHCHECK`
+  were deliberately left unmodified — the finding's own text confirmed pointing them at
+  `/readyz` isn't viable until Phase 2 (`policy_loaded` is hardcoded `False` until then),
+  and no other change to either file was needed once `/healthz` itself returns 503 on
+  `"error"`.
+- **test-verifier**: finding 3's grep gate (`Settings(` appears nowhere outside
+  `src/settings.py`) is still test-verifier's to write, per the original routing. Nothing
+  in this residue pass depends on it existing yet, but it should land before the repo goes
+  public per Appendix E's `test_no_secret_leak.py` merge-gate note.
+- **Phase 1 (whoever writes `deps.py` / a future `scripts/replay.py`)**: always call
+  `get_settings()`, never `Settings()` directly — the redaction barrier (both the
+  `ValidationError` path and the newly-added `pydantic_settings.exceptions.SettingsError`
+  path) only exists at that one call site. If you add a `@field_validator` that raises
+  `ValueError` with a message that embeds a raw field value, it will *not* be printed
+  verbatim by `_redact_validation_error` (it will fall through to the type-only branch)
+  — which is safe by default, but means your custom message won't reach the boot log
+  either. If you want a custom validator message surfaced to the operator, keep it
+  values-withheld like `_no_unrecognised_harness_env_vars` does and it'll still be
+  collapsed to type-only unless it's explicitly added to `_SAFE_VALUE_ERROR_MESSAGE_PREFIX`
+  handling — flag it to api-surface (or whoever owns `src/settings.py` in Phase 1) rather
+  than silently relying on the old blanket-trust behavior, which no longer exists.
+
+### Notes for the reviewer
+
+- The `HARNESS_DATABASE_PATH=/app/data` repro above needed
+  `MSYS_NO_PATHCONV=1` to stop Git Bash from mangling the POSIX container path into a
+  Windows one (`/app/data` → `C:/Program Files/Git/app/data`) before it reached
+  `docker run`. That's a Git-Bash-on-Windows artifact of my local verification, not
+  anything in the shipped code; a plain `HARNESS_DATABASE_PATH=/app/data` in `fly.toml`'s
+  `[env]` (no shell in between) is unaffected.
+- The compose container from the original Phase 0 pass (`harness_project-app-1`) is still
+  the one running at `http://localhost:8000` for inspection; the error-path repro used
+  short-lived, separately-ported (`8001`–`8003`), `--rm` throwaway containers that no
+  longer exist.

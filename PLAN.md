@@ -1515,8 +1515,8 @@ class TicketDraft(BaseModel):
     title: str; body: str; labels: list[str] = ["agent-triage"]
 
 class RemediationPlan(BaseModel):             # the Remediator's LLM output
+    rationale: str = Field(max_length=800)    # FIRST via propertyOrdering — the model reasons before it concludes
     action: Literal["retry_job","open_fix_pr","open_revert_pr","file_ticket","no_action"]
-    rationale: str = Field(max_length=800)
     tool_calls: list[ToolCall] = Field(max_length=5)      # PROPOSED, never pre-executed
     pr_draft: PrDraft | None = None
     ticket_draft: TicketDraft | None = None

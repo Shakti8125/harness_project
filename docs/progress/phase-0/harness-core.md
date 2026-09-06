@@ -398,3 +398,79 @@ behaviour is the obvious first unit test to write in Phase 1).
   rendering distinctly (it means "this run was mis-wired"), not as an ordinary adjustment row.
 - **fixtures-eval** — an eval assertion of the form "no adjustment carries
   `UNREGISTERED_SIGNAL_REASON`" is a cheap, domain-agnostic wiring check for every scenario.
+
+---
+
+# Post-ship residue (re-audit finding 4)
+
+Phase 0 is tagged `phase-0-green`; the record above is the phase deliverable and is unchanged.
+This section records one post-ship, docstring-only fix. No behaviour, no field, no signature
+changed — `invoke`'s signature is still Appendix A.4 verbatim, and `calibrate()`'s body is still
+`NotImplementedError`.
+
+## Finding 4 [LOW] — `ToolGateway.invoke` carried `decision` but stated no re-check obligation
+
+PLAN.md:454-459 makes the gateway the second of two independent enforcement points: it "requires a
+`PolicyDecision` argument and **re-checks the tool name against `forbidden` itself**. The gateway
+is authoritative." The signature carried the argument; nothing in `src/harness/gateway.py` told the
+implementer to use it. A Phase 2 agent writing a concrete gateway from the Protocol alone could
+accept `decision`, ignore it, and ship a second enforcement point that is structurally present and
+behaviourally absent — worse than one honest check, because the trace then shows a `PolicyDecision`
+was consulted next to a forbidden call that ran.
+
+Fixed by giving `ToolGateway.invoke` a four-step contract docstring in the same shape as
+`calibrate()`'s: obligation stated in implementation order, the wrong answer named explicitly, and
+the failure scenario embedded so the implementer reads it while implementing. Framing: `decision`
+is passed in **to be recorded, not to be believed**; the forbidden set comes from
+`PolicySpec.forbidden` held by the implementation, never out of `decision`; a forbidden tool is
+refused **even when `decision.effect == "allow"`** (the hand-forged-decision case PLAN.md:499-503
+tests); the refusal is **returned** as
+`ToolResult(ok=False, error=ToolError(kind="forbidden_by_policy", retryable=False, ...))`, not
+raised, per PLAN.md:199; and because the check runs first, a forbidden tool **costs zero outbound
+requests** — nothing reaches the wire, which is what the transport-layer assertion in PLAN.md's
+verify block observes.
+
+Deliberately **not** written into the contract: any obligation about `decision.effect` for
+non-forbidden tools (e.g. whether a gateway reached with `deny` / `require_approval` should also
+refuse). PLAN.md mandates the re-check against `forbidden` only; legislating the rest here would be
+new behaviour invented at the contract freeze and would compete with the orchestrator's own
+sequencing. Flagged below as a handoff instead.
+
+Layering: the prose is domain-neutral. No tool name from any integration catalog appears — the
+concrete example in PLAN.md's paragraph is a catalog tool whose name is itself a denylisted word.
+`grep -InE '\b(github|workflow|workflow_run|pull_request|PR|commit|branch|repo|pytest|flaky|CI|job|test_name|actions|diff)\b'` over `src/harness/**` returns only the three pre-existing
+Appendix-A-verbatim identifiers already recorded in `tests/test_layering.py`'s own docstring
+(`Evidence.source` `"diff"` member, `MAX_SIDE_EFFECTING_ACTIONS_PER_RUN` comment,
+`MemoryHit.actions_in_window` comment). The new text adds zero matches.
+
+## Verification (post-ship)
+
+| command | result |
+|---|---|
+| `uv run --no-sync ruff check src/harness` | `All checks passed!` |
+| `uv run --no-sync mypy --strict src/harness` | `Success: no issues found in 13 source files` |
+| `uv run --no-sync pytest tests/test_layering.py -q` | `66 passed` |
+| `uv run --no-sync pytest -q` | `99 passed` |
+
+(Counts are higher than the phase-gate table above because api-surface and cicd-integration added
+tests concurrently; the harness contribution to both runs is unchanged and green.)
+
+## Handoffs created by this fix
+
+- **Phase 2 implementer of any concrete `ToolGateway`** — the forbidden re-check is now a numbered
+  obligation, not an inference. The implementation must hold its own copy of `PolicySpec.forbidden`
+  (from the same spec the engine was built from) so that step 1 is possible without consulting
+  `decision`; wire that at the composition root. PLAN.md:499-503's
+  `..._refuses_forbidden_even_with_forged_allow_decision` test is the acceptance check, and it
+  asserts zero outbound requests as well as the error kind — so the check must precede client
+  construction, not merely precede the request.
+- **Orchestrator author** — the contract deliberately says nothing about what a gateway should do
+  when reached with `effect="deny"` / `"require_approval"` for a non-forbidden tool. Today that is
+  the caller's invariant: do not invoke. If Phase 2 wants the gateway to enforce it too, that is a
+  PLAN.md change routed back through this contract, not a local decision in one gateway.
+- **Unresolved (no action)** — the reviewer declined the offered harness half of the
+  unregistered-signal fail-safe: `PolicyEngine.decide` already consumes integration-supplied
+  `facts` and the condition matcher already supports `eq`, so the close is pure data (integration
+  emits the count; the policy file adds `{eq: 0}` to each permissive rule). Putting that concept
+  into `guardrails.py` would import a domain notion into the harness. Scheduled for the Phase 2
+  brief; the shipped remedy above stands.
