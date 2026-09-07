@@ -23,7 +23,12 @@ COPY src ./src
 
 FROM python:3.12-slim AS runtime
 
-RUN groupadd --system harness && useradd --system --gid harness --create-home harness
+# UID/GID pinned to 1000 rather than left to `--system`. Hugging Face Spaces runs a
+# container as UID 1000, and a system UID here would leave /app/data owned by an id the
+# runtime is not, so SQLite could not open its file and `readyz` would fail closed. 1000
+# is unused in the slim base image, and pinning it changes nothing for compose or Fly.
+RUN groupadd --gid 1000 harness \
+    && useradd --uid 1000 --gid harness --create-home harness
 
 WORKDIR /app
 

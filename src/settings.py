@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # --- non-secret config ---
     database_path: Path = Path("./data/harness.db")
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.6-flash"
     model_investigator: str | None = None  # falls back to gemini_model
     model_diagnostician: str | None = None
     model_remediator: str | None = None

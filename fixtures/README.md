@@ -184,7 +184,7 @@ Realism requirements (see `.claude/skills/fixture-new/SKILL.md` for the fuller r
 
 | Scenario | Shape | What it proves | Status |
 |---|---|---|---|
-| `real_regression` | off-by-one in `discount()`, `assert 91 == 90`, diff contains exactly that one-line change | correct blame + `require_approval` | skeleton (this phase) |
+| `real_regression` | off-by-one in `discount()`, `assert 91 == 90`, diff contains exactly that one-line change | correct blame + `require_approval` | **complete** (Phase 1) |
 | `flaky_test` | random-fail test, identical fingerprint across runs, prior history present | memory recognition, auto-retry path | not yet built |
 | `dependency_break` | `requirements.txt` bumps pydantic 1.10.13 -> 2.9.2, import-time failure | dependency_bump claim checking | not yet built |
 | `infra_timeout` | registry connection timeout, **empty diff** (docs-only change) | the empty-diff contradiction penalty | not yet built |

@@ -123,4 +123,21 @@ def calibrate(
 
     Returns the clamped score first, then the adjustments that produced it.
     """
-    raise NotImplementedError
+    adjustments = [
+        Adjustment(name=name, delta=model.deltas[name], reason=reason)
+        if name in model.deltas
+        # Step 3: the sentinel reason replaces the caller's, so an unregistered row is
+        # detectable by string equality rather than by matching prose written elsewhere.
+        else Adjustment(
+            name=name,
+            delta=UNREGISTERED_SIGNAL_DELTA,
+            reason=UNREGISTERED_SIGNAL_REASON,
+        )
+        for name, reason in signals.items()
+    ]
+    # Step 4: one running total, one clamp, applied last. Summing into a local and
+    # clamping the sum is the whole difference between 0.85 and the wrong 0.84 --
+    # writing this as a fold that clamps each intermediate would pass the naive test
+    # and fail the worked example in the contract above.
+    total = self_confidence + sum(adjustment.delta for adjustment in adjustments)
+    return min(max(total, model.floor), model.ceiling), adjustments

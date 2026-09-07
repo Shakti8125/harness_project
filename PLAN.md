@@ -1483,8 +1483,11 @@ class Citation(BaseModel):
     quote: str = Field(max_length=500)
     note: str = Field(default="", max_length=200)
 
-class Adjustment(BaseModel):
-    name: str; delta: float; reason: str
+# `Adjustment` is IMPORTED, not redeclared here — it is the same class
+# `harness.confidence.calibrate()` returns, so a `Diagnosis.confidence_adjustments`
+# list built from that function's output validates without a foreign-model coercion
+# error. Two structurally identical Pydantic models are still two types.
+from src.harness.confidence import Adjustment   # name: str; delta: float; reason: str
 
 class Diagnosis(BaseModel):                   # the Diagnostician's stage output
     reasoning: str = Field(max_length=1200)   # FIRST via propertyOrdering — the model reasons before it concludes
