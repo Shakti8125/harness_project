@@ -1,50 +1,30 @@
-# GENERATED — do not hand-edit. Regenerate with:
-#   uv export --no-dev --no-emit-project --no-hashes --no-annotate \
-#     --format requirements-txt -o requirements.txt   &&  re-append gradio below
+# Dependencies for the Hugging Face Space, which installs with pip rather than uv.
+# `pyproject.toml` + `uv.lock` remain the source of truth for the project, the Docker
+# image and CI; this file exists only because a Space cannot use them.
 #
-# This file exists ONLY for the Hugging Face Gradio Space, which installs with pip
-# rather than uv. `pyproject.toml` + `uv.lock` remain the source of truth for the
-# project and for the Docker image; this is a derived artifact of them.
-aiosqlite==0.22.1
-annotated-doc==0.0.5
-annotated-types==0.8.0
-anyio==4.15.1
-certifi==2026.7.22
-cffi==2.1.1 ; platform_python_implementation != 'PyPy'
-charset-normalizer==3.5.1
-click==8.5.0
-cryptography==50.0.1
-distro==1.9.0
-fastapi==0.141.1
-google-auth==2.57.1
-google-genai==2.22.0
-h11==0.16.0
-httpcore==1.0.9
-httptools==0.8.0
-httpx==0.28.1
-idna==3.19
-jinja2==3.1.6
-markupsafe==3.0.3
-pyasn1-modules==0.4.2
-pyasn1==0.6.4
-pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
-pydantic-core==2.46.5
-pydantic-settings==2.15.0
-pydantic==2.13.5
-python-dotenv==1.2.3
-pyyaml==6.0.3
-requests==2.34.2
-sniffio==1.3.1
-starlette==1.6.0
-tenacity==9.1.4
-typing-extensions==4.16.0
-typing-inspection==0.4.4
-urllib3==2.7.0
-uvicorn==0.52.4
-uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
-watchfiles==1.2.0
-websockets==16.1.1
+# DELIBERATELY UNPINNED, and this is not laziness. A Space installs its own
+# `gradio[oauth,mcp]==<sdk_version>` alongside whatever is listed here, and gradio
+# constrains several packages we also depend on. An exact-pinned export of `uv.lock`
+# makes that unsatisfiable — verified:
+#
+#   gradio 6.26.0 depends on pydantic>=2.11.10,<=2.12.5
+#   you require pydantic==2.13.5
+#   -> No solution found when resolving dependencies
+#
+# So this lists only the DIRECT dependencies from `pyproject.toml`, at the same
+# constraints, and lets pip resolve the overlap with gradio. The consequence, stated
+# rather than discovered later: the Space may run slightly different transitive versions
+# than `uv.lock` produces locally. The suite is run against the resolved set before
+# publishing for exactly that reason.
+#
+# `gradio` and `uvicorn` are absent on purpose — the Space installs both itself, and
+# listing them here lets pip resolve a second, conflicting copy over the top.
 
-# NOTE: gradio is deliberately ABSENT. A Gradio Space installs it itself at the version
-# pinned by `sdk_version` in README.md; listing it here too lets pip resolve a different
-# one over the top, which is a well-known way to break a Space build.
+pydantic>=2
+pydantic-settings
+fastapi
+httpx
+aiosqlite
+google-genai
+jinja2
+pyyaml
