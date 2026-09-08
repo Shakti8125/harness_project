@@ -198,8 +198,15 @@ It still appears in `models.list()`, so the failure only shows up on a real call
 
 **Resolved:** the user updated `settings.py` to default `gemini_model = "gemini-3.6-flash"`.
 The temporary `.env` override was removed afterwards so the value has exactly one home.
-**Still open: PLAN.md's stack section names `gemini-2.5-flash`** and should be reconciled —
-a plan-level edit, deliberately not made unilaterally.
+
+**PLAN.md is now reconciled too**, on the user's instruction: the stack decision (line 157)
+and the Appendix E settings block (line 1742) both name `gemini-3.6-flash`, so Appendix E
+again matches `src/settings.py` exactly, and `.env.example` no longer suggests a retired id.
+The Diagnostician promotion example moved from `gemini-2.5-pro` to `gemini-pro-latest`:
+`2.5-pro` is the same retired generation as `2.5-flash`, and the `-latest` alias is the form
+already confirmed working here (`gemini-flash-latest`). **That Pro id has not been called
+against this key** — `models.list()` is not evidence, as this very finding shows — but
+nothing in the build depends on it; it is an illustrative env-var override.
 
 **2. `to_gemini_schema` is validated against the real API.** Both agents' contracts round
 trip through it into constrained decoding and back through `model_validate_json` with zero

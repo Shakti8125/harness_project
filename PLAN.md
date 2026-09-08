@@ -154,9 +154,9 @@ interpreter itself, and produces a fast reproducible Docker layer. Alternative: 
 package is the current SDK; the older one is legacy. Pin the model id in config
 (`HARNESS_GEMINI_MODEL`), never hardcode it in a prompt or a call site.
 
-**Decision (model per agent).** All three agents start on `gemini-2.5-flash` at `temperature=0.0`,
+**Decision (model per agent).** All three agents start on `gemini-3.6-flash` at `temperature=0.0`,
 with the Diagnostician given a larger thinking budget. Model id is a per-agent config field
-(`HARNESS_MODEL_INVESTIGATOR` etc.), so promoting the Diagnostician to `gemini-2.5-pro` is one env
+(`HARNESS_MODEL_INVESTIGATOR` etc.), so promoting the Diagnostician to `gemini-pro-latest` is one env
 var. Alternative: Pro everywhere — ~10× cost and noticeably slower for a classification task that
 Flash handles when the evidence is well-assembled. The eval harness (Phase 4) measures whether that
 call was right instead of guessing.
@@ -1739,7 +1739,7 @@ class Settings(BaseSettings):
 
     # --- non-secret config ---
     database_path: Path = Path("./data/harness.db")
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.6-flash"
     model_investigator: str | None = None          # falls back to gemini_model
     model_diagnostician: str | None = None
     model_remediator: str | None = None
