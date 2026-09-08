@@ -6,12 +6,12 @@ available on a free account run `python app.py` rather than a container, so the 
 a launcher that speaks their conventions: listen on port 7860, and expose a Gradio
 `Blocks` so the SDK has something to render.
 
-The FastAPI app is mounted **unchanged** — every route keeps its path, so `/healthz`,
-`/v1/replay/{scenario}` and `/v1/runs/{id}/trace` behave here exactly as they do under
-`docker compose`. The Gradio UI is a thin client of that same HTTP surface, calling it
-in-process through an ASGI transport rather than reaching around it into the orchestrator.
-That is deliberate: the demo exercises the real request path, so if the UI works, the API
-worked.
+The FastAPI app is mounted **unchanged**, at the root of gradio's own app — every route
+keeps its path, so `/healthz`, `/v1/replay/{scenario}` and `/v1/runs/{id}/trace` behave
+here exactly as they do under `docker compose`. The Gradio UI is a thin client of that
+same HTTP surface, calling it in-process through an ASGI transport rather than reaching
+around it into the orchestrator. That is deliberate: the demo exercises the real request
+path, so if the UI works, the API worked.
 
 This is **not** PLAN.md's Phase 5 trace view (`/runs/{id}/view` + Jinja). That is a
 different, richer artifact against a durable trace. This is a launcher with a form on it.
@@ -19,14 +19,20 @@ different, richer artifact against a durable trace. This is a launcher with a fo
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 import gradio as gr
 import httpx
-import uvicorn
 
+from src.api.deps import get_app_context
 from src.api.main import app as api
+
+try:
+    import spaces
+except ImportError:  # Not a ZeroGPU Space. See the handshake block at the bottom.
+    spaces = None
 
 SCENARIOS = ["real_regression"]
 
@@ -154,24 +160,75 @@ The REST API is the real artifact and is live on this same URL:
 
     run.click(run_scenario, inputs=scenario, outputs=[headline, stages, raw])
 
-# Mounted last and at the root, so every FastAPI route registered above keeps priority and
-# only unmatched paths fall through to the UI.
+
+# This Space is pinned to `zero-a10g` hardware and cannot leave it: downgrading to
+# `cpu-basic` is a PRO feature (`402 Payment Required`), and free CPU is not offered on
+# this account at all. So a CPU-only application runs on GPU hardware, whose supervisor
+# kills anything that never claims a GPU:
 #
-# `ssr_mode=False` is load-bearing, not a preference. Left to resolve itself,
-# `mount_gradio_app` reads `GRADIO_SSR_MODE` — which a Space sets to `true` — and spawns a
-# Node server *at import time*, on the first free port from 7860 up. That is the port
-# `uvicorn.run()` below is about to ask for, so the Space died on the collision:
+#     Exit code: 3. Reason: No @spaces.GPU function detected during startup
 #
-#     INFO:     Application startup complete.
-#     ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 7860):
-#               [errno 98] address already in use
+# Satisfying it takes two things, and only together. One decorated function, because
+# `spaces.zero.startup()` reports nothing when its `decorated_cache` is empty. And a
+# `Blocks.launch()` call, because `spaces.zero.gradio.one_launch` patches `launch` and
+# nothing else — that patch is the only thing that ever fires the report. Hence this stub
+# and the `demo.launch()` in `main()`; either alone leaves the Space dead.
 #
-# The occupant was this process's own Node child, which is why the loser was PID 1. Nothing
-# is given up by turning it off: `mount_gradio_app` starts that Node server without passing
-# it a `python_port`, so it cannot proxy back to this app even when it wins the race.
-# Client-side rendering is what a mounted `Blocks` is meant to use.
-app = gr.mount_gradio_app(api, demo, path="/", ssr_mode=False)
+# Anywhere else this costs nothing. `spaces` is not installed off a Space, so the guarded
+# import above leaves `spaces is None`; and even where it is installed,
+# `spaces.zero.decorator._GPU` returns the function untouched unless `SPACES_ZERO_GPU` is
+# set, so nothing is registered and nothing is reported.
+if spaces is not None:
+
+    @spaces.GPU(duration=1)
+    def _zerogpu_handshake() -> None:
+        """Declared so ZeroGPU's supervisor can see a GPU function, and never called.
+
+        There is no GPU work anywhere in this project, and this does not pretend
+        otherwise — it is the smallest honest thing that satisfies a platform
+        precondition the application did not ask for.
+        """
+
+
+def main() -> None:
+    """Serve the API and the UI together, on the one port the platform routes to."""
+    # `src/api/main.py`'s lifespan is what creates the `spans` table, and a sub-app mounted
+    # with `Mount` never receives Starlette lifespan events — so mounting `api` under
+    # gradio below would silently skip it. The symptom would not be an error:
+    # `TraceRecorder._persist` catches and logs by design, because tracing must never fail
+    # a run. It would be an empty `GET /v1/runs/{id}/trace`, discovered much later. So run
+    # it here, explicitly. `get_app_context()` is `lru_cache`d, so this is the same
+    # recorder the routes use, and it holds no connection between calls — a throwaway
+    # event loop is safe.
+    asyncio.run(get_app_context().recorder.initialize())
+
+    # `ssr_mode=False` is load-bearing, not a preference. Left to resolve itself, gradio
+    # reads `GRADIO_SSR_MODE` — which a Space sets to `true` — and spawns a Node server on
+    # the first free port from 7860 up. An earlier revision paired `mount_gradio_app` with
+    # `uvicorn.run(port=7860)` and lost the port to its own Node child:
+    #
+    #     INFO:     Application startup complete.
+    #     ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 7860):
+    #               [errno 98] address already in use
+    #
+    # Client-side rendering keeps one server on the one port, which is all this needs.
+    demo.launch(
+        server_name="0.0.0.0",  # noqa: S104
+        server_port=SPACE_PORT,
+        ssr_mode=False,
+        prevent_thread_lock=True,
+    )
+
+    # Mounted at the root, and necessarily *after* launch, because `demo.app` does not
+    # exist until `launch()` builds it. Gradio's own routes are registered by then so they
+    # keep priority, and gradio defines no catch-all, so `/healthz`, `/v1/*` and everything
+    # else fall through to the API with their paths intact. The single collision is
+    # `/openapi.json`, which gradio claims; the harness's own schema stays canonical on the
+    # Docker path.
+    demo.app.mount("/", api)
+
+    demo.block_thread()
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=SPACE_PORT)  # noqa: S104
+    main()
