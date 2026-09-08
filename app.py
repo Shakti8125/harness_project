@@ -156,7 +156,21 @@ The REST API is the real artifact and is live on this same URL:
 
 # Mounted last and at the root, so every FastAPI route registered above keeps priority and
 # only unmatched paths fall through to the UI.
-app = gr.mount_gradio_app(api, demo, path="/")
+#
+# `ssr_mode=False` is load-bearing, not a preference. Left to resolve itself,
+# `mount_gradio_app` reads `GRADIO_SSR_MODE` — which a Space sets to `true` — and spawns a
+# Node server *at import time*, on the first free port from 7860 up. That is the port
+# `uvicorn.run()` below is about to ask for, so the Space died on the collision:
+#
+#     INFO:     Application startup complete.
+#     ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 7860):
+#               [errno 98] address already in use
+#
+# The occupant was this process's own Node child, which is why the loser was PID 1. Nothing
+# is given up by turning it off: `mount_gradio_app` starts that Node server without passing
+# it a `python_port`, so it cannot proxy back to this app even when it wins the race.
+# Client-side rendering is what a mounted `Blocks` is meant to use.
+app = gr.mount_gradio_app(api, demo, path="/", ssr_mode=False)
 
 
 if __name__ == "__main__":
