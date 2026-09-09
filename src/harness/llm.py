@@ -347,13 +347,23 @@ _AUTH_FAILURE_PHRASES: Final[tuple[str, ...]] = (
 #: Upper bound, in seconds, on a provider-supplied retry delay that will actually be slept.
 #: The delay is a hint from an external system and is treated as untrusted input: a
 #: malformed, absurd or hostile value must not turn one attempt into an unbounded sleep,
-#: and the error path is the last place that can afford to misbehave. 60 s mirrors the only
-#: cap PLAN.md states for honouring a provider-supplied delay (Appendix B.2's primary
-#: rate-limit row, "capped at 60 s"), and matches the per-request patience the "Concrete
-#: numbers in one place" table already allows a single provider call. A longer stated delay
+#: and the error path is the last place that can afford to misbehave. A longer stated delay
 #: is *clamped*, not discarded: falling back to a sub-second jittered backoff because the
-#: provider asked for an hour is the one response strictly worse than waiting a minute.
-MAX_RETRY_AFTER_S: Final[float] = 60.0
+#: provider asked for an hour is the one response strictly worse than waiting 20 s.
+#:
+#: 20 s, lowered from the 60 s this constant started at. 60 s mirrored the only cap PLAN.md
+#: states for honouring a provider-supplied delay (Appendix B.2's primary rate-limit row,
+#: "capped at 60 s") -- but that row bounds *one* sleep in a different layer, whereas a
+#: single caller here can reach this ceiling once per retry, several times per request. At
+#: 60 s the sleeps alone dominated the wall clock of a request a human is waiting on. The
+#: delays actually worth honouring are the 5-20 s ones a quota refusal states, and those
+#: still are.
+#:
+#: This is a *per-sleep* ceiling and deliberately not the only bound: the sum of the sleeps
+#: taken inside one generation loop is bounded separately, by ``RETRY_DELAY_BUDGET_S`` in
+#: :mod:`src.harness.recovery`. N sleeps of this size are still N times too long, and a
+#: per-sleep clamp cannot see N.
+MAX_RETRY_AFTER_S: Final[float] = 20.0
 
 #: Keys under which a provider states "wait this long before asking again". Both spellings
 #: of the same field are accepted because the JSON body uses lower camel case while a
@@ -373,6 +383,11 @@ def _duration_to_seconds(value: object) -> float | None:
     ``"7.5s"``) and a bare number of seconds, which is the other legal form of the
     ``Retry-After`` header. Everything else -- a wrong type, an unparseable string, a
     negative, a zero, or a non-finite value -- returns ``None`` rather than being coerced.
+    That includes a duration in its *object* form, ``{"seconds": 41, "nanos": 0}``: proto3
+    JSON serialises a duration as the string ``"41s"``, so the object form is not a
+    JSON-over-HTTP wire form and cannot arrive here from a decoded body. Not parsing it is
+    a recorded limit, not a defect -- if a future transport ever hands over an already
+    deserialised message rather than decoded JSON, this is the line to revisit.
 
     Zero is rejected on purpose. Sleeping for nothing after being told to slow down is how
     a retry budget is spent in milliseconds, which is the failure this whole function
@@ -396,7 +411,20 @@ def _duration_to_seconds(value: object) -> float | None:
         return None
     if not math.isfinite(seconds) or seconds <= 0.0:
         return None
-    return min(seconds, MAX_RETRY_AFTER_S)
+    if seconds > MAX_RETRY_AFTER_S:
+        # Say so out loud. Overriding the provider's stated delay is invisible from the
+        # outside -- the loop simply comes back sooner than it was told to -- and "we
+        # waited 20 s after being asked to wait an hour" is the one line that explains an
+        # otherwise inexplicable burst of retries when someone reads this back later.
+        # `info`, not `debug`: this is a decision taken against an external instruction,
+        # not a trace of ordinary parsing.
+        logger.info(
+            "clamping provider-stated retry delay: stated %.3fs, will sleep %.3fs",
+            seconds,
+            MAX_RETRY_AFTER_S,
+        )
+        return MAX_RETRY_AFTER_S
+    return seconds
 
 
 def _retry_delay_from_payload(node: object, depth: int = 0) -> float | None:

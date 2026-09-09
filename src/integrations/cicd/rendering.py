@@ -84,6 +84,30 @@ def load_prompt_template(name: str) -> PromptTemplate:
     return template
 
 
+#: Every template name this integration renders. Kept here, not derived by scanning
+#: `_PROMPTS_DIR`, so that a stray or half-written `.md` file dropped in the directory
+#: does not silently become part of what startup validates -- only the names the agents
+#: actually call `load_prompt_template` with are load-bearing.
+_TEMPLATE_NAMES: Final[tuple[str, ...]] = ("investigator", "diagnostician")
+
+
+def validate_prompt_templates() -> None:
+    """Load every prompt template this integration renders; raise on any failure.
+
+    A missing or malformed `prompts/*.md` file is a packaging fault, not a per-request
+    condition -- `review-2.md` finding 3. Calling this eagerly at process startup (the
+    caller's job, not this module's -- see the docstring on `load_prompt_template`) turns
+    that fault into a loud boot failure instead of a silent green `/healthz` followed by a
+    `500` on the first replay. Deliberately does not catch anything: `load_prompt_template`
+    already raises a specific `ValueError` for a missing `version:` line or `---`
+    separator, and `Path.read_text` raises its own `OSError` subclass for a missing file;
+    both are informative on their own and swallowing either here would just repackage them
+    as this function's own generic failure.
+    """
+    for name in _TEMPLATE_NAMES:
+        load_prompt_template(name)
+
+
 def new_call_id() -> str:
     return "tc_" + secrets.token_hex(6)
 

@@ -61,6 +61,33 @@ TIMEOUT_MAX_ATTEMPTS: Final[int] = 2
 #: Appendix B.1: an oversized request is retried once, at half the context.
 TOO_LARGE_MAX_ATTEMPTS: Final[int] = 2
 
+#: Ceiling, in seconds, on the *total* time one :func:`retry_structured` call may spend
+#: asleep between attempts -- provider-stated delays and jittered backoff alike.
+#:
+#: Why a second bound exists at all: :data:`src.harness.llm.MAX_RETRY_AFTER_S` clamps one
+#: sleep, and a clamp on one sleep says nothing about how many there are. With four
+#: transient attempts, a provider that states a long delay on every refusal buys three
+#: sleeps at the per-sleep ceiling from a single call, and a caller that drives two agents
+#: in sequence pays that twice. Nothing above this function bounds it: the loop is the last
+#: place in the stack that knows how long it has already waited.
+#:
+#: The number, and the worst case it buys. 20 s per call, so a caller running two agents in
+#: sequence sleeps at most **40 s in total**, whatever the provider states and however many
+#: times it states it -- the sleep is taken only if it fits in what is left, so the budget
+#: is a true ceiling and not an overshoot-by-one-sleep. 40 s is inside the shortest
+#: end-to-end request duration measured as tolerated in front of this service (57 s, one
+#: observation; its actual ceiling is unverified and is not something to design against),
+#: and it leaves the remaining margin to the round trips themselves rather than spending it
+#: on waiting. It is also large enough that the ordinary path never notices: full-jitter
+#: backoff over a spent transient budget draws from [0, 0.5], [0, 1] and [0, 2], at most
+#: 3.5 s, so this bound bites only when a provider is stating long delays -- which is
+#: exactly the case where retrying sooner is worth less than answering the caller.
+#:
+#: When it is spent the loop does not invent a new outcome: it stops honouring the stated
+#: delay and ends on the same :class:`AgentError` the attempt budget would have produced,
+#: so the escalation path is unchanged.
+RETRY_DELAY_BUDGET_S: Final[float] = 20.0
+
 #: Span attribute set when the prompt was halved after an oversized-request failure.
 ATTR_CONTEXT_DOWNSHIFT: Final[str] = "context_downshift"
 
@@ -155,6 +182,7 @@ async def retry_structured(
     """
     attempts: list[AttemptRecord] = []
     current_prompt = prompt
+    total_delay_s = 0.0
     validation_failures = 0
     transient_failures = 0
     timeout_failures = 0
@@ -221,6 +249,26 @@ async def retry_structured(
                     outcome = "transient"
                     exhausted = transient_failures >= policy.transient_max_attempts
 
+                # The delay is chosen *before* the attempt is recorded, because whether
+                # it still fits in the delay budget is part of deciding whether this
+                # attempt was the last one.
+                delay = exc.retry_after_s
+                if delay is None or isinstance(exc, LlmTimeout):
+                    delay = backoff_delay(transient_failures or 1, policy)
+                if isinstance(exc, LlmRateLimited) and exc.retry_after_s is not None:
+                    delay = exc.retry_after_s
+                if not exhausted and total_delay_s + delay > RETRY_DELAY_BUDGET_S:
+                    # Budget spent. Stop honouring stated delays and end the loop exactly
+                    # where the attempt budget ends it -- same error kind, same escalation.
+                    # Waiting longer here does not make the answer better; it only makes
+                    # the caller wait for the same answer.
+                    logger.info(
+                        "retry delay budget spent after %.1fs of %.1fs (next delay would "
+                        "be %.1fs); ending the loop instead of sleeping",
+                        total_delay_s, RETRY_DELAY_BUDGET_S, delay,
+                    )
+                    exhausted = True
+
                 attempts.append(
                     AttemptRecord(
                         attempt=attempt_number, outcome=outcome,
@@ -234,11 +282,7 @@ async def retry_structured(
                         message=str(exc),
                         attempts=len(attempts),
                     )
-                delay = exc.retry_after_s
-                if delay is None or isinstance(exc, LlmTimeout):
-                    delay = backoff_delay(transient_failures or 1, policy)
-                if isinstance(exc, LlmRateLimited) and exc.retry_after_s is not None:
-                    delay = exc.retry_after_s
+                total_delay_s += delay
                 await asyncio.sleep(delay)
                 continue
 

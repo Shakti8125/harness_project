@@ -61,7 +61,7 @@ Return a single JSON object with these keys, in this order: "reasoning", "catego
 
 - "reasoning": under 1200 characters, the evidence-to-conclusion argument.
 - "summary": under 280 characters, what broke and why, for a human skimming a list.
-- "citations": at most 6, each {"claim_kind", "locator", "quote", "note"} where `claim_kind` is one of quote_exists, file_in_diff, dependency_bump, test_in_log, commit_in_range, and `quote` appears verbatim in the evidence above.
+- "citations": at most 6, each `{"claim_kind", "locator", "quote", "note"}` where `claim_kind` is one of quote_exists, file_in_diff, dependency_bump, test_in_log, commit_in_range, and `quote` appears verbatim in the evidence above.
 - "suspected_commit_sha": the full sha from the diff when one commit is blameable, otherwise null.
 - "suggested_action": one of retry, open_fix_pr, open_revert_pr, file_ticket, escalate.
 

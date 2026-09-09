@@ -30,6 +30,7 @@ from src.api.deps import AppContext, get_app_context, mint_run_id
 from src.api.run_registry import RunRegistry
 from src.harness.contracts import RunId, RunOutcome, RunRequest
 from src.integrations.cicd.agents.investigator import parse_subject
+from src.integrations.cicd.rendering import validate_prompt_templates
 from src.integrations.cicd.wiring import INTEGRATION
 from src.settings import get_settings
 
@@ -44,7 +45,18 @@ registry = RunRegistry()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Create the span table before the first request can try to write to it."""
+    """Fail loudly at startup rather than on the first request.
+
+    Two checks, both deliberately left to raise: a missing or malformed prompt template
+    (`prompts/*.md`) under the pre-round Python-constant design was an `ImportError` at
+    process start; the `.md` port made `load_prompt_template` a lazy, unguarded file read
+    inside `build_prompt`, so the same defect became a `500 text/plain` on the first
+    `/v1/replay` call instead — no RFC 9457 body, no `run_id`, nothing in the trace
+    (review-2.md finding 3). `validate_prompt_templates()` restores the original property
+    by loading every template this integration renders before the app accepts traffic.
+    Ordered first so a template failure is reported before anything else runs.
+    """
+    validate_prompt_templates()
     context = get_app_context()
     await context.recorder.initialize()
     yield
@@ -76,9 +88,11 @@ def _digest_str_field(container: dict[str, Any], field: str) -> None:
 
 def _serialize_run_outcome(outcome: RunOutcome) -> dict[str, Any]:
     """`RunOutcome.model_dump(mode="json")`, with two exceptions applied at this HTTP
-    boundary only: every `final.<artifact>.logs[].excerpt` and every
-    `final.<artifact>.diff.files[].patch` is replaced by its length and sha256 digest
-    rather than served verbatim.
+    boundary and a full-body pass through the `Redactor` on top of them: every
+    `final.<artifact>.logs[].excerpt` and every `final.<artifact>.diff.files[].patch` is
+    replaced by its length and sha256 digest rather than served verbatim, and the
+    resulting body is then scrubbed for registered secrets and credential-shaped strings
+    wherever they occur.
 
     Wave-3 audit finding 3: `final.bundle.logs[].excerpt` is the entire budgeted CI job
     log the Investigator collected — tens of thousands of characters on the current
@@ -108,7 +122,7 @@ def _serialize_run_outcome(outcome: RunOutcome) -> dict[str, Any]:
     `LogExcerpt`, and `path`/`status`/`additions`/`deletions` on every `FileChange`, are
     untouched; the harness's own designed evidence surface for a human or downstream
     system to read is `final.diagnosis.citations[].quote` (bounded, `max_length=500`,
-    produced and cited deliberately by the Diagnostician) — left byte-for-byte intact.
+    produced and cited deliberately by the Diagnostician) — left in place, but see below.
 
     This is a deliberate, narrow divergence from A.12's literal "200 RunOutcome": the
     served JSON is no longer a lossless `model_dump` of the internal object for these two
@@ -118,7 +132,22 @@ def _serialize_run_outcome(outcome: RunOutcome) -> dict[str, Any]:
     Deliberately a field-name walk, not a structural/type-based scrub: matches on the
     literal keys `excerpt` and `patch` inside `logs[]` / `diff.files[]`. That is a known,
     accepted limitation, not an oversight — see the same file's "Notes for the reviewer"
-    for why it is not being generalised in this round.
+    for why it is not being generalised in this round. It is also, on its own, an
+    incomplete fix: `final.diagnosis.citations[].quote` and
+    `final.bundle.notes.observations[]` are model-authored fields that
+    `prompts/diagnostician.md` explicitly instructs the model to fill with a **verbatim**
+    quote of the evidence it was given, so the same credential this digest substitution
+    withholds from `logs[].excerpt` can still reach the client through a citation or an
+    observation that happens to quote the line it appears on — `Citation.quote` bounds
+    length (`max_length=500`) but not content, and `InvestigationNotes.observations`
+    bounds item *count* (`max_length=8`), not item length. Rather than special-case those
+    two fields too — which only narrows the same class of bug to whatever raw-content
+    field the next integration adds — the whole serialized body is passed through the
+    `Redactor` below. That covers every field, named here or not, present today or added
+    later, and reuses the same registered-secret and pattern list (`gh[pousr]_`,
+    `github_pat_`, `AIza`, `xox[baprs]-`, bearer tokens — `src/api/deps.py`) that already
+    scrubs the trace. It does a different job than the field-name walk above — credential
+    removal by content, not bulk removal by field name — so both stay, additively.
     """
     body = outcome.model_dump(mode="json")
     for artifact in body.get("final", {}).values():
@@ -135,7 +164,9 @@ def _serialize_run_outcome(outcome: RunOutcome) -> dict[str, Any]:
             for file_entry in files:
                 if isinstance(file_entry, dict):
                     _digest_str_field(file_entry, "patch")
-    return body
+    scrubbed = get_app_context().recorder.redactor.scrub(body)
+    assert isinstance(scrubbed, dict)  # body was a dict; Redactor preserves the JSON shape
+    return scrubbed
 
 
 def problem(

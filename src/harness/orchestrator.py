@@ -60,13 +60,19 @@ EscalationReason = Literal[
 
 _ESCALATION_REASONS: Final[frozenset[str]] = frozenset(get_args(EscalationReason))
 
+#: The verdict/reason pair a stage failure resolves to. Named rather than spelled inline at
+#: each use site so the table below and its fallback cannot drift apart, and -- more to the
+#: point -- so the fallback can be *annotated*. A bare tuple literal written as the default
+#: argument of `.get()` is inferred as `tuple[str, str]`, which widens `reason` back to `str`
+#: and quietly retires the one check that keeps this table honest: that every reason in it is
+#: a real `EscalationReason` member.
+_StageOutcome = tuple[Literal["escalated", "failed"], EscalationReason]
+
 #: How a failed stage becomes a run verdict. Appendix B.1 fixes the two that differ from
 #: the rest: an auth failure *fails* the run (the deployment is misconfigured and no
 #: amount of human triage on this run will help), everything else *escalates* it (the run
 #: is sound, a person needs to look at it).
-_OUTCOME_FOR_ERROR_KIND: Final[
-    Mapping[str, tuple[Literal["escalated", "failed"], EscalationReason]]
-] = {
+_OUTCOME_FOR_ERROR_KIND: Final[Mapping[str, _StageOutcome]] = {
     "invalid_output": ("escalated", "invalid_output"),
     "llm_timeout": ("escalated", "llm_timeout"),
     "llm_rate_limited": ("escalated", "rate_limited"),
@@ -80,6 +86,11 @@ _OUTCOME_FOR_ERROR_KIND: Final[
     "tool_error": ("escalated", "tool_failure"),
     "internal": ("failed", "config_error"),
 }
+
+#: The catch-all for an error kind the table above does not name: the run is sound and a
+#: person needs to look at it, and the failure is attributed no more precisely than "a step
+#: of the run did not complete".
+_DEFAULT_STAGE_OUTCOME: Final[_StageOutcome] = ("escalated", "tool_failure")
 
 
 def new_run_id() -> RunId:
@@ -304,12 +315,16 @@ class Orchestrator:
                         continue
 
                     kind = result.error.kind if result.error is not None else "internal"
-                    status, reason = _OUTCOME_FOR_ERROR_KIND.get(
-                        kind, ("escalated", "tool_failure")
-                    )
+                    # Unpacked via its own binding rather than straight into `status, reason`:
+                    # `reason` is already bound to a plain `str` in the gate branch above, and
+                    # assigning into it here makes that wider type the expected type of the
+                    # lookup, which drags `reason` back to `str` and drops the
+                    # `EscalationReason` check on the argument below.
+                    outcome = _OUTCOME_FOR_ERROR_KIND.get(kind, _DEFAULT_STAGE_OUTCOME)
+                    status = outcome[0]
                     escalation = self._escalate(
                         run_id=run_id,
-                        reason=reason,
+                        reason=outcome[1],
                         message=(
                             result.error.message if result.error is not None
                             else f"stage {stage.name!r} produced no output"

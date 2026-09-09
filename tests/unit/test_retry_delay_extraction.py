@@ -39,13 +39,16 @@ from src.harness.llm import (
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("41s", 41.0),
+        # Kept well under `MAX_RETRY_AFTER_S` (20.0, lowered from 60.0 in the urgent fix
+        # bundle -- review-2.md finding 1) so this file keeps testing verbatim parsing,
+        # not the clamp -- the clamp has its own tests below.
+        ("9s", 9.0),
         ("7.5s", 7.5),
-        ("41S", 41.0),
-        (41, 41.0),
-        (41.0, 41.0),
-        ("41", 41.0),
-        (" 41s ", 41.0),
+        ("9S", 9.0),
+        (9, 9.0),
+        (9.0, 9.0),
+        ("9", 9.0),
+        (" 9s ", 9.0),
     ],
 )
 def test_duration_to_seconds_accepts_the_legal_shapes(value: object, expected: float) -> None:
@@ -92,11 +95,11 @@ def test_payload_search_finds_retry_delay_in_the_typed_details_list() -> None:
             "status": "RESOURCE_EXHAUSTED",
             "details": [
                 {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": []},
-                {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "41s"},
+                {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "15s"},
             ],
         }
     }
-    assert _retry_delay_from_payload(body) == 41.0
+    assert _retry_delay_from_payload(body) == 15.0
 
 
 def test_payload_search_accepts_the_snake_case_spelling_too() -> None:
@@ -153,9 +156,9 @@ def test_retry_after_seconds_prefers_the_header_over_the_body() -> None:
 
 def test_retry_after_seconds_falls_back_to_the_body_when_no_header() -> None:
     class FakeExc(Exception):
-        details = {"error": {"details": [{"retryDelay": "23s"}]}}
+        details = {"error": {"details": [{"retryDelay": "17s"}]}}
 
-    assert retry_after_seconds(FakeExc()) == 23.0
+    assert retry_after_seconds(FakeExc()) == 17.0
 
 
 def test_retry_after_seconds_swallows_an_exception_whose_attributes_explode() -> None:
@@ -183,7 +186,8 @@ def test_retry_delay_from_headers_accepts_an_http_date() -> None:
     from datetime import UTC, datetime, timedelta
     from email.utils import format_datetime
 
-    future = datetime.now(UTC) + timedelta(seconds=30)
+    # Kept under `MAX_RETRY_AFTER_S` (20.0) so this pins date parsing, not the clamp.
+    future = datetime.now(UTC) + timedelta(seconds=15)
 
     class FakeResponse:
         headers = {"retry-after": format_datetime(future)}
@@ -193,7 +197,7 @@ def test_retry_delay_from_headers_accepts_an_http_date() -> None:
 
     seconds = _retry_delay_from_headers(FakeExc())
     assert seconds is not None
-    assert 25.0 < seconds <= 30.0
+    assert 10.0 < seconds <= 15.0
 
 
 def test_retry_delay_from_headers_is_none_without_a_response() -> None:
@@ -211,7 +215,12 @@ def _client_error(status: int, body: dict[str, object], *, headers: dict[str, st
 
 
 def test_classify_a_real_429_extracts_and_clamps_the_retry_delay() -> None:
-    """The exact shape `harness-core.md` records seeing on the free tier."""
+    """The exact shape `harness-core.md` records seeing on the free tier: a stated 41s
+    delay. Once `MAX_RETRY_AFTER_S` was lowered to 20.0 (from 60.0 -- review-2.md
+    finding 1), this specific, realistic value now falls on the clamped side rather than
+    passing through verbatim; `test_classify_a_real_429_clamps_an_absurd_body_delay`
+    below covers the same clamp with a value nobody could mistake for realistic.
+    """
     body = {
         "error": {
             "code": 429,
@@ -231,7 +240,7 @@ def test_classify_a_real_429_extracts_and_clamps_the_retry_delay() -> None:
     classified = classify_provider_error(exc)
 
     assert isinstance(classified, LlmRateLimited)
-    assert classified.retry_after_s == 41.0
+    assert classified.retry_after_s == MAX_RETRY_AFTER_S
 
 
 def test_classify_a_real_429_clamps_an_absurd_body_delay() -> None:

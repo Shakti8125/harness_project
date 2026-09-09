@@ -12,12 +12,26 @@ nothing when the evidence set is known in advance. The one model call keeps the
 extensibility point -- the model asking for evidence nobody anticipated -- without paying
 for a loop.
 
-**When the notes call fails, the stage still succeeds.** The bundle is emitted with
-`notes=None` and `"investigator_notes"` appended to the run's degraded components. The
-deterministic collection is the load-bearing half of this stage and it has already
-happened; failing the whole run because the optional half failed would throw away
-evidence the Diagnostician can still work from, and the Diagnostician will escalate on
-its own if the model is genuinely unreachable.
+**When the notes call fails for a content-level reason, the stage still succeeds.** A
+schema-invalid response, unparseable text or a safety block (`AgentError.kind ==
+"invalid_output"`) means the recovery loop in `src/harness/recovery.py` did its job and
+the model just could not produce good notes over evidence that is otherwise fine. The
+bundle is emitted with `notes=None` and `"investigator_notes"` appended to the run's
+degraded components. The deterministic collection is the load-bearing half of this stage
+and it has already happened; failing the whole run because the optional half failed would
+throw away evidence the Diagnostician can still work from.
+
+**When the notes call fails because the provider itself is unreachable, the stage fails
+and the run ends here instead.** Rate limited, timed out, unauthenticated or a bare
+upstream error (`kind` in `_UPSTREAM_ERROR_KINDS`: `llm_rate_limited`, `llm_timeout`,
+`llm_auth`, `llm_upstream`, and the defensive `internal` case) is not a fact about this
+run's evidence -- the Diagnostician's own model call would hit the identical wall, and
+running it anyway spends another full `transient_max_attempts` budget and provider-honoured
+sleep for a guaranteed failure. In that case `run` returns the `AgentResult` `super().run`
+already built (its `status` and `error` are already correct; `evidence` already carries
+everything the deterministic collection gathered, via `AgentPrompt.evidence`), so the
+orchestrator ends the run on the same `EscalationReason` the harness already derives from
+that `AgentError.kind`, rather than proceeding to a Diagnostician stage that cannot succeed.
 """
 
 from __future__ import annotations
@@ -106,6 +120,20 @@ _DEGRADED_LOGS: Final[str] = "logs"
 _DEGRADED_BASELINE: Final[str] = "baseline"
 _DEGRADED_DIFF: Final[str] = "diff"
 _DEGRADED_NOTES: Final[str] = "investigator_notes"
+
+#: `AgentError.kind` values (see `src/harness/contracts.py` and the terminal returns of
+#: `src/harness/recovery.retry_structured`) that mean the LLM provider itself is the
+#: problem, not this run's content -- rate limited, timed out, unauthenticated, a bare
+#: upstream failure, or the defensive "hard ceiling reached with no captured error"
+#: case. Every one of these is a wall the Diagnostician's own model call would hit
+#: identically, so `Investigator.run` reports failure instead of degrading and
+#: continuing. `"invalid_output"` (schema-invalid, unparseable, or a safety/recitation
+#: block -- see `_TERMINAL_FINISH_REASONS` in `recovery.py`) is deliberately absent: the
+#: model was reachable and simply could not produce good notes, which is a content-level
+#: failure the degrade-and-continue path is for.
+_UPSTREAM_ERROR_KINDS: Final[frozenset[str]] = frozenset(
+    {"llm_rate_limited", "llm_timeout", "llm_auth", "llm_upstream", "internal"}
+)
 
 _MANIFESTS: Final[dict[str, str]] = {
     "requirements.txt": "pip",
@@ -455,7 +483,8 @@ class Investigator(LLMAgent[InvestigationNotes]):
             dependency_summary=render_dependencies(dependency_changes),
             prior_history_summary=(
                 "No prior history is available: the memory store is not wired up in "
-                "this phase. Treat this failure as a first sighting."
+                "this phase. Do not treat the absence of history as evidence of "
+                "either flakiness or novelty."
             ),
             tool_catalog=render_catalog(self.gateway),
             context_bundle=bundle.text,
@@ -485,6 +514,36 @@ class Investigator(LLMAgent[InvestigationNotes]):
         if collected is None:  # pragma: no cover - build_prompt always sets it
             raise RuntimeError("investigator collection missing; build_prompt did not run")
         _collection.set(None)
+
+        if (
+            notes_result.output is None
+            and notes_result.error is not None
+            and notes_result.error.kind in _UPSTREAM_ERROR_KINDS
+        ):
+            # The provider itself is unreachable -- see the module docstring. `status` and
+            # `error` come straight from `super().run` (`LLMAgent.run` already derived them
+            # from `retry_structured`'s terminal `AgentError.kind` via
+            # `_STATUS_FOR_ERROR_KIND`), and `evidence` already carries everything the
+            # deterministic collection gathered -- it reached `notes_result` through
+            # `AgentPrompt.evidence`, set in `build_prompt` before the model was ever
+            # called. Rebuilt as `AgentResult[FailureBundle]` (rather than returning
+            # `notes_result` verbatim) only because it is generically typed over
+            # `InvestigationNotes`, not this stage's actual output type; `output=None`
+            # here, not the merged `FailureBundle` below, is what ends the run rather than
+            # letting the Diagnostician retry into the same wall.
+            return AgentResult[FailureBundle](
+                agent=notes_result.agent,
+                status=notes_result.status,
+                output=None,
+                confidence=notes_result.confidence,
+                evidence=notes_result.evidence,
+                attempts=notes_result.attempts,
+                latency_ms=notes_result.latency_ms,
+                tokens=notes_result.tokens,
+                prompt_sha256=notes_result.prompt_sha256,
+                model=notes_result.model,
+                error=notes_result.error,
+            )
 
         # `bundle.gateway_errors` carries ONLY the required deterministic-collection
         # errors (jobs, log, baseline, compare) -- this is what feeds `Diagnostician`'s
@@ -545,8 +604,10 @@ class Investigator(LLMAgent[InvestigationNotes]):
         )
         return AgentResult[FailureBundle](
             agent=self.key,
-            # The stage succeeds on the strength of its deterministic half; see this
-            # module's docstring.
+            # Reached only on success or on a content-level notes failure -- the
+            # upstream-unreachable case already returned above. The stage succeeds on
+            # the strength of its deterministic half either way; see this module's
+            # docstring.
             status="ok",
             output=bundle,
             confidence=None,

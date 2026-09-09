@@ -1556,6 +1556,8 @@ class RemediationResult(BaseModel):           # the remediate stage output
 Errors use RFC 9457 `application/problem+json`: `{type, title, status, detail, instance, run_id?}`.
 `detail` passes through the `Redactor`.
 
+`200 RunOutcome` responses are the model dump with one documented exception: raw external content carried in `final` is replaced by its length and sha256 digest at the HTTP boundary — today `final.<artifact>.logs[].excerpt` → `excerpt_length` + `excerpt_sha256` and `final.<artifact>.diff.files[].patch` → `patch_length` + `patch_sha256`. `final` is opaque to the harness, so this substitution lives in the API layer and must be extended by hand when an integration adds a raw-content field. The whole body also passes through the `Redactor`.
+
 ---
 
 # Appendix B — Failure-path matrix (every external call)
