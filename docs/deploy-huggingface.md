@@ -211,7 +211,8 @@ curl -s -X POST https://<your-username>-agent-harness.hf.space/v1/replay/real_re
 # open_fix_pr          (~57s: two model calls)
 
 curl -s https://<your-username>-agent-harness.hf.space/v1/runs/<run_id>/trace | jq '.spans | length'
-# 5                    (0 would mean the explicit recorder.initialize() was lost)
+# 7                    (any non-zero count is the real invariant; 0 would mean
+#                       the explicit recorder.initialize() was lost)
 ```
 
 The trace check is not decoration. It is the one assertion that catches a mounted sub-app

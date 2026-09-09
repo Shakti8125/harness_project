@@ -177,6 +177,12 @@ The trace count is the structurally important one. Five spans means the explicit
 compensated for; had it been missed, `TraceRecorder._persist` would have swallowed every
 write by design and this would read `0` with no error anywhere.
 
+> **Later correction.** `5` is what this run really returned and is left as recorded. The
+> count is now **7** — the fix round for Wave 3 finding 10 added a `prompt.render` span per
+> agent (`run` + `agent.run`×2 + `llm.attempt`×2 + `prompt.render`×2). What the check
+> actually asserts is "not zero", not any particular number;
+> `docs/deploy-huggingface.md` has been corrected to say so.
+
 Accepted regression vs `fly.toml`: a Space has **no persistent disk**, so the span trace
 does not survive a restart. `fly.toml` provisioned a 1 GB volume. Revisit when the memory
 store lands in Phase 3, the first component that genuinely needs durability.
@@ -255,8 +261,12 @@ scenarios x 2+ calls) would consume an entire day's quota per run.** Worth desig
 now — a paid key, a per-model split (the quota is per model, so `gemini-flash-latest`
 carries its own allowance), or an eval scored against recorded model responses.
 
-Incidentally this verified Appendix B.1's 429 row for free: the run made 4 attempts with
-exponential backoff and then escalated as `rate_limited`, exactly as specified.
+Incidentally this verified three of the four things Appendix B.1's 429 row specifies: the
+run made 4 attempts, with exponential backoff, and escalated as `rate_limited`. It did
+**not** verify the fourth — "honour `Retry-After`" was not implemented at this commit
+(Wave 3 finding 2, `review.md`) and landed in the follow-up fix round. The attempt count
+was what this run confirmed, not the honouring; the two are easy to conflate, and the
+original wording here did conflate them.
 
 **5. Defect found and fixed while running step 2.** The first run retried four times and
 reported `provider call failed: ClientError`. The provider rejects an invalid key with
