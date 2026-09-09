@@ -24,6 +24,8 @@ survived them; it does not restate their reasoning.
 | `review-2` 2 | medium | Closed. The whole serialised body passes through the `Redactor`, which closes the citation/observation path *and* the "next raw-content field reopens it" class. |
 | `review-2` 3 | medium | Closed on both entry points — the `uvicorn` lifespan and the Space's hand-call. |
 | `review-2` 5 | low | Closed. `version: 1` names one prompt again. |
+| `review` 5 | medium | Closed. `RequestValidationError`, `StarletteHTTPException` and a catch-all `Exception` handler all return RFC 9457. The 422 is built from `loc`/`msg` only and never echoes the submitted input. |
+| `review` 6 | medium | Closed. `problem()` scrubs its whole body through the same `Redactor` instance `_serialize_run_outcome` uses, so PLAN.md:1556 is now descriptive rather than aspirational. |
 
 ## Open — ranked
 
@@ -32,19 +34,19 @@ survived them; it does not restate their reasoning.
 | # | Source | One line | Verified open by |
 |---|---|---|---|
 | 4 | `review.md` | `Diagnosis` asks the model for `final_confidence` / `confidence_adjustments`, which A.11 marks harness-added. Overwritten today; wrong one consumer away. | `to_gemini_schema(Diagnosis)["propertyOrdering"]` still ends with both fields |
-| 5 | `review.md` | No `RequestValidationError` handler — 422s return FastAPI's default JSON with the request body echoed, not RFC 9457. | zero `exception_handler` / `RequestValidationError` in `src/api/main.py` |
-| 6 | `review.md` | `problem()`'s `detail` does not pass through the `Redactor`, which A.12 requires. | the only `redactor` reference in `main.py` is in `_serialize_run_outcome`; `problem()` has none |
 
-**Findings 5 and 6 are the general case of a defect this round fixed a specific instance
-of.** The missing-template `500 text/plain` was one instance of the gap finding 5
-describes; eager validation removed that instance, not the gap. Any other unhandled route
-exception still produces a bare 500 with no RFC 9457 body, no `run_id` and no trace entry.
+Finding 4 is the only medium left open, and it is the one with no consumer today: the
+harness overwrites both fields before anything reads them. It becomes real the moment a
+second consumer reads `Diagnosis` without going through that overwrite.
 
-**Finding 6 has a documentation hazard attached.** PLAN.md:1556 states that `detail` passes
-through the `Redactor` — that sentence is aspirational, not descriptive. The A.12 amendment
-added this round sits immediately below it at :1559 and *is* descriptive. Two adjacent
-paragraphs now assert `Redactor` coverage, one true and one not. Whoever closes finding 6
-must not read the new paragraph as evidence the old one already holds.
+**Findings 5 and 6 were closed before the tag** rather than carried, because together they
+were the *general* case of a defect the urgent bundle fixed one *instance* of. The
+missing-template `500 text/plain` was one instance of finding 5's gap; eager validation
+removed the instance, and the catch-all handler removed the class. Note the sequencing that
+made this worth doing in one round: finding 5's catch-all is precisely a path where an
+exception string is in scope, which is what turned finding 6 from a discipline guarantee
+(`detail` is authored at each call site) into a structural one (`detail` is scrubbed
+regardless of who authored it).
 
 ### Low
 
@@ -77,6 +79,16 @@ must not read the new paragraph as evidence the old one already holds.
   low because `uv.lock` is the pin of record, the `Dockerfile` uses `uv sync --frozen`, and
   no CI resolves independently. If pinned, pin the dev group as a group; singling out mypy
   is arbitrary.
+- **One test skips because `gradio` is deliberately absent from the lockfile.**
+  `test_app_py_main_hand_calls_validate_prompt_templates_before_launch` is the only thing
+  pinning that `app.py`'s `main()` performs the template hand-call before `demo.launch()` —
+  i.e. the assertion that closes the mount-lifespan finding. It is guarded by
+  `pytest.importorskip("gradio")` and was verified non-vacuous under an ephemeral
+  `uv run --with gradio` overlay, which did not touch the project venv or lockfile. Running
+  it unconditionally means adding `gradio`/`spaces` to the dev group, which trades away the
+  isolation `requirements.txt` argues for ("gradio … is absent on purpose — the Space
+  installs it itself"). A real trade, owned by whoever owns `pyproject.toml`; deliberately
+  not decided inside a bug-fix round.
 - **The 20 s wall-clock test** in `tests/unit/test_retry_delay_budget.py` takes the suite
   from ~6 s to ~28 s. It buys real-time proof against the shipped constants, which the
   mocked tests beside it cannot. The same property survives scaling both constants to 0.5 s

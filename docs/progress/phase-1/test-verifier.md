@@ -369,3 +369,222 @@ positive round-trip test) — the same pattern `test_replay_e2e.py` already esta
 every test in the new file automatically — no test opens `./data/harness.db`, all use
 `tmp_db_path` via `AppContext`.
 - `D:\Documents\harness_project\tests\unit\test_retry_delay_extraction.py` (edited — 7 stale values under the new 20s ceiling, 1 assertion updated to demonstrate the clamp instead of verbatim passthrough)
+
+---
+
+# Final Phase 1 gate — RFC 9457 error paths + detail scrubbing (findings 5, 6)
+
+## VERDICT           PASS
+
+`review.md` findings 5 and 6 landed in `src/api/main.py`: three new exception handlers
+(`RequestValidationError`, `StarletteHTTPException`, catch-all `Exception`) and a
+`Redactor.scrub()` pass over `problem()`'s whole body. One pre-existing test
+(`test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500`, both parametrisations)
+pinned the old bare-500 shape as a negative control and needed updating — done, keeping
+its actual claim (the mount defect still fails the request) while updating only the body
+shape. Eight new tests close the two findings directly. Full suite, `ruff`, and `mypy
+--strict` (both the 2.3.1 pin of record and the bare-PATH 1.14.1) are all clean.
+
+## Gate results
+
+**1. Full suite.**
+```
+$ uv run pytest -q
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 63%]
+........................................................................ [ 84%]
+.....................................................s                   [100%]
+341 passed, 1 skipped, 2 warnings in 26.89s
+```
+Expected: baseline 333 passed / 1 skipped + 8 new tests (`tests/integration/
+test_error_body_shapes.py`) = 341 passed / 1 skipped. **Matches exactly.** The two
+previously-failing parametrisations of `test_mounted_subapp_lifespan_never_fires_
+healthz_then_bare_500` are back to passing (updated, not deleted or weakened — see
+below); no other test's pass/fail status changed. The 1 skip is the pre-existing,
+disclosed `gradio`-absent skip from the prior round, unchanged. y
+
+**2. `ruff check src/ tests/ app.py`**
+```
+$ uv run ruff check src/ tests/ app.py
+All checks passed!
+```
+y
+
+**3. `mypy --strict src/harness`**
+```
+$ uv run mypy --version
+mypy 2.3.1 (compiled: yes)
+$ uv run mypy --strict src/harness
+Success: no issues found in 14 source files
+
+$ mypy --version                    # bare PATH, not the pin of record
+mypy 1.14.1 (compiled: yes)
+$ mypy --strict src/harness
+Success: no issues found in 14 source files
+```
+y — both versions agree, no divergence to flag. (`mypy --strict` was run against
+`src/harness` only, per the gate's literal invocation; `src/api/main.py`'s new handlers
+are covered by `ruff` and by the test suite, not by this specific mypy invocation — the
+same scope the prior two gates used.)
+
+## Tests written
+
+`D:\Documents\harness_project\tests\integration\test_error_body_shapes.py` (new file, 8
+tests) — drives every one of the four new/changed surfaces over real HTTP with
+`TestClient`, verifying api-surface's handover rather than trusting its docstrings or its
+handoff report:
+
+- **`test_422_is_problem_json_and_does_not_echo_the_submitted_body`** — plants a
+  distinctive sentinel (`sentinel-value-be9a2c17-should-never-be-echoed`) as both an
+  unknown field's *name-adjacent* value and inside `subject`, posts a malformed
+  `POST /v1/runs`, and asserts the sentinel is absent from the raw response text (not
+  just from a re-serialized subset of it) — the exact FastAPI-default-422 body-echo
+  finding 5 names. Also pins `content-type == "application/problem+json"` byte-for-byte
+  and the exact `detail` string finding 5's handler builds
+  (`"body.idempotency_key: Field required; body.not_a_field: Extra inputs are not
+  permitted"`) — tight enough that a regression to the bracketed-list default shape, or
+  a change in wording, fails this test rather than passing on a loose substring check.
+- **`test_422_error_detail_names_missing_fields_by_location_only`** — isolates the
+  `loc`/`msg`-only claim from the no-echo claim above with a request that supplies no
+  caller value at all, and asserts the body is not the bracketed-list shape
+  (`not detail.startswith("[")`).
+- **`test_unmatched_route_returns_problem_json_404_not_the_framework_default`** and
+  **`test_wrong_method_on_a_known_route_returns_problem_json_405`** — the bonus item
+  api-surface's handover names ("worth a test-verifier assertion, not previously
+  covered"): a genuinely unmatched path and a matched path with the wrong method now
+  both return `problem()`'s shape (`title`, `instance`, `application/problem+json`)
+  rather than FastAPI's default `{"detail": "Not Found"}` `application/json`.
+- **`test_no_existing_route_depends_on_the_frameworks_default_404_shape`** — the
+  instruction to verify api-surface's judgement call rather than accept it. Confirmed:
+  every 404 this application's own routes deliberately produce (`GET /v1/runs/{id}`,
+  `GET /v1/runs/{id}/trace`, `POST /v1/replay/{unknown}`) already went through
+  `problem()` — and was RFC 9457-shaped — *before* this round, so nothing in this suite
+  had a contract riding on the framework's bare default. Cross-checked directly with
+  `grep -rn "raise HTTPException" src/ app.py` → zero matches (only a docstring mentions
+  the string `HTTPException(409, ...)` as a *future* example), confirming the "no route
+  raises `HTTPException` today" premise the reasoning rests on, not just the shape of
+  the 404s it produces.
+- **`test_unhandled_route_exception_returns_problem_body_with_run_id_and_no_leaked_message`**
+  — a real, successful replay run all the way through the orchestrator (stub `LlmClient`,
+  real `ReplayToolGateway`, real fixture), with `registry.save(outcome)` — the one step
+  in `_execute` that runs *after* `request.state.run_id` is set — replaced with a
+  function that raises `RuntimeError("unmistakable-exception-message-3fae91-must-not-leak")`.
+  Asserts `500`, `application/problem+json`, the fixed generic `detail` string
+  byte-for-byte, the marker absent from the full response text, and `run_id` present and
+  ULID-shaped. Deliberately reaches the catch-all through a real HTTP round trip with a
+  real `run_id` in scope, rather than duplicating the mount test's prompts-directory
+  reproduction (that one stays owned by
+  `test_startup_validates_prompt_templates_under_mount.py`).
+- **`test_problem_detail_scrubs_a_credential_shaped_string`** — calls `api_main.problem()`
+  directly (a plain function, no HTTP needed) with `detail=f"upstream said: {SECRET_TOKEN}"`
+  using the identical `ghp_`-shaped token `test_replay_response_scrubbing.py` already
+  uses; asserts the raw token is absent from the response body, `REDACTION_PLACEHOLDER`
+  (`"***REDACTED***"`, imported from `src.harness.observability`, not restated as a
+  literal) is present, and `detail` equals `"upstream said: ***REDACTED***"` exactly.
+  Calling the function directly rather than only through a route pins the guarantee
+  finding 6 asks for structurally — it must hold for *any* `detail`, not only the
+  constants every call site happens to author today.
+- **`test_problem_detail_without_a_secret_is_unaffected_by_the_scrub_pass`** — the
+  non-vacuity control: an ordinary `detail`/`run_id` pair (the shape every real call
+  site in `src/api/main.py` actually produces) round-trips byte-for-byte, so the test
+  above is pinning "secrets get scrubbed", not "the scrub pass mangles everything".
+
+**Updated (not source, not weakened):**
+`D:\Documents\harness_project\tests\unit\test_startup_validates_prompt_templates_under_mount.py::
+test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500` (both parametrisations).
+Was pinning the *old* bare `500 text/plain "Internal Server Error"` as the mount defect's
+symptom; the catch-all handler this round adds now converts that same defect into `500
+application/problem+json`. Reproduced the exact new body directly first (`uv run python`
+against the real mounted-app fixture) before touching the test, confirming it matches
+api-surface's handover byte-for-byte:
+```
+500
+{'content-length': '219', 'content-type': 'application/problem+json'}
+{"type":"about:blank","title":"Internal Server Error","status":500,"detail":"An unexpected error occurred while processing the request.","instance":"/v1/replay/real_regression","run_id":"run_01M23RQSPHYRE0ZYD923RAEDG9"}
+```
+Updated assertions: status stays `500`; `content-type` is now `application/problem+json`;
+the body is valid JSON with `type`/`title`/`status`/`instance`/`detail`/`run_id`; `detail`
+is the fixed generic string (`"Internal Server Error"` moved to `title`); `run_id` is now
+asserted *present* and ULID-shaped (inverted from the old `"run_id" not in replay.text`);
+and — new, not present in the old version — `replay.text` is asserted to contain neither
+`"does-not-exist"` (the broken directory's name) nor `"FileNotFoundError"` nor the string
+`"investigator"` (case-insensitively), closing the loop on "the exception's own message
+does not leak" for this specific reproduction too, not only for the new dedicated test.
+The test still proves what it was written to prove — the request still fails, because the
+mounted sub-app's lifespan still never ran and `validate_prompt_templates()` still never
+executed; a regression that removed `app.py`'s hand-call would still be caught by this
+test (it would still 500, unchanged), and a regression that made the catch-all itself
+swallow the failure into a 200 would also still be caught (status asserted `== 500`).
+Docstring rewritten to state this explicitly, so a future reader does not mistake the
+polite new body for the mount defect having been fixed.
+
+## Failures
+
+None against source. The one pre-existing test failure named in the dispatch
+(`test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500`, both params) was
+expected and is now fixed under `tests/**`, confirmed via `git status --porcelain`
+touching only `tests/unit/test_startup_validates_prompt_templates_under_mount.py`
+(edited) and `tests/integration/test_error_body_shapes.py` (new) — no source file edited
+to reach green.
+
+## Coverage gaps
+
+None against the dispatch's explicit ask. All three items from "Tests owed for findings
+5 and 6" are covered by name (422 no-echo, catch-all run_id + no leaked message,
+credential-shaped `detail` scrubbed), plus the two bonus items api-surface's handover
+flagged (verify-don't-trust the `HTTPException` routing reasoning; the unmatched-path
+404/405 case). Broader Phase-1-out-of-scope items
+(`test_guardrails.py`, `test_fingerprint.py`, `test_evaluator.py`, `test_no_secret_leak.py`,
+`test_idempotency.py`, `contract/test_tool_gateway_contract.py`) remain correctly absent,
+as recorded in every prior section of this file — no Guardrails, Evaluator, Memory, or
+multi-gateway contract exist yet.
+
+## Notes for the reviewer
+
+**On the `StarletteHTTPException` routing decision, verified rather than accepted, as
+asked:** `grep -rn "raise HTTPException\|HTTPException(" src/ app.py` finds exactly one
+hit, a docstring in `src/api/main.py` itself describing a *future* Phase-2 example
+(`raise HTTPException(409, ...)`), not a live call site. No route or test in this repo
+depends on FastAPI's default `{"detail": ...}` 404/405 shape today —
+`test_no_existing_route_depends_on_the_frameworks_default_404_shape` pins this
+positively (every existing app-generated 404 already went through `problem()` before
+this round) and `test_unmatched_route_returns_problem_json_404_not_the_framework_default`
+/ `test_wrong_method_on_a_known_route_returns_problem_json_405` pin the two
+framework-generated cases this round newly changes. **api-surface's reasoning holds** —
+this is not a contract change against anything this suite (or, so far as `grep` can show,
+this codebase) relies on. Worth naming for the record: this is a verification against
+*this repository's current state*, not a guarantee about the Hugging Face Space's own
+history or any external consumer that might have scraped the old 404 shape — outside
+what a test suite can check.
+
+**`_execute`'s `registry.save` monkeypatch is instance-level, not a route hand-call.**
+`api_main.registry` is a module-level singleton shared across the whole process
+(`RunRegistry()`, `src/api/main.py:46`); `monkeypatch.setattr(api_main.registry, "save",
+...)` patches the instance method for the duration of the test only, auto-restored by
+the `monkeypatch` fixture teardown like every other `monkeypatch.setattr` in this suite.
+Chosen over adding a throwaway route or breaking the prompts directory again because it
+reaches the catch-all through the *real* success path (real orchestrator, real gateway,
+real fixture, `run_id` genuinely present) with a distinctive, unambiguous failure
+message, and because editing `src/api/main.py` to add a test-only route is out of this
+agent's territory.
+
+**Zero live network, zero Gemini quota this round.** Every new test uses either a stub
+`LlmClient` (`StubLlm`, imported from `test_replay_e2e`, or a local
+`_NeverCalledLlm` that raises `AssertionError` if ever reached — none of the
+validation/404/405/direct-`problem()` tests should ever get close to the model) or calls
+`problem()` directly with no I/O at all. No `respx` needed; nothing under test makes an
+outbound HTTP call.
+
+**`_guard_real_db_untouched` / `isolated_settings`** (autouse, `tests/conftest.py`) cover
+every test in the new file automatically — every fixture uses `tmp_db_path` via
+`AppContext`, confirmed by the full-suite run above completing without that guard's
+assertion firing.
+
+## Files touched (all under `tests/**`)
+
+- `D:\Documents\harness_project\tests\integration\test_error_body_shapes.py` (new, 8 tests)
+- `D:\Documents\harness_project\tests\unit\test_startup_validates_prompt_templates_under_mount.py`
+  (edited — updated `test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500` for
+  the new RFC 9457 catch-all body shape; module docstring updated to explain why; no
+  other test in the file touched)

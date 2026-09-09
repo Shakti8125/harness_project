@@ -11,23 +11,39 @@ sub-app it wraps — nothing ever opens `api`'s `async with lifespan(app): yield
 regardless of how carefully the lifespan itself was tested.
 
 This file reproduces review-2.md finding 3's exact symptom on the *mounted* shape --
-`200` on `/healthz`, then a bare `500 text/plain "Internal Server Error"` on the first
-`/v1/replay` call, no RFC 9457 body, no `run_id`, nothing in the trace -- as the thing that
-happens *without* app.py's hand-call (`validate_prompt_templates()` called explicitly in
-`main()`, ordered before the recorder work -- see that function's docstring), and confirms
-the hand-call prevents it. `app.py` itself is not imported here: it pulls in `gradio`, which
-is deliberately not a project dependency (`requirements.txt`'s own comment: "gradio ... is
-absent on purpose -- the Space installs it itself"), so this file matches app.py:228-239's
-*shape* -- a plain outer ASGI app with `outer.mount("/", api)`, `api = src.api.main.app` --
-without needing gradio to be installed to prove the Mount-and-lifespan claim.
-`test_app_py_main_hand_calls_validate_prompt_templates_before_launch` below does import
-`app.py`, and is skipped where gradio is absent (see its own docstring).
+`200` on `/healthz`, then the first `/v1/replay` call failing on the missing template --
+as the thing that happens *without* app.py's hand-call (`validate_prompt_templates()`
+called explicitly in `main()`, ordered before the recorder work -- see that function's
+docstring), and confirms the hand-call prevents it. `app.py` itself is not imported here:
+it pulls in `gradio`, which is deliberately not a project dependency (`requirements.txt`'s
+own comment: "gradio ... is absent on purpose -- the Space installs it itself"), so this
+file matches app.py:228-239's *shape* -- a plain outer ASGI app with `outer.mount("/",
+api)`, `api = src.api.main.app` -- without needing gradio to be installed to prove the
+Mount-and-lifespan claim. `test_app_py_main_hand_calls_validate_prompt_templates_before_launch`
+below does import `app.py`, and is skipped where gradio is absent (see its own docstring).
+
+Wave-3 finding 5 (`review.md`) added a catch-all `Exception` handler to `src/api/main.py`
+that converts *every* unhandled route exception -- including this one -- into `500
+application/problem+json` with a generic `detail` and a `run_id` when one is in scope,
+instead of letting it fall through to FastAPI/Starlette's bare `500 text/plain "Internal
+Server Error"`. That changed the *shape* of the symptom this file pins
+(`test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500`, below) but not the
+*defect*: the mounted sub-app's lifespan still never runs, `validate_prompt_templates()`
+still never executes, and the missing template still reaches the route and still fails
+the request -- the catch-all only makes the failure legible, it does not call
+`validate_prompt_templates()` on the sub-app's behalf. The test now asserts the politer
+failure shape (`problem+json`, a `run_id`, no leaked exception detail) while keeping its
+original job: proving the request still fails, so it still distinguishes "the mount
+defect is present, validation never ran" from "the hand-call fixed it, validation ran and
+the route served 200" (the latter is `test_hand_call_then_mount_serves_correctly_with_a_
+real_prompts_dir`, below, unchanged).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -141,13 +157,26 @@ def test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500(
     client_fixture: str, request: pytest.FixtureRequest
 ) -> None:
     """The reviewer's exact reproduction, both mount orders: `/healthz` stays green --
-    it does no template work -- and the first `/v1/replay` 500s with a bare
-    `text/plain "Internal Server Error"`, not the RFC 9457 `problem+json` body every
-    other error path in `src/api/main.py` returns. That gap -- a route that fails
-    *outside* `problem()` -- is the tell that nothing upstream of the route ever ran
-    `validate_prompt_templates()`; the Docker lifespan path raises `OSError` before the
-    app finishes starting (see `test_startup_validates_prompt_templates.py`), and would
-    never let a client see this shape at all.
+    it does no template work -- and the first `/v1/replay` still fails, because the
+    mounted sub-app's lifespan never ran and `validate_prompt_templates()` never
+    executed. That the *request still fails* is the thing this test exists to prove --
+    it is the tell that nothing upstream of the route ran `validate_prompt_templates()`;
+    the Docker lifespan path raises `OSError` before the app finishes starting (see
+    `test_startup_validates_prompt_templates.py`) and would never let a client reach a
+    route at all, let alone one that fails this way.
+
+    What changed under Wave-3 finding 5 is only the failure's *shape*: `src/api/main.py`'s
+    new catch-all `Exception` handler now converts the `FileNotFoundError` this route
+    raises into `500 application/problem+json` with a `run_id`, rather than letting it
+    fall through to a bare `text/plain "Internal Server Error"`. Asserted below, in the
+    order finding 5 promises: a real problem document, a `run_id` (this route sets
+    `request.state.run_id` before `_execute` can fail, so the catch-all has one to
+    attach), and -- the same "nothing an upstream detail leaks" guarantee the 422 and
+    scrubbing tests pin elsewhere -- neither the exception's own message
+    (`FileNotFoundError`'s str, which would name a filesystem path) nor the broken
+    directory's name reaches the client. The catch-all makes the symptom politer; it is
+    still a genuine request failure, still distinguishable from the 200 the positive
+    control below gets once the hand-call actually runs.
     """
     client: TestClient = request.getfixturevalue(client_fixture)
 
@@ -158,16 +187,23 @@ def test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500(
     replay = client.post("/v1/replay/real_regression")
 
     assert replay.status_code == 500
-    assert replay.headers["content-type"] == "text/plain; charset=utf-8"
-    # A bare 500 body is not JSON at all -- confirming it is not, in particular, the
-    # RFC 9457 `application/problem+json` body every deliberately-handled error in
-    # `src/api/main.py` returns (which would carry "type"/"title"/"status"/"detail").
-    with pytest.raises(json.JSONDecodeError):
-        replay.json()
-    assert replay.text == "Internal Server Error"
-    # No run_id ever reached the client -- there is nothing to look up and nothing in
-    # the trace, matching review-2.md finding 3's description exactly.
-    assert "run_id" not in replay.text
+    assert replay.headers["content-type"] == "application/problem+json"
+    body = replay.json()  # must be valid JSON now -- the opposite of the old bare body
+    assert body["type"] == "about:blank"
+    assert body["title"] == "Internal Server Error"
+    assert body["status"] == 500
+    assert body["instance"] == "/v1/replay/real_regression"
+    # The fixed, generic detail -- never the real FileNotFoundError's message, which
+    # would otherwise name a real filesystem path back to an unauthenticated caller.
+    assert body["detail"] == "An unexpected error occurred while processing the request."
+    assert "does-not-exist" not in replay.text
+    assert "investigator" not in replay.text.lower()
+    assert "FileNotFoundError" not in replay.text
+    # A run_id *is* now present -- `replay()` sets `request.state.run_id` right after
+    # minting, before `_execute` can fail, so the catch-all has one to attach. This is
+    # the inverse of the old assertion (`"run_id" not in replay.text`): the whole point
+    # of the fix this round is that a run that failed this deep is still look-up-able.
+    assert re.fullmatch(r"run_[0-9A-HJKMNP-TV-Z]{26}", body["run_id"])
 
 
 def test_hand_call_before_mount_raises_at_boot_instead_of_reaching_the_route(

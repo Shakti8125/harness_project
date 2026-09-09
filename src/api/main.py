@@ -19,12 +19,15 @@ import logging
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 from fastapi import FastAPI, Query, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.api.deps import AppContext, get_app_context, mint_run_id
 from src.api.run_registry import RunRegistry
@@ -179,9 +182,18 @@ def problem(
 ) -> JSONResponse:
     """An RFC 9457 `application/problem+json` body.
 
-    `detail` is authored at each call site rather than interpolated from an exception, so
-    nothing an upstream system said reaches the client unread. The `Redactor` covers the
-    trace; this covers the response.
+    Every call site still authors `detail` itself rather than interpolating an upstream
+    message verbatim — that discipline is worth keeping — but it is no longer the only
+    thing standing between a leaked secret and the client. `detail` (and the rest of the
+    body) is passed through `get_app_context().recorder.redactor` before being returned,
+    the same `Redactor` instance that scrubs the trace, built from the same registered
+    secrets and credential-shaped patterns (`src/api/deps.py`). Wave-3 finding 6: the
+    prior docstring described a *discipline* guarantee — "nothing an upstream system
+    said reaches the client unread" holds only as long as every call site keeps
+    authoring constants. The catch-all handler below is exactly the call site where an
+    exception's string first enters `detail`'s scope, which is why this round makes the
+    guarantee structural instead: whatever ends up in `detail`, by convention or by
+    accident, is scrubbed before it leaves the process.
     """
     body: dict[str, Any] = {
         "type": "about:blank",
@@ -192,7 +204,118 @@ def problem(
     }
     if run_id is not None:
         body["run_id"] = run_id
-    return JSONResponse(status_code=status_code, content=body, media_type=PROBLEM_JSON)
+    scrubbed = get_app_context().recorder.redactor.scrub(body)
+    assert isinstance(scrubbed, dict)  # body was a dict; Redactor preserves the JSON shape
+    return JSONResponse(status_code=status_code, content=scrubbed, media_type=PROBLEM_JSON)
+
+
+def _run_id_in_scope(request: Request) -> str | None:
+    """Best-effort `run_id` for an error response.
+
+    Exception handlers run outside the route function and cannot see its locals, so this
+    reads whichever of two places the route left one: the `{run_id}` path parameter, for
+    routes that take an existing run's id (`GET /v1/runs/{run_id}`, `.../trace`); or
+    `request.state.run_id`, which `POST /v1/runs` and `POST /v1/replay/{scenario}` set
+    immediately after minting a fresh id and before doing anything that could fail, for
+    exactly this reason. `None` when neither is set — e.g. a validation error on the
+    request body, raised before any run id exists.
+    """
+    path_value = request.path_params.get("run_id")
+    if isinstance(path_value, str):
+        return path_value
+    state_value = getattr(request.state, "run_id", None)
+    return state_value if isinstance(state_value, str) else None
+
+
+@app.exception_handler(RequestValidationError)
+async def handle_validation_error(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """RFC 9457 for a malformed request body or query, per A.12 (Wave-3 finding 5).
+
+    FastAPI's default 422 handler serves `{"detail": [...]}` with each error's `"input"`
+    key — the caller's submitted value — echoed back verbatim; for `POST /v1/runs`,
+    `input` is `RunRequest.subject`, arbitrary caller-supplied JSON, reflected unread and
+    unredacted. This handler builds `detail` from only `loc` (where) and `msg` (why) for
+    each error and never touches `err["input"]`, so nothing the client sent is reproduced
+    in the response, and there is nothing here for `problem()`'s `Redactor` pass to need
+    to catch.
+    """
+    reasons = "; ".join(
+        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+        for error in exc.errors()
+    )
+    return problem(
+        request,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        title="Validation error",
+        detail=reasons or "The request could not be validated.",
+        run_id=_run_id_in_scope(request),
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def handle_http_exception(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
+    """RFC 9457 for every framework-raised or route-raised `HTTPException`.
+
+    No route in this module raises `HTTPException` today — each one builds its own
+    `problem()` response directly — so in this phase this only reaches the cases FastAPI
+    generates itself: 404 on a path with no matching route, 405 on a matched path with
+    the wrong method. Routing those through `problem()` too, rather than leaving them on
+    FastAPI's default `{"detail": ...}` JSON, is the judgement call the finding asks for:
+    A.12 specifies RFC 9457 for "errors" without carving these out, nothing in this repo
+    reads FastAPI's default shape (`app.py`'s Space UI calls the JSON routes below, not a
+    404 page), and a later phase's route that chooses `raise HTTPException(409, ...)` for
+    A.12's already-decided-approval case gets the right body shape for free rather than
+    needing to remember `problem()` instead. `exc.detail` is framework/route-authored,
+    never client input, so it is safe to surface as `detail` — and still passes through
+    `problem()`'s `Redactor` scrub regardless.
+    """
+    try:
+        title = HTTPStatus(exc.status_code).phrase
+    except ValueError:
+        title = "Error"
+    detail = exc.detail if isinstance(exc.detail, str) and exc.detail else title
+    return problem(
+        request,
+        status_code=exc.status_code,
+        title=title,
+        detail=detail,
+        run_id=_run_id_in_scope(request),
+    )
+
+
+@app.exception_handler(Exception)
+async def handle_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """The structural backstop Wave-3 finding 5 asks for: whatever a route, a dependency
+    or an agent raises that nothing more specific above handled lands here instead of
+    FastAPI's default bare `500 text/plain "Internal Server Error"`.
+
+    The missing prompt template (review-2.md finding 3) was one instance of that bare
+    500; eager validation in `lifespan` removed that one instance, not the class this
+    handler now closes. The real exception is logged here, server-side, with a traceback
+    and the `run_id` if the failing route had one — that is what the trace/log pair is
+    for — and *never* echoed to the client: `detail` is a fixed, generic string, so an
+    upstream error message (a stack frame, a file path, a fragment of a prompt) can never
+    reach an unauthenticated caller through this path, structurally, not by convention.
+    """
+    run_id = _run_id_in_scope(request)
+    logger.exception(
+        "unhandled exception on %s %s%s",
+        request.method,
+        request.url.path,
+        f" run_id={run_id}" if run_id else "",
+        exc_info=exc,
+    )
+    return problem(
+        request,
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        title="Internal Server Error",
+        detail="An unexpected error occurred while processing the request.",
+        run_id=run_id,
+    )
 
 
 async def _db_reachable(db_path: Path) -> str:
@@ -376,6 +499,7 @@ async def replay(
         requested_by="replay",
     )
     run_id = mint_run_id()
+    request.state.run_id = run_id  # so an unhandled exception below can still report it
 
     if not sync:
         await registry.mark_in_progress(
@@ -432,6 +556,7 @@ async def create_run(request: Request, run_request: RunRequest) -> Response:
 
     parsed = parse_subject(dict(run_request.subject))
     run_id = mint_run_id()
+    request.state.run_id = run_id  # so an unhandled exception below can still report it
     await registry.mark_in_progress(run_id, run_request.integration, f"/v1/runs/{run_id}/trace")
     asyncio.create_task(  # noqa: RUF006 - fire and forget; the registry is the handle
         _execute(context, run_request, scenario_dir, parsed["repo"], run_id)
