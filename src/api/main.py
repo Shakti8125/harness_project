@@ -59,6 +59,85 @@ app = FastAPI(title="Agent Harness", version=APP_VERSION, lifespan=lifespan)
 get_settings()
 
 
+def _digest_str_field(container: dict[str, Any], field: str) -> None:
+    """Replace `container[field]` (a `str`) with `{field}_length` + `{field}_sha256`.
+
+    A no-op if the field is absent or not a `str` — in particular, `FileChange.patch`
+    is `str | None` and a `None` patch (GitHub omitted it: binary or too large) must
+    stay `None`, not become a digest of the empty string.
+    """
+    value = container.get(field)
+    if not isinstance(value, str):
+        return
+    del container[field]
+    container[f"{field}_length"] = len(value)
+    container[f"{field}_sha256"] = hashlib.sha256(value.encode()).hexdigest()
+
+
+def _serialize_run_outcome(outcome: RunOutcome) -> dict[str, Any]:
+    """`RunOutcome.model_dump(mode="json")`, with two exceptions applied at this HTTP
+    boundary only: every `final.<artifact>.logs[].excerpt` and every
+    `final.<artifact>.diff.files[].patch` is replaced by its length and sha256 digest
+    rather than served verbatim.
+
+    Wave-3 audit finding 3: `final.bundle.logs[].excerpt` is the entire budgeted CI job
+    log the Investigator collected — tens of thousands of characters on the current
+    fixture — served unauthenticated and unredacted (the `Redactor` covers span
+    attributes only; nothing scrubs this path). PLAN.md:862-866 plans a Phase 5 fixture
+    whose log fixture itself contains a pasted credential; the day that fixture lands,
+    this route would serve that credential verbatim to anyone on the internet, and the
+    leak test as specified would not catch it (it inspects spans, escalations and
+    `harness.db`, not HTTP responses).
+
+    `final.bundle.diff.files[].patch` (`FileChange.patch`, `src/integrations/cicd/
+    schemas.py`) is the same exposure class on the same route: raw repository diff
+    content, unbounded in principle, and a credential committed into a file (`.env`, a
+    key, a config) is at least as likely as one pasted into a job log. It measured small
+    on the current single-file fixture (252 chars) next to the 40k-character log excerpt,
+    which is why the first pass of this fix missed it — not a difference in risk.
+
+    Length + digest, not truncation: a truncated prefix still leaks whatever a credential
+    fixture happens to place in the kept portion, so it isn't actually a security fix,
+    only a smaller one. And a bare removal throws away a real capability for free: the
+    digest lets a caller who has independently fetched the real content (from the CI
+    provider / the repository itself) verify byte-for-byte that this is the excerpt or
+    patch the harness actually reasoned over, without this process ever re-serving the
+    content — the same content-addressed shape `Evidence.sha256` already uses elsewhere
+    in this codebase. Nothing a legitimate consumer needs is lost: `total_lines`,
+    `included_lines`, `anchor_line_numbers` and the `truncation` report on every
+    `LogExcerpt`, and `path`/`status`/`additions`/`deletions` on every `FileChange`, are
+    untouched; the harness's own designed evidence surface for a human or downstream
+    system to read is `final.diagnosis.citations[].quote` (bounded, `max_length=500`,
+    produced and cited deliberately by the Diagnostician) — left byte-for-byte intact.
+
+    This is a deliberate, narrow divergence from A.12's literal "200 RunOutcome": the
+    served JSON is no longer a lossless `model_dump` of the internal object for these two
+    nested fields. Flagged for the record rather than decided silently — see
+    docs/progress/phase-1/api-surface.md.
+
+    Deliberately a field-name walk, not a structural/type-based scrub: matches on the
+    literal keys `excerpt` and `patch` inside `logs[]` / `diff.files[]`. That is a known,
+    accepted limitation, not an oversight — see the same file's "Notes for the reviewer"
+    for why it is not being generalised in this round.
+    """
+    body = outcome.model_dump(mode="json")
+    for artifact in body.get("final", {}).values():
+        if not isinstance(artifact, dict):
+            continue
+        logs = artifact.get("logs")
+        if isinstance(logs, list):
+            for log_entry in logs:
+                if isinstance(log_entry, dict):
+                    _digest_str_field(log_entry, "excerpt")
+        diff = artifact.get("diff")
+        files = diff.get("files") if isinstance(diff, dict) else None
+        if isinstance(files, list):
+            for file_entry in files:
+                if isinstance(file_entry, dict):
+                    _digest_str_field(file_entry, "patch")
+    return body
+
+
 def problem(
     request: Request,
     *,
@@ -281,7 +360,7 @@ async def replay(
 
     outcome = await _execute(context, run_request, scenario_dir, parsed["repo"], run_id)
     return JSONResponse(
-        status_code=status.HTTP_200_OK, content=outcome.model_dump(mode="json")
+        status_code=status.HTTP_200_OK, content=_serialize_run_outcome(outcome)
     )
 
 
@@ -365,7 +444,7 @@ async def get_run(request: Request, run_id: str) -> Response:
             detail="No run with that id is known to this process.", run_id=run_id,
         )
     return JSONResponse(
-        status_code=status.HTTP_200_OK, content=outcome.model_dump(mode="json")
+        status_code=status.HTTP_200_OK, content=_serialize_run_outcome(outcome)
     )
 
 

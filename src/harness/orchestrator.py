@@ -49,10 +49,13 @@ HEARTBEAT_STALE_AFTER_S: Final[float] = 120.0
 #: the alphabet `contracts.RunId`'s pattern accepts.
 _CROCKFORD: Final[str] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
+#: Must stay member-for-member identical to `EscalationRecord.reason` in `contracts.py`:
+#: this alias is what the mapping below and `_escalate` are typed against, and a member
+#: present here but not there is a `ValidationError` at the moment a run escalates.
 EscalationReason = Literal[
     "low_confidence", "evidence_refuted", "invalid_output", "llm_timeout",
-    "config_error", "policy_denied", "tool_failure", "cold_start_restricted",
-    "rate_limited", "unknown_category",
+    "llm_upstream", "config_error", "policy_denied", "tool_failure",
+    "cold_start_restricted", "rate_limited", "unknown_category",
 ]
 
 _ESCALATION_REASONS: Final[frozenset[str]] = frozenset(get_args(EscalationReason))
@@ -68,7 +71,12 @@ _OUTCOME_FOR_ERROR_KIND: Final[
     "llm_timeout": ("escalated", "llm_timeout"),
     "llm_rate_limited": ("escalated", "rate_limited"),
     "llm_auth": ("failed", "config_error"),
-    "llm_upstream": ("escalated", "tool_failure"),
+    # Appendix B.1's last row asks for this reason by name. It is its own member rather
+    # than a synonym for `tool_failure` because "the model was unreachable" and "a tool
+    # call failed" want different responses from whoever or whatever reads the record:
+    # the first is an upstream outage to wait out, the second points at the run's own
+    # inputs or at a broken integration.
+    "llm_upstream": ("escalated", "llm_upstream"),
     "tool_error": ("escalated", "tool_failure"),
     "internal": ("failed", "config_error"),
 }

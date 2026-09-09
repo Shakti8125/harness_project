@@ -16,17 +16,21 @@ one.
 
 from __future__ import annotations
 
+import logging
+import math
 import time
 import warnings
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import Any, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
 from src.harness.contracts import TokenUsage
 from src.harness.errors import SchemaTranslationError
 
-if TYPE_CHECKING:
-    from collections.abc import Mapping
+logger = logging.getLogger("harness.llm")
 
 # PLAN.md "Concrete numbers in one place": provider request timeout.
 DEFAULT_REQUEST_TIMEOUT_S: Final[float] = 60.0
@@ -340,6 +344,148 @@ _AUTH_FAILURE_PHRASES: Final[tuple[str, ...]] = (
 )
 
 
+#: Upper bound, in seconds, on a provider-supplied retry delay that will actually be slept.
+#: The delay is a hint from an external system and is treated as untrusted input: a
+#: malformed, absurd or hostile value must not turn one attempt into an unbounded sleep,
+#: and the error path is the last place that can afford to misbehave. 60 s mirrors the only
+#: cap PLAN.md states for honouring a provider-supplied delay (Appendix B.2's primary
+#: rate-limit row, "capped at 60 s"), and matches the per-request patience the "Concrete
+#: numbers in one place" table already allows a single provider call. A longer stated delay
+#: is *clamped*, not discarded: falling back to a sub-second jittered backoff because the
+#: provider asked for an hour is the one response strictly worse than waiting a minute.
+MAX_RETRY_AFTER_S: Final[float] = 60.0
+
+#: Keys under which a provider states "wait this long before asking again". Both spellings
+#: of the same field are accepted because the JSON body uses lower camel case while a
+#: locally-constructed or proto-derived payload may carry the snake case name.
+_RETRY_DELAY_KEYS: Final[tuple[str, ...]] = ("retryDelay", "retry_delay")
+
+#: Depth limit for the payload walk below. The delay is nested two or three levels down in
+#: practice; the limit exists so that a cyclic or pathologically deep body cannot turn error
+#: classification into a long walk.
+_MAX_PAYLOAD_DEPTH: Final[int] = 6
+
+
+def _duration_to_seconds(value: object) -> float | None:
+    """Parse one stated delay into a usable number of seconds, or ``None``.
+
+    Accepts the duration spelling the provider's JSON error body uses (``"41s"``,
+    ``"7.5s"``) and a bare number of seconds, which is the other legal form of the
+    ``Retry-After`` header. Everything else -- a wrong type, an unparseable string, a
+    negative, a zero, or a non-finite value -- returns ``None`` rather than being coerced.
+
+    Zero is rejected on purpose. Sleeping for nothing after being told to slow down is how
+    a retry budget is spent in milliseconds, which is the failure this whole function
+    exists to prevent; ``None`` sends the caller back to jittered backoff instead.
+    """
+    seconds: float
+    if isinstance(value, bool):
+        # `bool` is an `int` subclass, and `True` would otherwise parse as one second.
+        return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if text[-1:] in ("s", "S"):
+            text = text[:-1]
+        try:
+            seconds = float(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if not math.isfinite(seconds) or seconds <= 0.0:
+        return None
+    return min(seconds, MAX_RETRY_AFTER_S)
+
+
+def _retry_delay_from_payload(node: object, depth: int = 0) -> float | None:
+    """Search a decoded error body for a stated retry delay.
+
+    The body is a structured status object: a top-level envelope, an error object inside
+    it, and a list of typed detail entries, one of which states the delay. The search is by
+    key name rather than by position or by the detail entry's type URL, because the shape
+    around the key differs between the transports the SDK can be running on (it hands over
+    either the whole envelope or just the inner error object) and because a payload is
+    exactly the kind of thing that gains a level of nesting in a patch release.
+    """
+    if depth > _MAX_PAYLOAD_DEPTH:
+        return None
+    if isinstance(node, Mapping):
+        for key in _RETRY_DELAY_KEYS:
+            if key in node:
+                seconds = _duration_to_seconds(node[key])
+                if seconds is not None:
+                    return seconds
+        for value in node.values():
+            found = _retry_delay_from_payload(value, depth + 1)
+            if found is not None:
+                return found
+        return None
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            found = _retry_delay_from_payload(item, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _retry_delay_from_headers(exc: BaseException) -> float | None:
+    """Read a `Retry-After` header off the response attached to a provider exception.
+
+    Duck-typed for the same reason `_status_of` is: the response object hanging off the
+    exception is whichever one the configured transport produced, and all of them expose a
+    mapping-like `headers`.
+    """
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return None
+    raw = getter("retry-after")
+    if raw is None:
+        return None
+    seconds = _duration_to_seconds(raw)
+    if seconds is not None:
+        return seconds
+    # The header's other legal form is an absolute date. A clock skewed far enough into the
+    # past yields a negative delta, which `_duration_to_seconds` rejects, and one skewed far
+    # into the future is clamped by the same ceiling as everything else.
+    try:
+        when = parsedate_to_datetime(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return _duration_to_seconds((when - datetime.now(UTC)).total_seconds())
+
+
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """The provider's own "wait this long", in seconds, or ``None`` if it did not say.
+
+    ``None`` is the ordinary answer and means exactly what it meant before this function
+    existed: the retry loop falls back to jittered exponential backoff. A returned value is
+    always positive, finite, and no greater than :data:`MAX_RETRY_AFTER_S`.
+
+    The header is consulted first because it is the protocol-level instruction Appendix B.1
+    names; the decoded body is the fallback, and in practice the one that answers, since a
+    quota refusal states its delay as a typed detail entry inside the error object rather
+    than as a header.
+
+    Every failure here is swallowed. This runs on the error path, where an exception raised
+    while classifying an exception replaces a recoverable rate limit with an unrecoverable
+    crash, and where the input is an arbitrary object from an external SDK whose attributes
+    may do anything at all when touched.
+    """
+    try:
+        from_header = _retry_delay_from_headers(exc)
+        if from_header is not None:
+            return from_header
+        return _retry_delay_from_payload(getattr(exc, "details", None))
+    except Exception:  # noqa: BLE001 - see docstring: this must never raise
+        logger.debug("could not read a retry delay from %s", type(exc).__name__)
+        return None
+
+
 def classify_provider_error(exc: BaseException) -> LlmTransportError:
     """Map a provider/transport exception onto the Appendix B.1 behaviour classes."""
     name = type(exc).__name__.lower()
@@ -350,11 +496,16 @@ def classify_provider_error(exc: BaseException) -> LlmTransportError:
         # Appendix B.1: fixed message, no retry, and the key value never appears in it.
         return LlmAuthError(AUTH_FAILURE_MESSAGE)
     if status == 429:
-        return LlmRateLimited("provider rate limited the request", retry_after_s=None)
+        return LlmRateLimited(
+            "provider rate limited the request", retry_after_s=retry_after_seconds(exc)
+        )
     if status == 400 and ("too large" in text or "exceeds" in text or "token" in text):
         return LlmContextTooLarge("request exceeded the model input window")
     if status is not None and 500 <= status < 600:
-        return LlmUpstreamError(f"provider returned {status}")
+        # Appendix B.1 gives 503/504 the same row as 429, "honour `Retry-After`" included.
+        return LlmUpstreamError(
+            f"provider returned {status}", retry_after_s=retry_after_seconds(exc)
+        )
     if "timeout" in name or "timeout" in text or "timed out" in text:
         return LlmTimeout("provider call timed out")
     if "connect" in name or "connection" in text:

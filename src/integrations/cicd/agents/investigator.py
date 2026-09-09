@@ -23,6 +23,7 @@ its own if the model is genuinely unreachable.
 from __future__ import annotations
 
 import contextvars
+import logging
 import re
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -44,9 +45,9 @@ from src.harness.observability import TraceRecorder
 from src.harness.orchestrator import RunState
 from src.harness.recovery import RetryPolicy
 from src.integrations.cicd.gateway_replay import READ_TOOLS
-from src.integrations.cicd.prompts.investigator import render_investigator_prompt
 from src.integrations.cicd.rendering import (
     diff_from_compare,
+    load_prompt_template,
     make_evidence,
     new_call_id,
     parse_datetime,
@@ -54,6 +55,7 @@ from src.integrations.cicd.rendering import (
     render_dependencies,
     render_diff_patches,
     render_diff_summary,
+    render_investigator_prompt,
     render_job,
     render_truncation,
 )
@@ -67,6 +69,8 @@ from src.integrations.cicd.schemas import (
     LogExcerpt,
     PriorHistory,
 )
+
+logger = logging.getLogger("harness.integrations.cicd.investigator")
 
 #: PLAN.md Phase 1, step 2 of the Context Manager algorithm. This list lives in the
 #: integration and is passed in, because every entry names a convention of a specific
@@ -445,22 +449,34 @@ class Investigator(LLMAgent[InvestigationNotes]):
             )
         )
 
-        return AgentPrompt(
-            text=render_investigator_prompt(
-                job_summary=render_job(job_ref),
-                diff_summary=render_diff_summary(diff),
-                dependency_summary=render_dependencies(dependency_changes),
-                prior_history_summary=(
-                    "No prior history is available: the memory store is not wired up in "
-                    "this phase. Treat this failure as a first sighting."
-                ),
-                tool_catalog=render_catalog(self.gateway),
-                context_bundle=bundle.text,
-                truncation_note=render_truncation(bundle.truncation),
+        prompt_text = render_investigator_prompt(
+            job_summary=render_job(job_ref),
+            diff_summary=render_diff_summary(diff),
+            dependency_summary=render_dependencies(dependency_changes),
+            prior_history_summary=(
+                "No prior history is available: the memory store is not wired up in "
+                "this phase. Treat this failure as a first sighting."
             ),
-            evidence=evidence,
-            degraded=degraded,
+            tool_catalog=render_catalog(self.gateway),
+            context_bundle=bundle.text,
+            truncation_note=render_truncation(bundle.truncation),
         )
+        # `build_prompt` runs inside `LLMAgent.run`'s open "agent.run" span (the ambient
+        # span id is set for the whole `async with` body, not just the caller's own
+        # frame), so a nested span opened here parents itself there. This is the only
+        # surface from which the template's `version:` front matter can reach the trace
+        # without a harness change: `AgentPrompt` carries `text`/`evidence`/`degraded`
+        # only, and `prompt_sha256` is a hash of the fully rendered text, which changes
+        # with every input and cannot substitute for a version to group eval runs by.
+        async with self.recorder.span(
+            "prompt.render",
+            "agent",
+            agent=self.key,
+            prompt_version=load_prompt_template("investigator").version,
+        ):
+            pass
+
+        return AgentPrompt(text=prompt_text, evidence=evidence, degraded=degraded)
 
     async def run(self, state: RunState) -> AgentResult[FailureBundle]:  # type: ignore[override]
         """Collect, ask the model what it observes, execute what it asks for, assemble."""
@@ -470,6 +486,13 @@ class Investigator(LLMAgent[InvestigationNotes]):
             raise RuntimeError("investigator collection missing; build_prompt did not run")
         _collection.set(None)
 
+        # `bundle.gateway_errors` carries ONLY the required deterministic-collection
+        # errors (jobs, log, baseline, compare) -- this is what feeds `Diagnostician`'s
+        # `gateway_degraded` adjustment, and PLAN.md's adjustment table conditions that
+        # row on a REQUIRED read tool failing. Errors from the model's optional
+        # `additional_tool_calls`, and the refusal synthesised below for a requested
+        # write tool, are neither required nor (in the refusal's case) even a gateway
+        # failure -- they are tracked separately and never merged into this list.
         errors = list(collected.gateway_errors)
         notes = notes_result.output
         if notes is None and _DEGRADED_NOTES not in state.degraded:
@@ -479,20 +502,35 @@ class Investigator(LLMAgent[InvestigationNotes]):
         # cap and the read-only restriction are enforced here rather than trusted to the
         # prompt -- a model that can name a tool can name a write tool.
         executed: list[str] = []
+        additional_errors: list[ToolError] = []
         if notes is not None:
             for call in notes.additional_tool_calls[:3]:
                 if call.tool not in READ_TOOLS:
-                    errors.append(
-                        ToolError(
-                            kind="forbidden_by_policy",
-                            message=f"{call.tool!r} is not a read-only tool; refused",
-                            retryable=False,
-                        )
+                    # This never reaches the gateway at all -- it is the Investigator
+                    # declining to place the call, not an external system failing. Not a
+                    # gateway error, and PLAN.md's `gateway_degraded` row does not cover
+                    # it: recorded for visibility only, no confidence signal.
+                    logger.info(
+                        "investigator: refused non-read tool %r requested by the model "
+                        "(policy engine arrives in Phase 2); no gateway call made",
+                        call.tool,
                     )
                     continue
-                result = await self._call_tool(call.tool, dict(call.args), errors)
+                result = await self._call_tool(call.tool, dict(call.args), additional_errors)
                 if result.ok:
                     executed.append(call.tool)
+                elif additional_errors:
+                    # An optional probe coming back empty (`not_found` and friends) is a
+                    # normal outcome for evidence nobody was guaranteed to find -- see
+                    # B.2 "404 on a read tool is data, not a run failure". It is
+                    # deliberately excluded from `bundle.gateway_errors` so it cannot
+                    # trip `gateway_degraded`.
+                    logger.info(
+                        "investigator: optional tool call %r returned %s; excluded from "
+                        "gateway_degraded",
+                        call.tool,
+                        additional_errors[-1].kind,
+                    )
 
         bundle = FailureBundle(
             job=collected.job,

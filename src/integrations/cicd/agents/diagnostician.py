@@ -30,10 +30,11 @@ from src.harness.observability import TraceRecorder
 from src.harness.orchestrator import RunState
 from src.harness.recovery import RetryPolicy
 from src.integrations.cicd.agents.investigator import ANCHOR_PATTERNS
-from src.integrations.cicd.prompts.diagnostician import render_diagnostician_prompt
 from src.integrations.cicd.rendering import (
+    load_prompt_template,
     make_evidence,
     render_dependencies,
+    render_diagnostician_prompt,
     render_diff_patches,
     render_diff_summary,
     render_investigation_summary,
@@ -128,22 +129,31 @@ class Diagnostician(LLMAgent[Diagnosis]):
         if diff_text:
             evidence.append(make_evidence("diff", f"diff:{bundle.diff.head_sha}", diff_text))
 
-        return AgentPrompt(
-            text=render_diagnostician_prompt(
-                job_summary=render_job(bundle.job),
-                diff_summary=render_diff_summary(bundle.diff),
-                dependency_summary=render_dependencies(bundle.dependency_changes),
-                prior_history_summary=(
-                    "No prior history is available: the memory store is not wired up in "
-                    "this phase. Do not treat the absence of history as evidence of "
-                    "either flakiness or novelty."
-                ),
-                investigation_summary=render_investigation_summary(bundle.notes),
-                context_bundle=assembled.text,
-                truncation_note=render_truncation(assembled.truncation),
+        prompt_text = render_diagnostician_prompt(
+            job_summary=render_job(bundle.job),
+            diff_summary=render_diff_summary(bundle.diff),
+            dependency_summary=render_dependencies(bundle.dependency_changes),
+            prior_history_summary=(
+                "No prior history is available: the memory store is not wired up in "
+                "this phase. Do not treat the absence of history as evidence of "
+                "either flakiness or novelty."
             ),
-            evidence=evidence,
+            investigation_summary=render_investigation_summary(bundle.notes),
+            context_bundle=assembled.text,
+            truncation_note=render_truncation(assembled.truncation),
         )
+        # See `Investigator.build_prompt` for why this is a nested span rather than an
+        # `AgentPrompt` field: it is the only place the template's `version:`
+        # front-matter can reach the trace without a change under `src/harness/`.
+        async with self.recorder.span(
+            "prompt.render",
+            "agent",
+            agent=self.key,
+            prompt_version=load_prompt_template("diagnostician").version,
+        ):
+            pass
+
+        return AgentPrompt(text=prompt_text, evidence=evidence)
 
     def signals(self, output: Diagnosis, bundle: FailureBundle) -> dict[str, str]:
         """Which rows of PLAN.md's adjustment table fired, and why.
@@ -158,6 +168,10 @@ class Diagnostician(LLMAgent[Diagnosis]):
             fired["no_citations"] = "the model cited no evidence"
         if bundle.cold_start:
             fired["cold_start"] = "no green baseline run existed to compare against"
+        # `bundle.gateway_errors` is populated ONLY from the Investigator's required
+        # deterministic-collection calls (see `schemas.FailureBundle.gateway_errors` and
+        # `Investigator.run`) -- optional additional-tool-call errors and synthesised
+        # policy refusals never reach it, so this reason is never asserted falsely.
         if bundle.gateway_errors:
             kinds = ", ".join(sorted({error.kind for error in bundle.gateway_errors}))
             fired["gateway_degraded"] = f"a required read tool returned an error ({kinds})"

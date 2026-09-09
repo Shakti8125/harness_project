@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+from string import Template
 from typing import Any, Final
 
 from src.harness.context_manager import TruncationReport
@@ -34,6 +37,51 @@ MAX_EXCERPT_CHARS: Final[int] = 2000
 #: patch text reaches the model through the budgeted context section; this listing is an
 #: index, and an index of 300 paths is noise.
 MAX_LISTED_FILES: Final[int] = 50
+
+#: `prompts/*.md` -- versioned template files, not Python string constants. PLAN.md's
+#: repo layout is explicit about this shape ("prompts/*.md <- versioned, hash logged into
+#: the trace") and names the rejected alternative by its actual cost: a Python constant
+#: is invisible in diffs and impossible to attribute an eval regression to.
+_PROMPTS_DIR: Final[Path] = Path(__file__).parent / "prompts"
+
+
+@dataclass(frozen=True)
+class PromptTemplate:
+    """One parsed `prompts/*.md` file: its declared version and its template body."""
+
+    version: str
+    body: str
+
+
+_template_cache: dict[str, PromptTemplate] = {}
+
+
+def load_prompt_template(name: str) -> PromptTemplate:
+    """Read and parse `prompts/{name}.md`: a `version:` line, a `---` separator, then body.
+
+    Cached per process. These are static files shipped with the image -- re-reading and
+    re-parsing the same template on every prompt render buys nothing and costs a file
+    open per agent call.
+
+    The body is a `string.Template`, not an f-string or `.format()` template: every
+    section this renders is JSON, and JSON is full of braces that `.format()` would
+    demand doubled or blow up on. `$identifier` has no meaning to a curly brace, so a log
+    excerpt or a diff patch substitutes in verbatim regardless of what it contains.
+    """
+    if name in _template_cache:
+        return _template_cache[name]
+    path = _PROMPTS_DIR / f"{name}.md"
+    text = path.read_text(encoding="utf-8")
+    first_line, _, rest = text.partition("\n")
+    if not first_line.startswith("version:"):
+        raise ValueError(f"{path} is missing its `version:` front-matter line")
+    version = first_line.removeprefix("version:").strip()
+    separator, _, body = rest.partition("\n")
+    if separator.strip() != "---":
+        raise ValueError(f"{path} is missing the `---` front-matter separator")
+    template = PromptTemplate(version=version, body=body)
+    _template_cache[name] = template
+    return template
 
 
 def new_call_id() -> str:
@@ -200,3 +248,47 @@ def render_investigation_summary(notes: InvestigationNotes | None) -> str:
         return notes.narrative
     observations = "\n".join(f"  - {line}" for line in notes.observations)
     return f"{notes.narrative}\n\nObservations:\n{observations}"
+
+
+def render_investigator_prompt(
+    *,
+    job_summary: str,
+    diff_summary: str,
+    dependency_summary: str,
+    prior_history_summary: str,
+    tool_catalog: str,
+    context_bundle: str,
+    truncation_note: str,
+) -> str:
+    """Assemble the Investigator prompt from `prompts/investigator.md` and the bundle."""
+    return Template(load_prompt_template("investigator").body).substitute(
+        job_summary=job_summary,
+        diff_summary=diff_summary,
+        dependency_summary=dependency_summary,
+        prior_history_summary=prior_history_summary,
+        tool_catalog=tool_catalog,
+        context_bundle=context_bundle,
+        truncation_note=truncation_note,
+    )
+
+
+def render_diagnostician_prompt(
+    *,
+    job_summary: str,
+    diff_summary: str,
+    dependency_summary: str,
+    prior_history_summary: str,
+    investigation_summary: str,
+    context_bundle: str,
+    truncation_note: str,
+) -> str:
+    """Assemble the Diagnostician prompt from `prompts/diagnostician.md` and the bundle."""
+    return Template(load_prompt_template("diagnostician").body).substitute(
+        job_summary=job_summary,
+        diff_summary=diff_summary,
+        dependency_summary=dependency_summary,
+        prior_history_summary=prior_history_summary,
+        investigation_summary=investigation_summary,
+        context_bundle=context_bundle,
+        truncation_note=truncation_note,
+    )

@@ -123,6 +123,12 @@ class FailureBundle(BaseModel):  # the Investigator's stage output
     notes: InvestigationNotes | None = None
     cold_start: bool = False
     collected_at: datetime
+    # Populated ONLY from the required deterministic-collection calls (jobs, log, baseline,
+    # compare) -- see `Investigator.run`. Errors from the model's optional
+    # `additional_tool_calls`, and the refusal the Investigator synthesises when the model
+    # names a write tool, are deliberately excluded: PLAN.md's `gateway_degraded` adjustment
+    # conditions on "any REQUIRED read tool returned an error", and this field is the only
+    # thing `Diagnostician.signals` reads to decide that row.
     gateway_errors: list[ToolError] = []
 
 
