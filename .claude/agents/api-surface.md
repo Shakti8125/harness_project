@@ -3,6 +3,7 @@ name: api-surface
 description: Builds the FastAPI surface, the composition root, settings, and everything that ships the container — routes, webhook handler, Jinja trace view, settings.py, pyproject.toml, Dockerfile, docker-compose.yml, fly.toml, dotfiles. Use for HTTP, wiring, config, packaging and deploy work.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+effort: high
 ---
 
 You own the **edges**: how requests get in, how components get wired together, and how the

@@ -3,6 +3,7 @@ name: cicd-integration
 description: Builds the CI/CD domain layer in src/integrations/** — the Investigator, Diagnostician and Remediator agents, their prompts, the GitHub and Replay ToolGateway adapters, error fingerprinting, claim checkers, and policy.yaml. Use for any domain-specific triage logic. Never use it for src/harness/.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+effort: high
 ---
 
 You own the **domain layer**: everything that knows what a CI failure is.

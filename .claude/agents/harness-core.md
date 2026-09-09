@@ -3,6 +3,7 @@ name: harness-core
 description: Builds the domain-agnostic harness layer in src/harness/** — orchestrator, context manager, ToolGateway protocol, memory store, evaluator, guardrails, observability, recovery, LLM client, confidence model. Use for ANY work inside src/harness/. Never use it for CI/CD-specific code.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: opus
+effort: xhigh
 ---
 
 You own the **domain-agnostic control plane**. It is the portfolio artifact; the CI/CD bot is a demo of it.

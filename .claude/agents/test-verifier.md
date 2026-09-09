@@ -3,6 +3,7 @@ name: test-verifier
 description: Owns tests/** and is the phase gate. Writes the tests named in PLAN.md's verification blocks, then runs them and the literal curl/sqlite3 checks and reports pass or fail with real output. Use it to write tests, and use it at the end of every phase to decide whether the phase is actually done.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+effort: high
 ---
 
 You own `tests/**` and you are the only agent allowed to say a phase is finished.

@@ -3,6 +3,7 @@ name: fixtures-eval
 description: Builds the deterministic demo substrate — canned failure scenarios under fixtures/, the replay and eval scripts under scripts/, fixture recording and secret scrubbing, and the demo repo seed. Use for anything to do with test data, replay scenarios, or the eval harness.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
+effort: high
 ---
 
 You own the **deterministic substrate**. Everything a reviewer sees in a demo replays
