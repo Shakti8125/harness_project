@@ -28,10 +28,17 @@ upstream error (`kind` in `_UPSTREAM_ERROR_KINDS`: `llm_rate_limited`, `llm_time
 run's evidence -- the Diagnostician's own model call would hit the identical wall, and
 running it anyway spends another full `transient_max_attempts` budget and provider-honoured
 sleep for a guaranteed failure. In that case `run` returns the `AgentResult` `super().run`
-already built (its `status` and `error` are already correct; `evidence` already carries
-everything the deterministic collection gathered, via `AgentPrompt.evidence`), so the
-orchestrator ends the run on the same `EscalationReason` the harness already derives from
-that `AgentError.kind`, rather than proceeding to a Diagnostician stage that cannot succeed.
+already built (its `status` and `error` are already correct), so the orchestrator ends the
+run on the same `EscalationReason` the harness already derives from that `AgentError.kind`,
+rather than proceeding to a Diagnostician stage that cannot succeed. **This is a real loss,
+not a free one:** `output=None` means `Orchestrator.run` never files anything into
+`state.artifacts` (it only does that for `status == "ok"` with a non-`None` output), so the
+`FailureBundle` -- job ref, log digest, diff summary, dependency changes -- and the
+`investigator_notes` degraded-component entry never reach the served `RunOutcome`. Only the
+escalation reason and a one-line `StageRecord.summary` (the error message) survive to the
+caller. `AgentResult.evidence` is set on the object returned here, but nothing downstream
+reads it -- neither `StageRecord` nor `RunOutcome` has an evidence field -- so setting it
+is inert bookkeeping, not evidence preservation.
 """
 
 from __future__ import annotations
@@ -523,14 +530,18 @@ class Investigator(LLMAgent[InvestigationNotes]):
             # The provider itself is unreachable -- see the module docstring. `status` and
             # `error` come straight from `super().run` (`LLMAgent.run` already derived them
             # from `retry_structured`'s terminal `AgentError.kind` via
-            # `_STATUS_FOR_ERROR_KIND`), and `evidence` already carries everything the
-            # deterministic collection gathered -- it reached `notes_result` through
-            # `AgentPrompt.evidence`, set in `build_prompt` before the model was ever
-            # called. Rebuilt as `AgentResult[FailureBundle]` (rather than returning
-            # `notes_result` verbatim) only because it is generically typed over
-            # `InvestigationNotes`, not this stage's actual output type; `output=None`
+            # `_STATUS_FOR_ERROR_KIND`). Rebuilt as `AgentResult[FailureBundle]` (rather
+            # than returning `notes_result` verbatim) only because it is generically typed
+            # over `InvestigationNotes`, not this stage's actual output type; `output=None`
             # here, not the merged `FailureBundle` below, is what ends the run rather than
-            # letting the Diagnostician retry into the same wall.
+            # letting the Diagnostician retry into the same wall. `evidence` is copied over
+            # for completeness but nothing downstream reads it: `Orchestrator.run` only
+            # files `result.output` into `state.artifacts`, and it does that only when
+            # `status == "ok"`, which this is not. So the deterministic collection --
+            # job ref, log digest, diff summary, dependency changes, and the
+            # `investigator_notes` degraded entry -- does NOT reach the served
+            # `RunOutcome`; only the escalation reason and the `StageRecord` summary
+            # (the error message) do.
             return AgentResult[FailureBundle](
                 agent=notes_result.agent,
                 status=notes_result.status,

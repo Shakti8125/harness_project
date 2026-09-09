@@ -306,3 +306,134 @@ live URL or its quota.
   isn't mistaken for a regression introduced by this fix.
 - `GET /v1/runs` and `POST /v1/runs`'s `202` response were re-checked and confirmed to
   never have carried `final` in the first place; no change was needed or made there.
+
+---
+
+## Fix round 2 (2026-09-10) — `validate_prompt_templates()` never runs on the Space
+
+### Summary
+
+The re-audit found that the previous round's two fixes were both correct but the second
+one — `validate_prompt_templates()` called from `src/api/main.py`'s lifespan — never
+executes on the deployed Hugging Face Space. `app.py:228` mounts the FastAPI app with
+Starlette's `Mount`, which does not receive lifespan events; this was already known and
+documented in this file (`app.py:195-203`'s comment is the reason
+`recorder.initialize()` is hand-called there instead of relying on the lifespan), but
+`validate_prompt_templates()` did not get the same treatment when it was added. Net
+effect on the live Space: a missing/malformed `prompts/*.md` still surfaces as a bare
+`500 text/plain "Internal Server Error"` on the first `POST /v1/replay/{scenario}` — no
+RFC 9457 body, no `run_id`, nothing in the trace — the exact pre-fix symptom, just moved
+one call-site over. Fixed by adding the same hand-call in `app.py`'s `main()`, ordered
+before the recorder work, matching the ordering rationale already written into
+`main.py`'s lifespan docstring (report a packaging fault before anything else runs).
+The lifespan call in `src/api/main.py` is untouched — both entry points need it, since
+they are different deployments (Docker vs. Space) and neither can see the other's
+startup.
+
+### Files written
+
+- `D:\Documents\harness_project\app.py` — added
+  `from src.integrations.cicd.rendering import validate_prompt_templates` and one call,
+  `validate_prompt_templates()`, in `main()`, immediately before
+  `asyncio.run(get_app_context().recorder.initialize())`, with a comment explaining the
+  duplication against `main.py`'s lifespan. No other line changed.
+
+`src/api/main.py` was read to confirm its lifespan and docstring are unchanged and
+correct as-is; not written to, since both entry points independently need their own
+call and the Docker path was already fixed and confirmed correct in round 1.
+
+### Contract deviations
+
+None.
+
+### Endpoints now live
+
+No endpoint shape or status code changed. This is a startup-ordering fix on the
+`python app.py` (Hugging Face Space) entry point only:
+
+- `POST /v1/replay/{scenario}` (and every other route under `demo.app.mount("/", api)`)
+  now has its packaging precondition — every `prompts/*.md` this integration renders
+  loads cleanly — checked and enforced to raise at Space boot, before `demo.launch()`
+  and before the mount, matching what already happened on the Docker path via
+  `src/api/main.py`'s lifespan.
+
+### Commands run
+
+| Command | Result |
+|---|---|
+| `uv run ruff check src/ app.py` | All checks passed! |
+| `uv run mypy src/settings.py src/api app.py` | 11 errors, none introduced by this diff — `app.py:184`'s `untyped-decorator` on the pre-existing `@spaces.GPU` stub (unrelated to this change, present because the third-party `spaces` package ships no type stubs), and 10 pre-existing errors in `src/integrations/cicd/**` (other agents' concurrent territory, same set the previous round's report already recorded for a comparable invocation) |
+| `uv run mypy --version` | `mypy 2.3.1 (compiled: yes)` — confirms this is the project-pinned version, not an older `mypy` off PATH |
+| `uv run pytest tests/unit/test_no_env_access.py -q` | 38 passed — confirms the new import + call in `app.py` introduced no environment access |
+| One-shot script: monkeypatch `rendering._PROMPTS_DIR` to an empty `tempfile.TemporaryDirectory()`, call `rendering.validate_prompt_templates()` directly | raised `FileNotFoundError` for the first missing template (`investigator.md`) — confirms the function itself fails loudly against an empty/malformed prompts directory, the precondition the new `app.py` call now enforces before `demo.launch()`/mount |
+| `git diff app.py` (self-review) | Confirmed the diff is exactly one import line and one call plus a comment; no restructuring of `spaces`/`demo.launch()`/the mount, per constraints |
+
+I did not start the Space or run `docker compose up` this round — the instructions were
+explicit that no redeployment is to happen; the Space stays on pre-fix code until the
+phase is tagged. `uv run ruff check src/api src/settings.py` and the Docker
+`docker compose up -d --build` / `curl /healthz` checks from round 1 were not re-run
+since neither `src/api/**` nor `Dockerfile`/`docker-compose.yml` changed this round.
+
+### Deploy state
+
+Local only. `app.py` is not executed by `docker compose` (that path is
+`uvicorn src.api.main:app`, unaffected by this change) and the Space itself was
+deliberately not touched or redeployed, per instructions. Verified locally by driving
+`validate_prompt_templates()` directly against a monkeypatched, empty prompts
+directory (see Commands run) — the same failure mode the reviewer's sub-app-mount
+reproduction exercised — and by confirming `git diff app.py` contains only the intended
+three-line change plus comment.
+
+### Handoffs
+
+- **test-verifier**: `tests/unit/test_startup_validates_prompt_templates.py` only drives
+  `src/integrations/cicd/rendering.validate_prompt_templates()` and
+  `src/api/main.py`'s lifespan (via a `TestClient`/`asgi-lifespan`-style startup), which
+  is the path that is *not* deployed on the Space. It needs a sibling test that
+  reproduces `app.py`'s actual shape:
+  1. Monkeypatch `src.integrations.cicd.rendering._PROMPTS_DIR` to point at an empty
+     directory (this is the exact seam the reviewer used to get a byte-identical
+     pre-fix repro, and it's the same seam the existing test already uses for its
+     "missing directory" case — just needs to be driven through `app.py`'s call path
+     instead of the lifespan's).
+  2. Reproduce `app.py:228`'s mount shape directly: build a plain Starlette (or FastAPI)
+     outer app, `outer.mount("/", api)` where `api` is `src.api.main.app`, the same way
+     `demo.app.mount("/", api)` does it — order matters; test both "mount before
+     `TestClient`/startup" and "mount after", matching the reviewer's "both orders"
+     verification, since `app.py` itself mounts only after `demo.launch()` builds
+     `demo.app`.
+  3. Assert that driving `POST /v1/replay/{scenario}` (or any route) through that
+     mounted outer app, with lifespan events triggered on the outer app (e.g. via
+     `TestClient(outer)` as a context manager, which does emit lifespan — the point to
+     assert is that even though the *outer* app's lifespan fires, `api`'s own lifespan,
+     nested under a `Mount`, does not), still reaches a route successfully — i.e. that
+     without `app.py`'s explicit hand-call this reproduces the bare
+     `500 text/plain "Internal Server Error"` with no RFC 9457 body, and with the
+     hand-call (call `validate_prompt_templates()` directly before constructing/mounting,
+     the way `app.py`'s `main()` does) it raises at "boot" time instead — i.e. before the
+     first request, not on it.
+  4. A second case restoring `_PROMPTS_DIR` to the real, shipped `prompts/` directory
+     should confirm the hand-call succeeds and does not raise, mirroring the existing
+     test's "real shipped templates" case.
+  Name the module something like
+  `tests/unit/test_app_py_validates_prompt_templates.py` or a `TestClient`-based
+  integration test under `tests/integration/`, whichever this repo's convention favors
+  for something that imports `app.py` itself (note: importing `app.py` at module level
+  executes `gr.Blocks(...)` construction, which is comparatively expensive/has side
+  effects — building `demo` — so keep the import scoped inside the test or a fixture if
+  that matters for suite speed).
+- **phase-reviewer**: the fix is a three-line, single-file diff in `app.py`; nothing in
+  `src/api/**`, `Dockerfile`, or `docker-compose.yml` changed, so the round-1 Docker-path
+  verification (`docker compose up -d --build`, `curl /healthz`) still stands unchanged.
+
+### Notes for the reviewer
+
+- The duplication between `main.py`'s lifespan and `app.py`'s `main()` is deliberate,
+  not drift — both are now commented to say so, symmetrically with the existing
+  `recorder.initialize()` duplication that was already there. Anyone adding new startup
+  work in the future needs to know both homes exist.
+- I did not restructure `spaces`, the `@spaces.GPU` stub, or `demo.launch()` — the new
+  call sits beside the existing `recorder.initialize()` call, ordered first, and nothing
+  else in `main()` moved.
+- `app.py` still does not read `os.environ` anywhere; confirmed both by inspection and
+  by re-running `tests/unit/test_no_env_access.py`.

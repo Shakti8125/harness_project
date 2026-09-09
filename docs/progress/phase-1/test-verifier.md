@@ -224,4 +224,148 @@ touched to make either pass — only the expected/input values inside the test b
 - `D:\Documents\harness_project\tests\unit\test_retry_delay_budget.py` (new)
 - `D:\Documents\harness_project\tests\unit\test_startup_validates_prompt_templates.py` (new)
 - `D:\Documents\harness_project\tests\unit\test_recovery_retry_delay.py` (edited — stale 41.0 value fixed to 6.0)
+
+---
+
+# Incremental re-gate — the mounted-shape hand-call fix (2026-09-10)
+
+## VERDICT           PASS
+
+Two changes landed since the `fe7ba2d` PASS above: `app.py`'s `main()` now hand-calls
+`validate_prompt_templates()` before the recorder work (closing the re-audit finding that
+`test_startup_validates_prompt_templates.py` only pins the Docker/lifespan path, which the
+`Mount`-based Space never runs), and a comment/docstring-only correction in
+`src/integrations/cicd/agents/investigator.py` (no behaviour change, confirmed by diff —
+reviewed, nothing to test). One new sibling test file was written and gated below.
+
+## Gate results
+
+**1. Full suite.**
+```
+$ uv run pytest -q
+........................................................................ [ 21%]
+........................................................................ [ 43%]
+........................................................................ [ 64%]
+........................................................................ [ 86%]
+.............................................s                           [100%]
+333 passed, 1 skipped, 2 warnings in 26.70s
+```
+Expected: baseline 328 + 5 new pure-Python tests = 333. **Matches exactly.** The 1 skip is
+`test_app_py_main_hand_calls_validate_prompt_templates_before_launch`
+(`pytest.importorskip("gradio")`) — see "Notes for the reviewer" below; y for the 333, and
+the skip is disclosed rather than hidden in a passing count.
+
+**2. `ruff check src/ tests/ app.py`**
+```
+$ uv run ruff check src/ tests/ app.py
+All checks passed!
+```
+y
+
+**3. `mypy --strict src/harness`**
+```
+$ uv run mypy --strict src/harness      # 2.3.1, the pin of record
+Success: no issues found in 14 source files
+
+$ mypy --strict src/harness             # bare PATH mypy, 1.14.1
+Success: no issues found in 14 source files
+```
+y — both versions agree this round, no divergence to flag.
+
+## Tests written
+
+`D:\Documents\harness_project\tests\unit\test_startup_validates_prompt_templates_under_mount.py`
+(new file, 6 tests):
+
+- `test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500` (parametrized over both
+  mount orders — mounted before the outer app's own `TestClient` context is entered, and
+  mounted after, matching `app.py`'s actual `demo.launch()`-then-`mount()` sequence).
+  Reproduces the reviewer's exact repro byte-for-byte on the mounted shape: `GET /healthz`
+  → `200 {"status": "ok", ...}`, then `POST /v1/replay/real_regression` → `500`,
+  `content-type: text/plain; charset=utf-8`, body literally `"Internal Server Error"`
+  (asserted via `pytest.raises(json.JSONDecodeError)` on `.json()`, plus the literal string
+  equality), never the RFC 9457 `problem+json` body every deliberately-handled route error
+  returns. Verified empirically first via a standalone probe script before writing the
+  test, to confirm the exact byte shape rather than assume it.
+- `test_hand_call_before_mount_raises_at_boot_instead_of_reaching_the_route` — calling
+  `validate_prompt_templates()` explicitly (app.py's fix) against the same broken
+  directory raises `OSError` synchronously, before any app/route exists to be reached at
+  all — the contrast case for the two 500s above.
+- `test_validate_prompt_templates_succeeds_against_the_real_shipped_prompts_dir` — the
+  non-vacuity control for this file (item 5 of the recipe).
+- `test_hand_call_then_mount_serves_correctly_with_a_real_prompts_dir` — the positive,
+  end-to-end close of the finding: hand-call first (must not raise against the real
+  `prompts/` dir), then mount, then a real request through the mounted shape — asserts
+  `200`, not the `500` from the first test. Same topology, only the directory differs,
+  isolating exactly what the fix changes.
+- `test_app_py_main_hand_calls_validate_prompt_templates_before_launch` — imports `app.py`
+  (scoped inside the test function, per the gotcha flagged in the task: importing it at
+  module scope would build the `gr.Blocks` demo for every test in the file, whether or not
+  gradio is even installed). Stubs `demo.launch` / `demo.block_thread` (the real ones bind
+  a port and block; not what this test is about) and asserts, from a recorded call order,
+  that `validate_prompt_templates()` runs strictly before `demo.launch()`, and that
+  `demo.app.mount("/", app_module.api)` and `demo.block_thread()` both still ran — i.e.
+  `main()` actually performs the hand-call, in the right position, without this test
+  needing to let the real `launch()` execute.
+
+## Failures
+
+None. No source defect found this round beyond the one already fixed (the finding this
+round exists to close).
+
+## Coverage gaps
+
+None against this round's stated recipe (items 1-5 plus the bonus `main()` assertion are
+all covered by name).
+
+## Notes for the reviewer
+
+**The one skip, and why it is not gate-softening.** `app.py` does `import gradio as gr` at
+module scope, and `gradio` is deliberately **not** a project dependency —
+`requirements.txt`'s own comment states it explicitly ("`gradio` and `uvicorn` are absent
+on purpose — the Space installs both itself"), it is absent from `pyproject.toml` and from
+`uv.lock`, and `docs/progress/phase-1/handoff-space-deploy.md:301` independently records
+"Not imported by the app, the image or the tests." Under the standard `uv run pytest`
+environment this task's gate uses, `import gradio` raises `ModuleNotFoundError` — confirmed
+directly:
+```
+$ PYTHONPATH=. uv run python -c "import gradio"
+ModuleNotFoundError: No module named 'gradio'
+```
+So `test_app_py_main_hand_calls_validate_prompt_templates_before_launch` guards itself with
+`pytest.importorskip("gradio")` and is the suite's only skip. This is not a softened
+assertion — nothing about its content was weakened to pass — it is an honest report that
+the environment this gate runs in cannot exercise this one test, consistent with what the
+project's own docs already say about `app.py`. I did not stop at asserting that; I verified
+the test is real and would pass given the dependency, using `uv run --with gradio --with
+spaces` (an ephemeral overlay that does not touch the project's own `.venv` or `uv.lock` —
+confirmed by `git status` and `ls .venv/Lib/site-packages | grep gradio` before/after
+showing no change):
+```
+$ PYTHONPATH=. uv run --with gradio --with spaces pytest -q \
+    tests/unit/test_startup_validates_prompt_templates_under_mount.py \
+    -k test_app_py_main_hand_calls -v
+tests\unit\test_startup_validates_prompt_templates_under_mount.py .      [100%]
+1 passed, 5 deselected, 2 warnings in 5.18s
+```
+Recommendation, not acted on (out of my territory — `pyproject.toml` is not `tests/**`):
+if this test is meant to run unconditionally in CI, `gradio` (and `spaces`) need adding to
+the `dev` dependency group, which trades away the isolation `requirements.txt`'s own
+comment argues for (gradio's pydantic ceiling vs. this project's pydantic floor). I left
+that trade to whoever owns `pyproject.toml`, rather than making it myself by editing a file
+outside `tests/**`.
+
+**`src/integrations/cicd/agents/investigator.py`'s diff** is comment/docstring-only —
+diffed it directly (`git diff`) rather than trusting the handoff's description, confirmed
+no line outside a comment/docstring changed, so no new test is owed for it.
+
+**Zero live network, zero Gemini quota this round.** Every new test uses either a stub
+`LlmClient` that raises `AssertionError` if ever called (for the two "must fail before
+reaching the model" tests), or a minimal `StubLlm` returning canned JSON (for the one
+positive round-trip test) — the same pattern `test_replay_e2e.py` already established. No
+`respx` was needed since nothing under test makes an outbound HTTP call.
+
+**`_guard_real_db_untouched` / `isolated_settings`** (autouse, `tests/conftest.py`) cover
+every test in the new file automatically — no test opens `./data/harness.db`, all use
+`tmp_db_path` via `AppContext`.
 - `D:\Documents\harness_project\tests\unit\test_retry_delay_extraction.py` (edited — 7 stale values under the new 20s ceiling, 1 assertion updated to demonstrate the clamp instead of verbatim passthrough)

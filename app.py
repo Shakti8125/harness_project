@@ -28,6 +28,7 @@ import httpx
 
 from src.api.deps import get_app_context
 from src.api.main import app as api
+from src.integrations.cicd.rendering import validate_prompt_templates
 
 try:
     import spaces
@@ -200,6 +201,16 @@ def main() -> None:
     # it here, explicitly. `get_app_context()` is `lru_cache`d, so this is the same
     # recorder the routes use, and it holds no connection between calls — a throwaway
     # event loop is safe.
+    #
+    # `validate_prompt_templates()` belongs here for the same reason and needs the same
+    # duplication: `main.py`'s lifespan (see its docstring) runs it for the Docker
+    # deployment, but a `Mount`ed sub-app never receives that lifespan, so the Space needs
+    # its own call. Ordered first, before the recorder work, so a packaging fault (a
+    # missing or malformed `prompts/*.md`) is reported before anything else runs — matching
+    # the ordering rationale in `main.py`'s lifespan docstring — and left to raise, because
+    # a Space that cannot load its prompts must fail loudly at boot rather than 500 on the
+    # first request with no RFC 9457 body, no `run_id`, and nothing in the trace.
+    validate_prompt_templates()
     asyncio.run(get_app_context().recorder.initialize())
 
     # `ssr_mode=False` is load-bearing, not a preference. Left to resolve itself, gradio
