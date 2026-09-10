@@ -10,18 +10,41 @@ of them cost the last session hours to discover.
 
 ---
 
-## 1. Deploy state — held, and this is the first thing to decide
+## 1. Deploy state — deployed and verified, hold lifted
 
-The Hugging Face Space is **still serving pre-fix Phase 1 code**. It has never been
-redeployed since before the fix rounds, deliberately.
+The Space at <https://shakti-agent-harness.hf.space> serves `82d79de`, the tree
+`phase-1-green` tags. Pushed 2026-09-11 as a clean fast-forward of 17 commits
+(`3c00efc..82d79de`), which is the entire fix history of the phase.
 
-- The live URL is serving an **unredacted ~40 KB log**. No fixture carries a credential
-  today, so this is exposure-in-waiting rather than an active leak — but it is the reason
-  the hold exists.
-- Every fix that closes it is committed and tagged. Redeploying is now safe from the code's
-  side.
-- **Do not redeploy without asking.** The hold was the user's call, and `phase-1-green`
-  being tagged does not lift it on its own. Ask; do not infer.
+For most of Phase 1 this section said the opposite. The Space was deliberately pinned to
+pre-fix code because it was serving an **unredacted ~40 KB job log** on a public
+unauthenticated URL. That is now closed and measured, not assumed:
+
+| Check | Result |
+|---|---|
+| `runtime.stage` | `RUNNING` |
+| `GET /healthz` | `{"status":"ok","db":"ok","version":"0.1.0"}` |
+| `POST /v1/replay/real_regression` | `completed` / `real_regression` / `open_fix_pr`, confidence 0.98, 4 citations, `degraded_components: []` |
+| Served body size | **5,830 bytes** (was ~40 KB); largest single string 626 chars, `final.diagnosis.reasoning` |
+| Credential-shaped matches in the body | 0 — `ghp_*`, `AIza*`, `bearer *` all absent |
+| `GET /v1/runs/{id}/trace` | 8 spans — non-zero is the real invariant; 0 would mean the mounted sub-app lost its lifespan |
+| Malformed body | `422` with `content-type: application/problem+json` — the RFC 9457 round is live |
+
+Two notes on those numbers, because both look like discrepancies and are not:
+
+- **8 spans, not the 7 recorded as the clean-run count.** The extra one is an
+  `llm.attempt` with `status="error"` followed by a successful retry — Recovery working on
+  the live target. Seven is the count for a run where no attempt is retried.
+- **Zero redaction markers is expected, not suspicious.** No fixture carries a credential,
+  which is exactly why the pre-fix state was always described as exposure-in-waiting rather
+  than an active leak. The markers appear when there is something to mark.
+
+**Still true, and still the user's call:** there is **no authentication on any endpoint**
+and the free Gemini tier allows **20 requests/day**, of which one replay costs two (three
+if an attempt retries). Anyone who finds the URL can exhaust the day's quota in roughly ten
+requests. Nothing worse is exposed — `HARNESS_DRY_RUN=true` and `HARNESS_GATEWAY=replay`
+are the defaults, so no live repository is touched. Redeploys from here are routine; ask
+before changing the exposure story (auth, allowlists, a paid tier).
 
 ---
 
@@ -288,7 +311,83 @@ commits, which is a misleading thing for a green tag to name. Move it, or cut it
 
 ---
 
-## 12. Read order for a fresh session
+## 12. Using it from the command line
+
+There is no CLI. The surface is HTTP and `curl` is the client — the Gradio page the Space
+serves at `/` is a landing page, with the FastAPI app mounted underneath it at the root.
+
+```bash
+BASE=https://shakti-agent-harness.hf.space      # or http://localhost:8000 when local
+
+# liveness / readiness
+curl -s $BASE/healthz
+curl -s $BASE/readyz
+
+# the demo: run a recorded scenario end to end, synchronously (~50s, 2 model calls)
+curl -s -X POST $BASE/v1/replay/real_regression | jq '.final.diagnosis'
+
+# list runs, newest first
+curl -s "$BASE/v1/runs?limit=5" | jq '.items'
+
+# one run, and its full span trace
+curl -s $BASE/v1/runs/<run_id>            | jq '{status, category: .final.diagnosis.category}'
+curl -s $BASE/v1/runs/<run_id>/trace      | jq '.spans | length'
+```
+
+The asynchronous form returns `202` immediately and executes in the background. Note that
+`subject` is a GitHub `workflow_run` webhook body (whole delivery or just the inner object —
+`parse_subject` accepts either), **not** a scenario name; the scenario is named separately by
+`replay_fixture`, and `mode` must be `"replay"` because the live gateway arrives in Phase 2:
+
+```bash
+RID=$(curl -s -X POST $BASE/v1/runs -H 'content-type: application/json' -d '{
+  "integration": "cicd",
+  "subject": {"workflow_run": {"id": 1, "run_attempt": 1, "head_sha": "abc",
+                               "head_branch": "main", "workflow_id": 1,
+                               "name": "ci", "event": "push"},
+              "repository": {"full_name": "demo/repo"}},
+  "idempotency_key": "demo-0001",
+  "mode": "replay",
+  "replay_fixture": "real_regression"
+}' | jq -r .run_id)
+
+curl -s $BASE/v1/runs/$RID | jq '{status, category: .final.diagnosis.category}'
+```
+
+Three error shapes are worth knowing, because each returns RFC 9457
+`application/problem+json` rather than a bare string, and two of them cost no model quota —
+useful for checking a payload before spending on it:
+
+| Request | Response |
+|---|---|
+| `mode` omitted or `"live"` | `501 Live mode not available` |
+| `replay_fixture` naming a scenario that does not exist | `404 Scenario not found` |
+| `integration` other than `"cicd"` | `400 Unknown integration` |
+| Malformed body | `422`, built from `loc`/`msg` only — the submitted value is never echoed |
+
+`real_regression` is the only scenario that exists today; Phase 2 adds `flaky_test` and
+`infra_timeout`. `fixtures/scenarios/` is the list of record.
+
+**Locally**, the same commands work against `http://localhost:8000`:
+
+```bash
+uv sync
+uv run uvicorn src.api.main:app --port 8000     # or: docker compose up -d --build
+uv run pytest -q                                # the gate: 392 passed, 1 skipped
+```
+
+All three of `HARNESS_GEMINI_API_KEY`, `HARNESS_GITHUB_TOKEN` and
+`HARNESS_GITHUB_WEBHOOK_SECRET` must be set or the process refuses to boot, naming the field.
+That is deliberate — `src/settings.py` is the only place env is read, and
+`tests/unit/test_no_env_access.py` enforces it.
+
+**Budget every command against the quota.** The free Gemini tier allows 20 requests/day and
+one replay costs two, three if an attempt retries. The error-shape checks above cost nothing;
+prefer them while iterating.
+
+---
+
+## 13. Read order for a fresh session
 
 1. This file.
 2. `PLAN.md:384-525` (Phase 2) and Appendix A.7 (`PLAN.md`, guardrails models).

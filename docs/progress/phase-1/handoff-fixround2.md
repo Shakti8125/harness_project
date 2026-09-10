@@ -1,5 +1,12 @@
 # Handoff — Phase 1, after the Wave 3 fix round
 
+> **Superseded (2026-09-11). Historical record — do not work from it.** Every finding it
+> lists as open is closed, and §1's deploy hold is lifted: the Space serves `82d79de`, the
+> `phase-1-green` tree. It is kept unedited because it is the record of a state that
+> existed, in the same spirit as the miscounted verdict line in `review-2.md`. The current
+> index is `docs/progress/phase-1/backlog.md`; the entry point for the next phase is
+> `docs/progress/phase-2/handoff.md`.
+
 Written 2026-09-09 at `87cb276`, working tree clean. Read this with
 `docs/progress/phase-1/review.md` (the 12-finding Wave 3 audit) and
 `docs/progress/phase-1/review-2.md` (the fix-round re-audit) open; this note is the

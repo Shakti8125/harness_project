@@ -185,6 +185,27 @@ Carried from `handoff-fixround2.md` §6, still binding:
 - Verify step 4 (escalation-threshold override) was substituted with offline coverage and
   does not need re-running before the phase closes.
 
+## Deploy state — closed
+
+The Space was held on pre-fix code for most of this phase because it served an unredacted
+~40 KB job log on a public unauthenticated URL. **That hold is lifted.**
+<https://shakti-agent-harness.hf.space> now serves `82d79de` (the `phase-1-green` tree),
+pushed as a clean fast-forward of 17 commits.
+
+Verified live rather than assumed: `healthz` ok; the `real_regression` replay returns
+`completed` / `real_regression` / `open_fix_pr` at confidence 0.98 with 4 citations and
+nothing degraded; the trace returns 8 spans, which is the assertion that catches a mounted
+sub-app silently losing its lifespan; a malformed body returns `422` as
+`application/problem+json`. **The served body is 5,830 bytes against ~40 KB before,** its
+largest single string is 626 characters of model prose, and it carries no credential-shaped
+match. The eighth span is a retried `llm.attempt` — Recovery on the live target, not a
+structural change to the clean-run count of 7.
+
+What is *not* closed, and is deliberately a standing decision rather than a finding: there
+is no authentication on any endpoint, and the free tier's 20 requests/day can be exhausted
+by a stranger in about ten requests. `HARNESS_DRY_RUN=true` and `HARNESS_GATEWAY=replay`
+keep the blast radius to quota.
+
 ## Constraints that outlive this phase
 
 - **Live Gemini quota is 20 requests/day, free tier.** One replay = 2. Both the fix-round

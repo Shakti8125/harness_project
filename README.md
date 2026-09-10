@@ -25,9 +25,42 @@ build if a domain word appears.
 
 ## Try it
 
+Live at <https://shakti-agent-harness.hf.space>. There is no CLI — the surface is HTTP.
+
 ```bash
-curl -s -X POST <url>/v1/replay/real_regression | jq '.final.diagnosis'
+BASE=https://shakti-agent-harness.hf.space
+
+curl -s -X POST $BASE/v1/replay/real_regression | jq '.final.diagnosis'
 ```
+
+That runs the whole pipeline synchronously and takes about 50 seconds, because it makes two
+real model calls. The asynchronous form returns `202` immediately and runs in the background:
+
+```bash
+RID=$(curl -s -X POST $BASE/v1/runs -H 'content-type: application/json' -d '{
+  "integration": "cicd",
+  "subject": {"workflow_run": {"id": 1, "run_attempt": 1, "head_sha": "abc",
+                               "head_branch": "main", "workflow_id": 1,
+                               "name": "ci", "event": "push"},
+              "repository": {"full_name": "demo/repo"}},
+  "idempotency_key": "demo-0001",
+  "mode": "replay",
+  "replay_fixture": "real_regression"
+}' | jq -r .run_id)
+
+curl -s $BASE/v1/runs/$RID       | jq '{status, category: .final.diagnosis.category}'
+curl -s $BASE/v1/runs/$RID/trace | jq '.spans | length'
+```
+
+`subject` is a GitHub `workflow_run` webhook body — the whole delivery or just the inner
+object — and the scenario is named separately by `replay_fixture`. `mode` must be `"replay"`:
+the live gateway arrives in a later phase, and asking for `"live"` returns a `501` that says
+so. Every error is RFC 9457 `application/problem+json`.
+
+> **Heads up on quota.** The free model tier allows **20 requests per day** and one replay
+> costs two, so the demo can be exhausted by about ten requests. Nothing worse is exposed —
+> `HARNESS_DRY_RUN=true` and `HARNESS_GATEWAY=replay` are the defaults, so no live repository
+> is ever touched.
 
 `real_regression` is a recorded scenario: an off-by-one in a `discount()` helper makes two
 pricing tests fail. The system fetches the job list, downloads a 3,800-line job log,
