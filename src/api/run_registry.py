@@ -20,9 +20,15 @@ So a restart loses the outcome summary but keeps the evidence of what happened.
 from __future__ import annotations
 
 import asyncio
+import secrets
 from datetime import UTC, datetime
 
-from src.harness.contracts import RunId, RunOutcome, TokenUsage
+from src.harness.contracts import (
+    EscalationRecord,
+    RunId,
+    RunOutcome,
+    TokenUsage,
+)
 
 
 class RunRegistry:
@@ -50,6 +56,51 @@ class RunRegistry:
                 total_tokens=TokenUsage(),
                 final={},
                 trace_url=trace_url,
+            )
+
+    async def mark_failed(self, run_id: RunId, detail: str) -> None:
+        """Replace a run's placeholder with a terminal `failed` outcome.
+
+        For the one case no HTTP handler can reach: a background run that raised
+        after its `202` was already returned. Without this the placeholder written
+        by `mark_in_progress` stays `in_progress` forever, and a caller polling
+        `GET /v1/runs/{run_id}` cannot tell a dead run from a slow one.
+
+        Deliberately preserves `created_at`, `integration` and `trace_url` from the
+        placeholder when one exists: the trace is written to SQLite as the run
+        executes, so a failed run usually has real spans worth linking to, and
+        that link is the only evidence of *where* it died.
+        """
+        async with self._lock:
+            existing = self._runs.get(run_id)
+            now = datetime.now(UTC)
+            self._runs[run_id] = RunOutcome(
+                run_id=run_id,
+                integration=existing.integration if existing else "unknown",
+                status="failed",
+                created_at=existing.created_at if existing else now,
+                completed_at=now,
+                duration_ms=(
+                    int((now - existing.created_at).total_seconds() * 1000)
+                    if existing
+                    else 0
+                ),
+                stages=list(existing.stages) if existing else [],
+                total_tokens=existing.total_tokens if existing else TokenUsage(),
+                final={},
+                escalation=EscalationRecord(
+                    escalation_id="esc_" + secrets.token_hex(8),
+                    reason="tool_failure",
+                    message="background run failed after the request was accepted",
+                    payload={"detail": detail},
+                    channels=["log"],
+                    delivered_at=now,
+                ),
+                trace_url=(
+                    existing.trace_url
+                    if existing
+                    else f"/v1/runs/{run_id}/trace"
+                ),
             )
 
     async def save(self, outcome: RunOutcome) -> None:

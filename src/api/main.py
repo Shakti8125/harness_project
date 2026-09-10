@@ -18,11 +18,11 @@ import json
 import logging
 import re
 import sqlite3
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import aiosqlite
 from fastapi import FastAPI, Query, Request, Response, status
@@ -563,6 +563,57 @@ def idempotency_key_for(subject: dict[str, Any]) -> str:
     return f"{INTEGRATION}:{digest}"
 
 
+#: Strong references to in-flight background runs.
+#:
+#: `asyncio` keeps only a *weak* reference to a task, so a bare `create_task(...)`
+#: whose result nobody holds can be garbage-collected mid-run. Both call sites here
+#: previously suppressed RUF006 with the note "fire and forget; the registry
+#: is the handle" -- but the registry holds a database row, not the task object, so
+#: nothing kept the coroutine alive. The silenced lint was pointing at a real defect,
+#: and this set is the fix RUF006 actually asks for.
+_background_runs: Final[set[asyncio.Task[RunOutcome]]] = set()
+
+
+async def _supervised(
+    coro: Coroutine[Any, Any, RunOutcome], run_id: RunId
+) -> RunOutcome:
+    """Run `coro`, and record a failure that no HTTP handler could have caught.
+
+    A background run raises *after* its `202` has been sent, so the exception has
+    nowhere to go: the registry row written by `mark_in_progress` would sit at
+    `in_progress` forever, and `GET /v1/runs/{run_id}` could not distinguish a dead
+    run from a slow one. Marking it `failed` is the whole point.
+
+    `CancelledError` is re-raised untouched rather than recorded: it means the
+    server is shutting down, which is not the run's fault, and it is not an
+    `Exception` subclass -- so the bare `except Exception` below already lets it
+    through, and the explicit clause is here to say that is deliberate.
+    """
+    try:
+        return await coro
+    except asyncio.CancelledError:
+        logger.info("background run %s cancelled", run_id)
+        raise
+    except Exception as exc:
+        logger.exception("background run %s failed", run_id)
+        await registry.mark_failed(run_id, str(exc))
+        raise
+
+
+def _spawn_run(coro: Coroutine[Any, Any, RunOutcome], run_id: RunId) -> None:
+    """Start a background run and keep a strong reference until it finishes.
+
+    Not a task supervisor, deliberately. `MemoryStore` already declares
+    `heartbeat(run_id)` and `RunClaim.took_over_from`, which is the plan's real
+    answer to "a run died mid-flight" -- takeover by another worker, needing the
+    durable store that arrives in Phase 3. Building a supervisor now would build it
+    twice, and the second one would replace this.
+    """
+    task = asyncio.create_task(_supervised(coro, run_id))
+    _background_runs.add(task)
+    task.add_done_callback(_background_runs.discard)
+
+
 async def _execute(
     context: AppContext,
     request_model: RunRequest,
@@ -635,8 +686,9 @@ async def replay(
         await registry.mark_in_progress(
             run_id, INTEGRATION, f"/v1/runs/{run_id}/trace"
         )
-        asyncio.create_task(  # noqa: RUF006 - fire and forget; the registry is the handle
-            _execute(context, run_request, scenario_dir, parsed["repo"], run_id)
+        _spawn_run(
+            _execute(context, run_request, scenario_dir, parsed["repo"], run_id),
+            run_id,
         )
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
@@ -688,8 +740,8 @@ async def create_run(request: Request, run_request: RunRequest) -> Response:
     run_id = mint_run_id()
     request.state.run_id = run_id  # so an unhandled exception below can still report it
     await registry.mark_in_progress(run_id, run_request.integration, f"/v1/runs/{run_id}/trace")
-    asyncio.create_task(  # noqa: RUF006 - fire and forget; the registry is the handle
-        _execute(context, run_request, scenario_dir, parsed["repo"], run_id)
+    _spawn_run(
+        _execute(context, run_request, scenario_dir, parsed["repo"], run_id), run_id
     )
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,

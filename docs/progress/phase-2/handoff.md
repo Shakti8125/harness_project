@@ -194,21 +194,71 @@ here, set in `0ffeef1`, and it is why the plan is still worth trusting.
 
 ---
 
-## 6. Two design decisions that are the user's, not yours
+## 6. Two design decisions — both now made and built
 
-Neither was built in Phase 1, deliberately. Both get sharper in Phase 2, because Phase 2 is
-the first phase that takes an action.
+These were carried as open questions for most of Phase 1 and are recorded here as settled,
+with the reasoning, because the reasoning is what a later phase needs in order to change
+them intelligently. **Do not reopen either without reading this section.**
 
-1. **There is no run-level wall-clock bound.** `RETRY_DELAY_BUDGET_S` bounds cumulative
-   *sleep*, not call duration. There is no `asyncio.wait_for` anywhere in `src/`, uvicorn has
-   no request timeout configured, and `app.py`'s `timeout=300.0` is inert. A provider that
-   fails *slowly* rather than fast can still hold a request for minutes.
-2. **`POST /v1/runs`'s fire-and-forget `_execute` is unsupervised.** It fails invisibly after
-   the 202 and leaves the registry row `in_progress` forever. No HTTP handler can catch it —
-   the response is already sent. Phase 2 adds a suspend-for-approval path, which makes a
-   stuck `in_progress` harder to tell apart from a legitimate wait.
+### 6.1 Run-level wall clock: a deadline in the orchestrator, 240 s
 
-Raise both; do not build either unilaterally.
+*The problem.* Three retry-shaped numbers existed and none of them bounded a run:
+`MAX_RETRY_AFTER_S` clamps one stated delay, `RETRY_DELAY_BUDGET_S` caps time spent asleep,
+and `gemini_timeout_s` (60 s) caps one *call* while saying nothing about how many calls a
+run makes. A provider failing *slowly* rather than fast returns no `retry-after` to sleep
+on, so the sleep budget never engaged — leaving minutes per request on a public
+unauthenticated URL, with only `max_concurrent_runs` (4) slots to exhaust before the
+service was unavailable to everyone.
+
+*Why the orchestrator and not the API.* Three call sites would each have needed it
+(sync replay, async replay, `POST /v1/runs`), and for the two background ones a *request*
+timeout is the wrong concept — nothing is holding a connection. The thing that needs
+bounding is the run. The orchestrator already owns the run lifecycle and the escalation
+machinery, so a breach produces a proper `RunOutcome` (`status="escalated"`,
+`reason="run_timeout"`) instead of a bare exception that would surface as a 500 with no
+stages and no trace link — losing the one piece of evidence worth having.
+
+*Why 240 s.* Measured, not chosen: a clean two-stage run is ~50 s, so 240 leaves room for a
+full retry cycle on both stages and for the third stage Phase 2 adds. **Phase 2 should
+re-measure it** once the Remediator is in the loop — the constant is
+`orchestrator.DEFAULT_RUN_BUDGET_S`, overridable per-orchestrator via `run_budget_s`.
+
+*One detail that matters.* The budget is measured from the first stage, not from the
+request, so time queued on the concurrency semaphore is not charged to the run that
+eventually gets the slot. `asyncio.wait_for` also *cancels* the hung stage, so the work
+stops rather than continuing unobserved behind a run that has already returned.
+
+Pinned by `tests/unit/test_run_budget.py`, including that the bound is per-run rather than
+per-stage — a per-stage timeout of the same size would let an N-stage run take N times as
+long, which is exactly how the per-call Gemini timeout failed to bound anything.
+
+### 6.2 Background runs: strong references plus failure recording, not a supervisor
+
+*The problem was worse than "fails invisibly".* Both call sites carried
+`# noqa: RUF006` with the note "fire and forget; the registry is the handle". That lint
+exists because `asyncio` holds only a **weak** reference to a task — and the registry holds
+a database row, not the task object, so nothing kept the coroutine alive. The task could be
+garbage-collected mid-run. The suppressed lint was the only thing pointing at it.
+
+*The fix.* `_spawn_run` keeps the task in a module-level set until it finishes
+(liveness), and `_supervised` wraps the coroutine so a raising run marks its registry row
+`failed` (visibility) instead of sitting at `in_progress` forever, indistinguishable from a
+slow run. `RunRegistry.mark_failed` preserves `created_at`, `integration` and `trace_url`
+from the placeholder, because the trace is written to SQLite as the run executes and is the
+only evidence of *where* it died. `CancelledError` is re-raised untouched — that means the
+server is shutting down, not that the run was wrong.
+
+*Why not a supervisor or a job queue.* `MemoryStore` already declares `heartbeat(run_id)`
+and `RunClaim.took_over_from`, which is the plan's real answer to "a run died mid-flight":
+takeover by another worker, needing the durable store that arrives in **Phase 3**. Building
+a supervisor now would build it twice and throw the first one away. **When Phase 3 lands
+the memory store, revisit this** — `_background_runs` is the in-process stand-in for the
+claim/heartbeat machinery, and `run_registry.py`'s own module docstring already says it is
+replaced in the memory phase.
+
+Pinned by `tests/unit/test_background_run_supervision.py`, including a guard that fails if
+`noqa: RUF006` ever reappears in `src/api/main.py` — a suppression is far easier to
+reintroduce than the reasoning behind it.
 
 ---
 

@@ -134,12 +134,26 @@ split a marker at three of its thirteen offsets. That is a real check, and it is
 author checking their own work.
 ### Residuals and hazards — real, but not findings against a stated contract
 
-- **The retry bound is on sleeps, not on call durations.** `gemini_timeout_s = 60.0` with a
-  hard ceiling of 9 attempts means a provider that fails *slowly* rather than fast can
-  still hold a request for minutes. This was never what `review-2.md` finding 1 was about —
-  a 429 returns fast, so it is not the daily end state — but the broader "a public
-  unauthenticated URL can hold a connection" concern is only partly retired. The honest
-  bound today is on the 429 path specifically.
+- **~~The retry bound is on sleeps, not on call durations.~~ Closed.** A run-level wall
+  clock (`orchestrator.DEFAULT_RUN_BUDGET_S`, 240 s) now bounds the run itself, escalating
+  as `run_timeout` rather than raising. See `docs/progress/phase-2/handoff.md` §6.1 for why
+  it lives in the orchestrator and how the number was picked. The original text follows,
+  because the reasoning about *which* bound was missing is still the clearest statement of
+  what the new one is for:
+
+  > **The retry bound is on sleeps, not on call durations.** `gemini_timeout_s = 60.0` with a
+  > hard ceiling of 9 attempts means a provider that fails *slowly* rather than fast can
+  > still hold a request for minutes. This was never what `review-2.md` finding 1 was about —
+  > a 429 returns fast, so it is not the daily end state — but the broader "a public
+  > unauthenticated URL can hold a connection" concern is only partly retired. The honest
+  > bound today is on the 429 path specifically.
+
+- **~~`POST /v1/runs`'s background task is unsupervised.~~ Closed**, and it was a liveness
+  bug rather than only an observability one: `# noqa: RUF006` was suppressing the lint that
+  exists because `asyncio` keeps only a weak reference to a task, so the run could be
+  garbage-collected mid-flight. `_spawn_run` holds it; `_supervised` records a failure the
+  `202` made unreportable. See `handoff.md` §6.2 — the durable answer is Phase 3's
+  claim/heartbeat machinery, which this deliberately does not pre-empt.
 - **A rate-limited run now serves `final == {}`.** Ending the run on upstream failure is
   correct and is what the high finding asked for, but the collected `FailureBundle` and the
   `investigator_notes` degraded entry no longer reach the served `RunOutcome`;

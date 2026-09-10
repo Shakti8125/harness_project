@@ -16,6 +16,7 @@ fires, still escalates, and Phase 2 fills in the agent without moving the condit
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 import time
@@ -52,10 +53,31 @@ _CROCKFORD: Final[str] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 #: Must stay member-for-member identical to `EscalationRecord.reason` in `contracts.py`:
 #: this alias is what the mapping below and `_escalate` are typed against, and a member
 #: present here but not there is a `ValidationError` at the moment a run escalates.
+#: Wall-clock ceiling for one run, measured from the first stage rather than from the
+#: request, so time spent queued on the concurrency semaphore is not charged to the
+#: run that eventually gets the slot.
+#:
+#: A *different* bound from `recovery.RETRY_DELAY_BUDGET_S`, which caps how long a run
+#: spends asleep between attempts, and neither caps the other. A provider that fails
+#: slowly rather than fast returns no `retry-after` to sleep on, so the delay budget
+#: never engages; `gemini_timeout_s` (60s) bounds each *call* and says nothing about
+#: how many calls a run may make. Multiplied out -- three structured attempts per
+#: stage, 60s each, across the stages a run declares -- the honest pre-existing worst
+#: case was minutes per request on a public unauthenticated URL, with only
+#: `max_concurrent_runs` (4) slots to exhaust before the service is unavailable.
+#:
+#: 240s is picked against measurement rather than taste: a clean two-stage run is
+#: ~50s, which leaves room for a full retry cycle on both stages and for the third
+#: stage Phase 2 adds, while capping the worst case well under `app.py`'s client
+#: timeout. A breach escalates rather than raising -- `run_timeout` is a first-class
+#: `EscalationReason` -- so a timed-out run serves the same `RunOutcome` shape as any
+#: other escalation instead of surfacing as a 500 with no trace behind it.
+DEFAULT_RUN_BUDGET_S: Final[float] = 240.0
+
 EscalationReason = Literal[
     "low_confidence", "evidence_refuted", "invalid_output", "llm_timeout",
     "llm_upstream", "config_error", "policy_denied", "tool_failure",
-    "cold_start_restricted", "rate_limited", "unknown_category",
+    "cold_start_restricted", "rate_limited", "unknown_category", "run_timeout",
 ]
 
 _ESCALATION_REASONS: Final[frozenset[str]] = frozenset(get_args(EscalationReason))
@@ -148,6 +170,7 @@ class Orchestrator:
         trace_url_template: str = "/v1/runs/{run_id}/trace",
         escalation_channels: Sequence[Literal["log", "db", "webhook"]] = ("log",),
         run_id_factory: Callable[[], RunId] = new_run_id,
+        run_budget_s: float = DEFAULT_RUN_BUDGET_S,
     ) -> None:
         """Bind the driver to its stage list and the agents behind it.
 
@@ -184,6 +207,7 @@ class Orchestrator:
         self.trace_url_template = trace_url_template
         self.escalation_channels = list(escalation_channels)
         self.run_id_factory = run_id_factory
+        self.run_budget_s = run_budget_s
 
     def _artifact_key(self, stage: StageSpec) -> str:
         return self.artifact_keys.get(stage.name, stage.name)
@@ -289,7 +313,44 @@ class Orchestrator:
 
                     stage_started_at = datetime.now(UTC)
                     stage_started = time.monotonic()
-                    result = await agent.run(state)
+                    remaining = self.run_budget_s - (time.monotonic() - started)
+                    try:
+                        result = await asyncio.wait_for(agent.run(state), remaining)
+                    except TimeoutError:
+                        # `wait_for` cancels the stage before raising, so the work
+                        # actually stops rather than continuing unobserved behind a
+                        # run that has already returned.
+                        state.stages.append(
+                            StageRecord(
+                                stage=stage.name,
+                                agent=None,
+                                status="timeout",
+                                started_at=stage_started_at,
+                                duration_ms=int(
+                                    (time.monotonic() - stage_started) * 1000
+                                ),
+                                attempts=0,
+                                tokens=TokenUsage(),
+                                summary=(
+                                    f"run budget of {self.run_budget_s:g}s exhausted "
+                                    f"during stage {stage.name!r}"
+                                ),
+                            )
+                        )
+                        status = "escalated"
+                        escalation = self._escalate(
+                            run_id=run_id,
+                            reason="run_timeout",
+                            message=(
+                                f"run exceeded its {self.run_budget_s:g}s budget "
+                                f"during stage {stage.name!r}"
+                            ),
+                            payload={
+                                "stage": stage.name,
+                                "run_budget_s": self.run_budget_s,
+                            },
+                        )
+                        break
                     state.stages.append(
                         StageRecord(
                             stage=stage.name,

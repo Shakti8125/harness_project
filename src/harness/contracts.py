@@ -98,7 +98,8 @@ class EscalationRecord(BaseModel):
     escalation_id: str
     reason: Literal["low_confidence", "evidence_refuted", "invalid_output", "llm_timeout",
                     "llm_upstream", "config_error", "policy_denied", "tool_failure",
-                    "cold_start_restricted", "rate_limited", "unknown_category"]
+                    "cold_start_restricted", "rate_limited", "unknown_category",
+                    "run_timeout"]
     message: str
     payload: dict[str, JsonValue]
     channels: list[Literal["log", "db", "webhook"]]

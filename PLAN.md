@@ -245,6 +245,23 @@ attribute an eval regression to.
 | Flaky prior threshold | ≥3 occurrences AND `flaky_count/occurrences ≥ 0.6` | `memory.py` |
 | Evaluator fail condition | any `refuted`, or `verified/total < 0.5` | `evaluator.py` |
 | Max concurrent runs | 4 | `HARNESS_MAX_CONCURRENT_RUNS` |
+| Cumulative retry *sleep* per agent call | 20 s | `recovery.RETRY_DELAY_BUDGET_S` |
+| Single stated `retry-after`, clamped | 20 s | `llm.MAX_RETRY_AFTER_S` |
+| **Wall clock per run** | **240 s** | `orchestrator.DEFAULT_RUN_BUDGET_S` |
+
+> **Amendment (recorded 2026-09-11).** The last row closes a residual Phase 1 carried
+> knowingly: *"the retry bound is on sleeps, not on call durations."* The three
+> retry-shaped numbers above bound different things and none of them bounds a run.
+> `MAX_RETRY_AFTER_S` clamps one stated delay; `RETRY_DELAY_BUDGET_S` caps time spent
+> asleep; the Gemini timeout caps one *call* and says nothing about how many calls a
+> run makes. A provider that fails slowly rather than fast returns no `retry-after`
+> to sleep on, so the delay budget never engages at all — which left the honest worst
+> case at minutes per request on a public unauthenticated URL, with only four
+> concurrency slots to exhaust. The run budget is measured from the first stage, so
+> queuing on the semaphore is not charged to the run that eventually gets the slot,
+> and a breach escalates as `run_timeout` rather than raising — a timed-out run
+> serves the same `RunOutcome` shape as any other escalation, keeping the trace link
+> that says *where* it died.
 
 ### How `final_confidence` is derived
 
