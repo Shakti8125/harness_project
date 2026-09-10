@@ -21,7 +21,19 @@ makes a good showcase for guardrails, claim verification, and human escalation.
 fixture or a real GitHub webhook), runs Investigator → Diagnostician → Remediator, produces a
 structured diagnosis with cited evidence that is machine-verified against the actual log and diff,
 takes only the action policy allows, and emits a per-run trace showing every decision. Deployed on
-Fly.io. Six vertical slices, each one runnable and demoable on its own.
+a **Hugging Face Gradio Space** (<https://shakti-agent-harness.hf.space>). Six vertical slices,
+each one runnable and demoable on its own.
+
+> **Amendment (Phase 1, recorded 2026-09-11).** This document was written against Fly.io and named
+> it throughout. Fly began requiring payment information before it would create an app, and a
+> Docker Space was not available on the account either, so the "reachable over the public
+> internet" requirement is met by a Gradio Space instead. `fly.toml` and the `Dockerfile` are kept
+> and unchanged in substance -- any container host still serves `src/api/main.py` directly, so Fly
+> remains *a* target, just not the live one. `docs/deploy-huggingface.md` is authoritative on the
+> Space and documents three non-obvious things the substitution forced (`ssr_mode=False`, the mount
+> order, and the `zero-a10g` pin). Every `fly deploy` / `<app>.fly.dev` line in the Verify blocks
+> below is updated, and the Appendix D risk register is corrected where the Fly assumption changed
+> the answer rather than only the vocabulary -- risks 2 and 11 both did.
 
 **Non-goals.** No Kubernetes. No model training or fine-tuning. No multi-tenant SaaS. No
 autonomous merging, ever. No live dependency on something actually breaking — the demo path is
@@ -91,7 +103,9 @@ harness_project/
 ├─ uv.lock
 ├─ Dockerfile                   ← multi-stage, python:3.12-slim
 ├─ docker-compose.yml           ← app + volume mount for ./data
-├─ fly.toml
+├─ fly.toml                    ← kept; Fly is a target, not the live one (see Context)
+├─ app.py                      ← Hugging Face Space entrypoint: mounts the FastAPI app
+├─ requirements.txt            ← Space-only; gradio is deliberately absent from uv.lock
 ├─ .env.example                 ← committed, placeholders only
 ├─ .dockerignore                ← excludes .env, data/, fixtures/recorded/
 ├─ src/
@@ -310,7 +324,7 @@ comes out, and it is reachable over the public internet.
 - `integrations/cicd/schemas.py`, `gateway_replay.py`, `agents/investigator.py`,
   `agents/diagnostician.py`, prompts, and the `real_regression` fixture.
 - `POST /v1/replay/{scenario}`, `POST /v1/runs`, `GET /v1/runs/{run_id}`.
-- Fly.io app created and deployed.
+- Deployed and reachable on the public internet (Hugging Face Space; see Context).
 
 ### Design notes for this slice
 
@@ -368,22 +382,63 @@ $env:HARNESS_ESCALATION_THRESHOLD="0.99"; docker compose up -d
 curl.exe -s -X POST localhost:8000/v1/replay/real_regression | jq -r '.status, .escalation.reason'
 # EXPECT "escalated"  "low_confidence"
 
-# 5. Deployed
-fly deploy
-curl.exe -s https://<app>.fly.dev/healthz          # {"status":"ok",...}
-curl.exe -s -X POST https://<app>.fly.dev/v1/replay/real_regression | jq -r '.final.diagnosis.category'
+# 5. Deployed   (Space; `fly deploy` stays valid for the Fly path -- see Context)
+#    push to the Space remote, then:
+curl.exe -s https://shakti-agent-harness.hf.space/healthz          # {"status":"ok",...}
+curl.exe -s -X POST https://shakti-agent-harness.hf.space/v1/replay/real_regression | jq -r '.final.diagnosis.category'
 # EXPECT "real_regression"
 ```
 
 **Deferred from this phase:** Remediator, Guardrails, Memory (`prior_history` is a hardcoded empty
-`PriorHistory`), Evaluator (`citations` are recorded but unverified), Recovery (a schema failure
-fails the run), the HTML trace view, live GitHub, webhooks. Three of the four fixtures.
+`PriorHistory`), Evaluator (`citations` are recorded but unverified), the HTML trace view, live
+GitHub, webhooks. Three of the four fixtures.
+
+> **Status: shipped, tagged `phase-1-green`.** Two corrections against the plan as written.
+>
+> **Recovery was not deferred — it shipped here.** `harness/recovery.py` is complete and wired into
+> *every* agent call at `src/harness/agent.py:234`, with the structured-retry loop, the terminal
+> finish-reason set, `MAX_RETRY_AFTER_S` and a cumulative `RETRY_DELAY_BUDGET_S`. It was pulled
+> forward because the Gemini failure paths in Appendix B.1 are not optional once a real provider is
+> in the loop. Phase 4's Built list is corrected to match.
+>
+> **Verify step 4 was satisfied offline.** The escalation-threshold override was covered by unit
+> tests rather than by the literal `curl` above, and does not need re-running. Recorded in
+> `docs/progress/phase-1/backlog.md`, "Settled — do not reopen".
+>
+> Three independent audits closed 24 findings. The carried residuals, the audit-provenance gap and
+> the settled decisions are in `docs/progress/phase-1/backlog.md`;
+> `docs/progress/phase-2/handoff.md` is the entry point for the next session.
 
 ---
 
 ## Phase 2 — Remediator (retry only) + Guardrails
 
 **Goal of the slice:** the system takes its first real action, and cannot take a dangerous one.
+
+> **Amendment (recorded 2026-09-11, at the close of Phase 1).** Three things below are not true as
+> written any more. Read this before dispatching.
+>
+> **1. More exists than the Built list implies.** Phase 0 scaffolded the contracts, so
+> `harness/guardrails.py` already carries `Condition`, `Rule`, `PolicySpec`, `ActionContext` and
+> `PolicyDecision` fully transcribed from A.7, plus the hardcoded
+> `MAX_SIDE_EFFECTING_ACTIONS_PER_RUN = 1`; only `PolicyEngine.__init__` and `PolicyEngine.decide`
+> raise `NotImplementedError`. `src/integrations/cicd/policy.yaml` is already committed, verbatim
+> from the block below. The real work is the engine and the two placeholder modules
+> (`agents/remediator.py`, `gateway_github.py`), not model transcription.
+>
+> **2. `open-fix-pr` cannot match in this phase, so Verify step 2 cannot pass.** The rule gates on
+> `evaluation.verdict: {eq: pass}`, and this phase's own Deferred paragraph sets
+> `evaluation.verdict` to the literal `"skipped"` because the Evaluator is Phase 4. No other rule
+> matches a write tool, so `default_effect: deny` answers and the expected `require_approval` never
+> appears. The sibling `retry-suspected-flaky` rule was written `{in: [pass, skipped]}`, so this
+> reads as an oversight in one rule rather than a deliberate gate. **The YAML below is amended to
+> `{in: [pass, skipped]}`; `src/integrations/cicd/policy.yaml` still carries the old clause and
+> syncing it is Phase 2's first task.** The alternative — having the deferred Evaluator return
+> `"pass"` — was rejected: it fabricates a verdict nobody computed, and `"skipped"` is load-bearing
+> precisely because it is honest. Phase 4 removes `skipped` from the rule when a real verdict exists.
+>
+> **3. The retry-count stub must fail closed, not open.** See the amended Deferred paragraph at the
+> end of this phase.
 
 ### Built
 
@@ -433,7 +488,8 @@ rules:
     when:
       diagnosis.category:         {in: [real_regression, dependency_break, config_issue]}
       diagnosis.final_confidence: {gte: 0.85}
-      evaluation.verdict:         {eq: pass}
+      evaluation.verdict:         {in: [pass, skipped]}   # `skipped` comes back out in Phase 4,
+                                                          # when a real verdict exists (amendment 2)
     obligations: [draft_only, label:agent-generated, no_auto_merge, assign_human_reviewer]
 
   - id: file-ticket
@@ -450,6 +506,15 @@ rules:
 
 `PolicyDecision{rule_id, effect, reason, obligations, evaluated_at}` is returned for every call and
 written to the trace.
+
+**Carried in from Phase 1, and load-bearing here.** `gateway_replay.py`'s `forbidden` is a
+*required* keyword argument (`review.md` finding 12), so the authoritative safety re-check cannot be
+skipped by omission at construction. **`GitHubToolGateway` must follow that pattern** — it is the
+gateway where the re-check actually stops something, and a default-empty `forbidden` would make
+`test_gateway_refuses_forbidden_even_with_forged_allow_decision` pass vacuously. Separately,
+`diagnosis.final_confidence` is now trustworthy for the thresholds below: `review.md` finding 4 was
+closed by stripping `final_confidence` and `confidence_adjustments` from the *wire* schema, so the
+model is never asked for the two fields A.11 marks harness-added.
 
 **Two enforcement points.** The Orchestrator consults the engine *before* invoking the Remediator's
 plan (so it can suspend for approval), and `ToolGateway.invoke()` requires a `PolicyDecision`
@@ -515,11 +580,29 @@ uv run python scripts/replay.py --live --repo <you>/harness-demo-repo --run-id <
 #        job actually re-runs in the GitHub Actions UI.
 ```
 
-**Deferred:** Memory (retry-count guard reads a stub returning 0), Evaluator (`evaluation.verdict`
-is the literal `"skipped"`), Recovery, trace view, webhooks, PR-writing tools (the policy rule
-exists and is exercised, but `create_branch`/`open_pull_request` are registered in the catalog with
-a `NotImplementedError` body — the point of this phase is that the *decision* is right, not that
-the PR gets written).
+**Deferred:** Memory (the retry-count guard reads a stub — see below), Evaluator
+(`evaluation.verdict` is the literal `"skipped"`), trace view, webhooks, PR-writing tools (the
+policy rule exists and is exercised, but `create_branch`/`open_pull_request` are registered in the
+catalog with a `NotImplementedError` body — the point of this phase is that the *decision* is
+right, not that the PR gets written). Recovery is **not** deferred here; it shipped in Phase 1.
+
+> **Amendment 3 — the retry-count stub returns `999`, not `0`.** The original text said the guard
+> "reads a stub returning 0". Against `memory.retries_for_signature_24h: {lt: 2}` that makes the
+> clause *always true*, so the retry cap does not exist in this phase — it only looks like it does,
+> including in the trace, which quotes the rule as though the clause bit.
+>
+> That is the same fail-open Phase 1 closed twice one layer down: `review.md` finding 11 closed it
+> in `PriorHistory`, and the final audit then found that fix carried an escape hatch which fell open
+> on exactly its motivating shape, closing it again unconditionally
+> (`src/integrations/cicd/schemas.py`, `FAIL_CLOSED_RETRIES_IN_24H`). A 0-returning stub hands the
+> same fail-open straight back at the policy layer.
+>
+> Use `FAIL_CLOSED_RETRIES_IN_24H` (999), per B.3. This phase then demonstrates "the cap denies",
+> which is the honest thing to show and matches `default_effect: deny`; Phase 3 replaces a constant
+> with a real query rather than changing a behaviour. Note the consequence for Verify step 1: with
+> the cap failing closed, `retry-suspected-flaky` denies, so step 1 must either inject a memory stub
+> returning a real count under 2 for that scenario, or assert the deny and move the auto-retry
+> demonstration to Phase 3 where memory is real. Choose deliberately and write down which.
 
 ---
 
@@ -666,7 +749,21 @@ curl.exe -s -X POST localhost:8000/v1/replay/flaky_test | jq '{status:.status, d
 # EXPECT {"status":"completed","degraded":["memory"]}
 ```
 
-**Deferred:** Evaluator, Recovery, trace view, webhooks, PR writing.
+**Deferred:** Evaluator, trace view, webhooks, PR writing. (Recovery shipped in Phase 1.)
+
+> **Amendment (recorded 2026-09-11).** Two things to settle at the *start* of this phase.
+>
+> **The live target has no persistent disk.** The Hugging Face Space that serves this resets
+> `data/harness.db` on every restart or sleep, so a SQLite memory store is amnesiac there — which
+> would make Verify step 2 above ("4th flaky run shows `occurrences=3`") unreachable on the live
+> URL, though it still passes locally and under Docker. See Appendix D risk 2 for the options; the
+> `MemoryStore` protocol exists precisely so this is one class and no call-site changes. Decide
+> before building, not at the Verify step.
+>
+> **This phase is where the retry cap becomes real.** Phase 2 leaves
+> `memory.retries_for_signature_24h` as a fail-closed constant (999, per that phase's amendment 3),
+> so Verify step 3 here is the first time the cap is exercised against actual counts. If Phase 2
+> moved its own auto-retry demonstration forward, it lands here.
 
 ---
 
@@ -677,9 +774,18 @@ malformed model response no longer kills a run.
 
 ### Built
 
-`harness/evaluator.py` + `integrations/cicd/claim_checkers.py`; `harness/recovery.py` wired into
-every agent call; escalation channel (`escalation` table + optional outbound webhook);
-`scripts/eval.py` and the fourth fixture (`dependency_break`).
+`harness/evaluator.py` + `integrations/cicd/claim_checkers.py`; escalation channel (`escalation`
+table + optional outbound webhook); `scripts/eval.py` and the fourth fixture (`dependency_break`).
+
+> **Amendment (recorded 2026-09-11).** This list used to include "`harness/recovery.py` wired into
+> every agent call". **Recovery shipped in Phase 1** — it is complete and wired at
+> `src/harness/agent.py:234`, and Phase 1 spent three audit rounds on its failure classification
+> (the terminal finish-reason set, `MAX_RETRY_AFTER_S`, `RETRY_DELAY_BUDGET_S`). What remains for
+> this phase is the Recovery **Verify** block below, which is still owed: step 3's
+> `HARNESS_FAULT_INJECT` paths have no coverage yet.
+>
+> Also from Phase 1: `evaluation.verdict` reaching a real value here is what lets Phase 2's
+> `open-fix-pr` rule drop `skipped` from its `when` clause (see that phase's amendment 2).
 
 ### Evaluator
 
@@ -878,12 +984,11 @@ uv run python scripts/replay.py --post-signed fixtures/scenarios/flaky_test/webh
 sqlite3 ./data/harness.db "select count(*) from run where idempotency_key='<key>';"   # EXPECT 1
 sqlite3 ./data/harness.db "select count(*) from observation where run_id='run_A';"    # EXPECT 1
 
-# 5. Live end-to-end
-fly deploy
+# 5. Live end-to-end   (deploy to the Space; see Context)
 gh workflow run flaky.yml -R <you>/harness-demo-repo
 #   In GitHub → Settings → Webhooks → Recent Deliveries: EXPECT 202.
 #   Then use "Redeliver" on that same delivery: EXPECT 202 and NO second run in /v1/runs.
-curl.exe -s https://<app>.fly.dev/v1/runs | jq '.[0] | {status, category: .final.diagnosis.category}'
+curl.exe -s https://shakti-agent-harness.hf.space/v1/runs | jq '.[0] | {status, category: .final.diagnosis.category}'
 ```
 
 **Deferred:** the second adapter.
@@ -1786,13 +1891,16 @@ class Settings(BaseSettings):
 
 **Where each value lives:**
 
-| Value | Local dev | Docker | Fly.io |
-|---|---|---|---|
-| `HARNESS_GEMINI_API_KEY` | `.env` (gitignored) | `--env-file .env` | `fly secrets set` (encrypted at rest, injected as env) |
-| `HARNESS_GITHUB_TOKEN` | `.env` | `--env-file .env` | `fly secrets set` |
-| `HARNESS_GITHUB_WEBHOOK_SECRET` | `.env` | `--env-file .env` | `fly secrets set` |
-| `HARNESS_DATABASE_PATH` | `./data/harness.db` | volume mount `./data:/app/data` | `/data/harness.db` on a 1 GB Fly volume, `[mounts]` in `fly.toml` |
-| Everything else | `.env` / defaults | `fly.toml [env]` | `fly.toml [env]` (non-secret, committed) |
+| Value | Local dev | Docker | Fly.io | HF Space (live) |
+|---|---|---|---|---|
+| `HARNESS_GEMINI_API_KEY` | `.env` (gitignored) | `--env-file .env` | `fly secrets set` (encrypted at rest, injected as env) | Space **Secret**, never a Variable |
+| `HARNESS_GITHUB_TOKEN` | `.env` | `--env-file .env` | `fly secrets set` | Space Secret |
+| `HARNESS_GITHUB_WEBHOOK_SECRET` | `.env` | `--env-file .env` | `fly secrets set` | Space Secret |
+| `HARNESS_DATABASE_PATH` | `./data/harness.db` | volume mount `./data:/app/data` | `/data/harness.db` on a 1 GB Fly volume, `[mounts]` in `fly.toml` | `./data/harness.db` on **ephemeral** disk -- resets on restart or sleep (risk 2) |
+| Everything else | `.env` / defaults | `fly.toml [env]` | `fly.toml [env]` (non-secret, committed) | Space Variables, or the defaults in `settings.py` |
+
+On the Space, `app.py` must still not read `os.environ` itself -- `settings.py` stays the only place
+env is read, and `tests/unit/test_no_env_access.py` enforces it.
 
 `.env` is in `.gitignore` **and** `.dockerignore` — no secret is ever baked into an image layer.
 `.env.example` is committed with placeholders (`HARNESS_GEMINI_API_KEY=AIza...replace-me`).
@@ -1836,14 +1944,24 @@ lets the Recovery loop handle the quality drop. A contract test asserts every ag
 `to_gemini_schema()` at import time, so a breakage shows up as a failing test rather than a 400 in
 production.
 
-**2. SQLite on a single Fly machine is a single point of failure for Memory.**
-Fly volumes are per-machine; `fly scale count 2` would give two machines two *different* databases,
-silently splitting memory and breaking idempotency. *Default:* pin `fly scale count 1` and set
-`min_machines_running = 1`; document the constraint in the README. Losing the volume loses memory,
-which is regenerable and therefore acceptable for this project. *Migration path when it matters:*
-swap `SqliteMemoryStore` for `PostgresMemoryStore` (Fly Postgres or Supabase) — the `MemoryStore`
-protocol exists precisely so this is one class and no call-site changes. Also note Render's free
-tier has **no** persistent disk, which is why Fly is the recommended first target.
+**2. SQLite is a single point of failure for Memory — and on the live target there is no disk at
+all.** On Fly, volumes are per-machine: `fly scale count 2` would give two machines two *different*
+databases, silently splitting memory and breaking idempotency, so the default is `fly scale count 1`
+with `min_machines_running = 1`. **On the Hugging Face Space that actually serves this, the problem
+is sharper: a Space has no persistent disk at all, so `data/harness.db` resets whenever the Space
+restarts or sleeps** (`docs/deploy-huggingface.md`, "Storage is ephemeral"). This paragraph used to
+end "Render's free tier has **no** persistent disk, which is why Fly is the recommended first
+target" — true when Fly was the target, and exactly backwards now that it is not.
+
+For Phases 1 and 2 the cost is bounded: the span trace and the in-process run registry do not
+survive a restart, and neither is load-bearing for a replay demo. **Phase 3 is where this stops
+being an annoyance and becomes a design constraint** — cross-run memory is the entire point of that
+slice, and on the Space it would be amnesiac between restarts, which would make its Verify step 2
+("4th flaky run shows `occurrences=3`") unreachable on the live target. Decide it at the start of
+Phase 3, not at its Verify step. *Migration path:* swap `SqliteMemoryStore` for
+`PostgresMemoryStore` (Supabase, or Fly Postgres) — the `MemoryStore` protocol exists precisely so
+this is one class and no call-site changes. Losing memory is otherwise regenerable and acceptable
+for this project.
 
 **3. Credentials on a public portfolio repo.**
 *Default:* the harness repo is public; the demo repo is separate; the PAT is fine-grained and scoped
@@ -1900,10 +2018,12 @@ model id in config, hash the prompt into every trace, and keep `scripts/eval.py`
 fails on <100 % accuracy over the canned set. That turns drift into a red build instead of a quiet
 regression.
 
-**11. Fly scale-to-zero could delay webhook handling.**
-A cold machine takes ~2–5 s to wake, inside GitHub's 10 s delivery timeout but not comfortably.
-*Default:* `min_machines_running = 1` (~$2/month). Alternative if cost matters: accept the cold
-start and rely on GitHub's redelivery.
+**11. Scale-to-zero could delay webhook handling — and a sleeping Space wakes slower than Fly.**
+A cold Fly machine takes ~2–5 s to wake, inside GitHub's 10 s delivery timeout but not comfortably;
+*default* there: `min_machines_running = 1` (~$2/month). A sleeping Hugging Face Space takes
+substantially longer, so on the live target exceeding the 10 s timeout is the expected case rather
+than a near miss. Phase 5 owns this. *Default there:* accept the cold start and rely on GitHub's
+redelivery — which is what makes Phase 5's idempotency work load-bearing rather than decorative.
 
 **12. Only run this against repositories you own.**
 Automated re-runs and PRs against someone else's repo are a fast way to get a token banned.
@@ -1914,12 +2034,17 @@ returns 403 for anything not on it.
 
 ## Execution order at a glance
 
-| Phase | Ships | Gate to move on |
-|---|---|---|
-| 0 | Scaffold, healthz, layering test | `pytest` + `docker compose up` green |
-| 1 | Investigator + Diagnostician, 1 fixture, deployed | Correct category + ≥1 citation from Fly URL |
-| 2 | Remediator (retry) + Guardrails + approvals | Flaky auto-retries; regression blocked; 90-case deny test green |
-| 3 | Memory | 4th flaky run shows `occurrences=3`, `likely_flaky`, retry cap bites on the 3rd |
-| 4 | Evaluator + Recovery + eval harness | Fabricated citation → escalate, no remediation; `eval.py` 4/4 |
-| 5 | Trace view + real webhook | Redelivery dedupes; secret-leak test green; live run from the demo repo |
-| 6 | Second adapter sketch | `git diff --stat -- src/harness/` is empty; contract suite green ×3 |
+| Phase | Status | Ships | Gate to move on |
+|---|---|---|---|
+| 0 | **done** — `phase-0-green` | Scaffold, healthz, layering test | `pytest` + `docker compose up` green |
+| 1 | **done** — `phase-1-green` | Investigator + Diagnostician, 1 fixture, deployed, **plus Recovery** | Correct category + ≥1 citation from the public URL |
+| 2 | next | Remediator (retry) + Guardrails + approvals | Flaky auto-retries; regression blocked; 90-case deny test green |
+| 3 | | Memory | 4th flaky run shows `occurrences=3`, `likely_flaky`, retry cap bites on the 3rd |
+| 4 | | Evaluator + eval harness (Recovery shipped in 1) | Fabricated citation → escalate, no remediation; `eval.py` 4/4 |
+| 5 | | Trace view + real webhook | Redelivery dedupes; secret-leak test green; live run from the demo repo |
+| 6 | | Second adapter sketch | `git diff --stat -- src/harness/` is empty; contract suite green ×3 |
+
+Phase 2's gate is amended by that phase's own amendment 3: with the retry-count stub failing closed,
+"flaky auto-retries" is not demonstrable until Memory is real. Either inject a stub count under the
+cap for that one scenario, or move the auto-retry half of the gate to Phase 3 and gate Phase 2 on
+the deny instead. The 90-case deny test is unaffected and remains the load-bearing half.
