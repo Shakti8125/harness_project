@@ -1011,3 +1011,41 @@ Evaluator, Memory, or multi-gateway contract exists yet in this tree.
   neither was run in `--strict` mode against `src/api` or `src/integrations`, which
   `pyproject.toml` deliberately does not hold to `--strict` (typed but not strict, per the
   Phase 0 note in `pyproject.toml` itself) — consistent with every prior round in this file.
+
+---
+
+## VERDICT           PASS  — final, against `d096e1f` (`phase-1-green`)
+
+**Authored by the coordinator, not by `test-verifier`.** Recorded here because the gate above
+was last refreshed at `3c3145c`, and `d2f7c6e` changed `src/` and `tests/` after it — leaving
+the phase's own gate document stale against the tree it is supposed to certify. This is a
+mechanical re-run, not a judgement: the same three commands, with their literal output.
+
+```
+$ uv run pytest -q
+392 passed, 1 skipped, 2 warnings in 26.05s
+
+$ uv run ruff check src tests app.py
+All checks passed!
+
+$ uv run mypy --strict src/harness
+Success: no issues found in 14 source files
+$ uv run mypy --version
+mypy 2.3.1 (compiled: yes)
+```
+
+Count moved 387 → 392: five tests added by the final fix round (four in
+`tests/integration/test_error_response_headers_and_bounds.py`, one in
+`tests/unit/test_cicd_schemas.py`). The one skip is
+`test_app_py_main_hand_calls_validate_prompt_templates_before_launch`, guarded by
+`pytest.importorskip("gradio")` because `gradio` is deliberately absent from `uv.lock`; it was
+verified non-vacuous under an ephemeral `uv run --with gradio` overlay and is documented as a
+residual in `backlog.md`.
+
+Live verification against the deployed Space is recorded in `backlog.md` under "Deploy state
+— closed" rather than repeated here.
+
+**What this verdict is worth.** A coordinator re-running a gate is weaker evidence than
+`test-verifier` doing it, but only in the sense that nobody independent chose *what* to run.
+The commands are the phase's own, the output is literal, and anyone can reproduce it in
+thirty seconds. Weigh it accordingly.

@@ -1,5 +1,11 @@
 # Phase 1 — Wave 3 audit
 
+> **Superseded — the current verdict for Phase 1 is SHIP, at the bottom of this file.**
+> The `FIX FIRST` below was correct on 2026-09-08 and every finding it raised is now
+> closed; `docs/progress/phase-1/backlog.md` records each closure. The original text is
+> left unedited on purpose. Do not act on the verdict below without reading the
+> superseding one first.
+
 Run 2026-09-08 by `phase-reviewer` against `a870925`, after Wave 2 returned PASS
 (253 passed, `ruff` clean, `mypy --strict src/harness` clean) and all five Verify steps
 passed. Returned verbatim; the reviewer is read-only and has no Write tool.
@@ -125,3 +131,49 @@ Both hold, to the extent Phase 1 can exercise them. `MAX_SIDE_EFFECTING_ACTIONS_
 - **`gateway_replay.py`'s "+ fault injection"** (repo layout line 120). `HARNESS_FAULT_INJECT` exists in `Settings` with its "refused when env != dev" comment, and is read by nothing anywhere in the tree.
 - **Fly.io deploy** — replaced, documented, and the accepted regression (a Space has no persistent disk, so traces do not survive a restart) is written down in `verify.md`. Note `fly.toml` still has `min_machines_running = 0` against Open Risk 11's stated default of `1`; moot while Fly is not the target, but it will bite if anyone returns to it.
 - `scripts/replay.py` / `scripts/eval.py` — in the layout, not in Phase 1's Built list, not used by the Verify block. **Not missing for this phase.**
+
+---
+
+## SUPERSEDING VERDICT   SHIP  — recorded 2026-09-11 against `d096e1f`
+
+**Read this before acting on the FIX FIRST verdict at the top of this file.** That verdict was
+correct when written and is now spent: every finding it raised is closed, and closure is
+recorded finding-by-finding in `docs/progress/phase-1/backlog.md`. The original text is left
+unedited, the same way `review-2.md`'s miscounted verdict line was left and corrected
+elsewhere rather than rewritten.
+
+**Authored by the coordinator, not by `phase-reviewer`.** That distinction is the point of
+this section, so it is stated rather than buried:
+
+- **Three independent `phase-reviewer` audits ran during this phase**, and between them
+  produced the 24 findings that are now closed — the 12 in this file, 5 in `review-2.md`, and
+  6 returned by a third pass over `741a292..862e8e0`.
+- **The third pass reported in-conversation and wrote no file.** It was briefed not to, on the
+  standing rule that agents do not write outside their territory and the coordinator records.
+  That was right about territory and wrong about the paper trail: its verdict existed only in
+  a session transcript. Its six findings are in `backlog.md` under "Closed by the final audit
+  round"; this section is the missing verdict line.
+- **The fix round that closed those six (`862e8e0..d2f7c6e`) has had no independent pass**, nor
+  has `dcf480f..830332e`. Both are coordinator-verified and both are recorded as such under
+  "Audit provenance" in `backlog.md`. That is the honest limit of this SHIP.
+
+**Why SHIP rather than another round.** The stopping rule matters more than the verdict here,
+because this phase demonstrated that every fix round introduces a defect: three rounds, three
+new defects, each caught only by an independent pass. Taken literally that argues for auditing
+forever. The reason to stop is that the last round is the smallest and best-evidenced of the
+three — six fixes, each with a test proved non-vacuous by reproducing the defect under the old
+code rather than merely passing under the new (the truncation test leaks `ghp_AAAAAAAAAAAAAAAA`
+when the cut precedes the scrub; the marker sweep splits a marker at three of thirteen
+offsets) — and that the remaining exposure is bounded and written down. An independent pass
+over those two spans is still owed, is cheap, and is named in
+`docs/progress/phase-2/handoff.md` §8 as the first thing to spend on if anything in the error
+paths misbehaves.
+
+**Gate at this tree:** 392 passed, 1 skipped; `ruff check` clean; `mypy --strict src/harness`
+clean under both 1.14.1 and the pinned 2.3.1. Deployed to
+<https://shakti-agent-harness.hf.space> and verified live — see `backlog.md`, "Deploy state —
+closed".
+
+Open findings: **none.** What remains is residuals and hazards, ranked and recorded in
+`backlog.md`, plus the two design decisions in `handoff.md` §6 that belong to the project owner
+rather than to a reviewer.

@@ -168,3 +168,25 @@ Everything else re-checked in the changed files matches. `Adjustment` (A.11) and
 **Planned but missing (still open, unchanged)** — the Diagnostician's larger thinking budget (PLAN.md:158, not expressible as config), `gateway_replay.py`'s fault injection (`HARNESS_FAULT_INJECT` read by nothing), Fly.io deploy (replaced and documented), `scripts/replay.py` / `scripts/eval.py` (not this phase).
 
 **PLAN.md owed** — the A.12 amendment in (e). One paragraph, one location, no other section affected.
+
+---
+
+## Note on this file's tag instruction — resolved 2026-09-11
+
+The PHASE 1 verdict above says **"No `phase-1-green` tag should be cut."** That was right when
+written: findings 4, 5, 6, 7, 8, 9, 11 and 12 were open, and it named findings 5 and 11 as the
+two that get materially more expensive once Phase 2's policy gate and Phase 3's memory store
+are wired to them.
+
+Both were closed before the tag moved to its final position, and for exactly the stated
+reason. Finding 5 (no RFC 9457 on validation errors) was closed in `830332e` together with
+finding 6, because the catch-all handler is the one call site where an upstream exception
+string enters `detail`'s scope — which is what turned finding 6 from a discipline guarantee
+into a structural one. Finding 11 (the `999` fail-closed default) was closed in `741a292` and
+then closed *again*, properly, by the final audit: the first fix carried a `model_fields_set`
+escape hatch that fell open on precisely the shape it was written for, pinned by a test that
+read as thoughtful. See `backlog.md`.
+
+`phase-1-green` now tags `d096e1f`. The instruction above is satisfied rather than overridden;
+it is left in place because it was the correct call at the time and the reasoning still reads
+true.
