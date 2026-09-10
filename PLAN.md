@@ -1456,7 +1456,9 @@ class PriorHistory(BaseModel):
     last_verdict: str | None = None
     last_seen_at: datetime | None = None
     prior_hint: Literal["likely_flaky","likely_real","unknown"] = "unknown"
-    retries_in_24h: int = 0
+    retries_in_24h: int = 0     # conditional: unavailable=True fails closed at 999 (B.3)
+                                # unless a caller supplies a value explicitly. Enforced on
+                                # construction, model_validate and model_copy alike.
     sample_run_ids: list[str] = []
     unavailable: bool = False
 
@@ -1581,8 +1583,17 @@ Errors use RFC 9457 `application/problem+json`: `{type, title, status, detail, i
 | Response not JSON | `json.JSONDecodeError` | Recovery loop (3 attempts, error fed back) | exhausted → `invalid_output` |
 | JSON but schema-invalid | `ValidationError` | Recovery loop with `e.errors()` attached | exhausted → `invalid_output` |
 | `finish_reason == "MAX_TOKENS"` | field | treated as schema-invalid; retry with `max_output_tokens × 1.5` (once) | recorded |
-| Safety block / empty candidates | `finish_reason == "SAFETY"` or no candidates | no retry (deterministic) | escalate `invalid_output`, `detail.finish_reason` recorded |
+| Safety block / empty candidates | deterministic refusal (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`) or no candidates | no retry (deterministic) | escalate `invalid_output`, `detail.finish_reason` recorded |
 | Network unreachable | `httpx.ConnectError` | 3 attempts, exp backoff | escalate `llm_upstream` |
+
+The deterministic-refusal list is the set that passes one admitting test: *is the refusal a
+function of the content we sent, such that asking again cannot change the answer?* See
+`recovery._TERMINAL_FINISH_REASONS` for that test applied to every member of the SDK's
+`FinishReason` enum, including the enumerated exclusions and why each was left retryable —
+notably the image reasons (unreachable: this loop never requests an image modality) and
+`MALFORMED_FUNCTION_CALL` (a defective sample, which is the one case retrying reliably fixes).
+Pointing at the constant rather than restating the list keeps this row from going stale the
+next time the SDK pin moves.
 
 ## B.2 GitHub API
 

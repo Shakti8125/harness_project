@@ -16,8 +16,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from pathlib import Path
@@ -40,6 +41,13 @@ from src.settings import get_settings
 APP_VERSION = "0.1.0"
 
 PROBLEM_JSON = "application/problem+json"
+
+# Mirrors `RunId` (`src.harness.contracts`) — kept as a plain module-level regex rather
+# than imported from there so this file doesn't reach into pydantic internals
+# (`RunId.__metadata__`) just to get the pattern back out. Used by `problem()` to decide
+# whether a caller-controlled path segment is shaped like a real run id before echoing it
+# (re-audit finding 5).
+_RUN_ID_PATTERN = re.compile(r"^run_[0-9A-HJKMNP-TV-Z]{26}$")
 
 logger = logging.getLogger("harness.api")
 
@@ -179,6 +187,7 @@ def problem(
     title: str,
     detail: str,
     run_id: str | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
     """An RFC 9457 `application/problem+json` body.
 
@@ -194,6 +203,26 @@ def problem(
     exception's string first enters `detail`'s scope, which is why this round makes the
     guarantee structural instead: whatever ends up in `detail`, by convention or by
     accident, is scrubbed before it leaves the process.
+
+    `headers`, if given, are attached to the response as-is — deliberately **not** passed
+    through the `Redactor`. They are always framework- or route-authored (RFC 9110
+    §15.5.6's `Allow` on a 405, a future route's `Retry-After` on a 429 or
+    `WWW-Authenticate` on a 401 — `StarletteHTTPException.headers`, never something lifted
+    from the request), the same trust boundary this function already extends to `title`
+    and to `exc.detail` in `handle_http_exception` below. A generic byte-content scrub
+    here would risk mangling a spec-shaped value (`Allow: HEAD, POST, GET`,
+    `Retry-After: 30`) for a threat model — this process's own code choosing to leak a
+    secret through a header it authored itself — that scrubbing the body already doesn't
+    defend against either. If a later phase ever threads caller-influenced data into a
+    response header, that call site should scrub it before it reaches `problem()`, the
+    same discipline `detail`'s authors already keep; this function will not silently do
+    it for them, because doing so for every header would break the ones above (re-audit
+    finding 1).
+
+    `run_id` is echoed into the body only when it is shaped like a real `RunId`
+    (`_RUN_ID_PATTERN`) — a caller-supplied path segment that failed to route (`GET
+    /v1/runs/x`, `_run_id_in_scope` reading `request.path_params["run_id"]`) is silently
+    omitted rather than reflected back unvalidated (re-audit finding 5).
     """
     body: dict[str, Any] = {
         "type": "about:blank",
@@ -202,11 +231,16 @@ def problem(
         "detail": detail,
         "instance": str(request.url.path),
     }
-    if run_id is not None:
+    if run_id is not None and _RUN_ID_PATTERN.match(run_id):
         body["run_id"] = run_id
     scrubbed = get_app_context().recorder.redactor.scrub(body)
     assert isinstance(scrubbed, dict)  # body was a dict; Redactor preserves the JSON shape
-    return JSONResponse(status_code=status_code, content=scrubbed, media_type=PROBLEM_JSON)
+    return JSONResponse(
+        status_code=status_code,
+        content=scrubbed,
+        media_type=PROBLEM_JSON,
+        headers=dict(headers) if headers else None,
+    )
 
 
 def _run_id_in_scope(request: Request) -> str | None:
@@ -227,6 +261,10 @@ def _run_id_in_scope(request: Request) -> str | None:
     return state_value if isinstance(state_value, str) else None
 
 
+_MAX_VALIDATION_ERRORS = 20   # errors beyond this are counted, not rendered
+_MAX_DETAIL_LENGTH = 2000     # bytes; applied after joining, so it also bounds one huge loc
+
+
 @app.exception_handler(RequestValidationError)
 async def handle_validation_error(
     request: Request, exc: RequestValidationError
@@ -234,22 +272,43 @@ async def handle_validation_error(
     """RFC 9457 for a malformed request body or query, per A.12 (Wave-3 finding 5).
 
     FastAPI's default 422 handler serves `{"detail": [...]}` with each error's `"input"`
-    key — the caller's submitted value — echoed back verbatim; for `POST /v1/runs`,
-    `input` is `RunRequest.subject`, arbitrary caller-supplied JSON, reflected unread and
-    unredacted. This handler builds `detail` from only `loc` (where) and `msg` (why) for
-    each error and never touches `err["input"]`, so nothing the client sent is reproduced
-    in the response, and there is nothing here for `problem()`'s `Redactor` pass to need
-    to catch.
+    key — the caller's submitted *value* — echoed back verbatim; for `POST /v1/runs`,
+    `input` is `RunRequest.subject`, arbitrary caller-supplied JSON. This handler builds
+    `detail` from only `loc` (where) and `msg` (why) and never touches `err["input"]`, so
+    the submitted value never reaches the response.
+
+    That is narrower than "nothing the client sent is reproduced" — the previous version
+    of this docstring overclaimed it (re-audit finding 3). `RunRequest` is
+    `extra="forbid"`, so an unrecognised JSON *key* is itself part of `loc` (Pydantic
+    reports `"Extra inputs are not permitted"` at `body.<that key>`), and an attacker who
+    controls key names controls a slice of this response. `problem()`'s `Redactor` pass
+    still runs over the result and catches a registered secret sitting in key position,
+    but an arbitrary non-secret-shaped key passes through unchanged; `loc`/`msg`-only
+    construction doesn't close that, because here the key name *is* the location.
+
+    Two bounds keep that reflection from becoming an amplification vector on this
+    unauthenticated route: at most `_MAX_VALIDATION_ERRORS` errors are rendered (the rest
+    are counted into a trailing "N more" note, not dropped silently), and the assembled
+    `detail` is hard-capped at `_MAX_DETAIL_LENGTH` bytes regardless of how many errors
+    contributed to it or how long any single `loc` is — so one caller-chosen giant key
+    bounds the same way many small ones do.
     """
-    reasons = "; ".join(
-        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
-        for error in exc.errors()
-    )
+    errors = exc.errors()
+    reasons: list[str] = []
+    for error in errors[:_MAX_VALIDATION_ERRORS]:
+        loc = ".".join(str(part) for part in error["loc"])
+        reasons.append(f"{loc}: {error['msg']}")
+    detail = "; ".join(reasons) or "The request could not be validated."
+    remaining = len(errors) - len(reasons)
+    if remaining > 0:
+        detail += f"; ... and {remaining} more error(s)"
+    if len(detail) > _MAX_DETAIL_LENGTH:
+        detail = detail[: _MAX_DETAIL_LENGTH - 1].rstrip() + "…"
     return problem(
         request,
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         title="Validation error",
-        detail=reasons or "The request could not be validated.",
+        detail=detail,
         run_id=_run_id_in_scope(request),
     )
 
@@ -272,6 +331,16 @@ async def handle_http_exception(
     needing to remember `problem()` instead. `exc.detail` is framework/route-authored,
     never client input, so it is safe to surface as `detail` — and still passes through
     `problem()`'s `Redactor` scrub regardless.
+
+    `exc.headers` is forwarded to `problem()` and attached to the response unchanged.
+    Starlette's own default handler sets it (its 405 for a matched path with the wrong
+    method carries `Allow`, RFC 9110 §15.5.6's MUST), and this handler is what stands
+    between that default and the client now that routing goes through `problem()`
+    instead — dropping `exc.headers` here would silently strip `Allow` off every 405, and
+    `Retry-After`/`WWW-Authenticate` off any future route-raised `HTTPException(429, ...)`
+    or `HTTPException(401, ...)`, which is exactly the regression re-audit finding 1
+    measured (`DELETE /v1/runs` losing `Allow`). See `problem()`'s docstring for why those
+    headers are forwarded as-is rather than run through the `Redactor`.
     """
     try:
         title = HTTPStatus(exc.status_code).phrase
@@ -284,6 +353,7 @@ async def handle_http_exception(
         title=title,
         detail=detail,
         run_id=_run_id_in_scope(request),
+        headers=exc.headers,
     )
 
 

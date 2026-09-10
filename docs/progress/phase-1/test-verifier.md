@@ -847,3 +847,167 @@ source defect discovered independently — fixed under `tests/**` as directed.
 - `D:\Documents\harness_project\tests\unit\test_cicd_schemas.py` (new)
 - `D:\Documents\harness_project\tests\integration\test_diagnostician_wire_schema_excludes_harness_fields.py` (new)
 - `D:\Documents\harness_project\tests\integration\test_investigator_additional_tool_outcomes.py` (new)
+
+---
+
+# Fix round: re-audit findings 1, 2, 3, 4, 5 (api-surface + harness-core + cicd-integration)
+
+Gating the round that closed all five FIX FIRST findings from the independent re-audit:
+finding 1 (medium, `src/api/main.py` — `exc.headers` dropped on the 405/401/429 path),
+findings 3 and 5 (low, same file — unbounded 422 `detail`, unvalidated `run_id` echo),
+finding 2 (low, `src/harness/recovery.py` — the terminal-finish-reason set), and finding 4
+(low, `src/integrations/cicd/schemas.py` — `PriorHistory.model_copy` not re-running the
+fail-closed rule).
+
+## VERDICT PASS
+
+## Gate results
+
+| Command | Actual output | Matches expected? |
+|---|---|---|
+| `pytest -q` (full suite) | `387 passed, 1 skipped, 2 warnings in 25.50s` | y — baseline was 361 passed/1 skipped; +26 is exactly the count of new tests below, zero regressions, the same 1 pre-existing skip (unchanged, not a new skip) |
+| `ruff check src/ tests/ app.py` | `All checks passed!` | y |
+| `uv run mypy --strict src/harness` | `Success: no issues found in 14 source files` (mypy 2.3.1, confirmed via `uv run mypy --version`) | y |
+| bare-PATH `mypy --strict src/harness` | `Success: no issues found in 14 source files` (mypy 1.14.1, confirmed via `mypy --version`) | y — both pins clean, not just the one the prior audit ran |
+| `pytest tests/test_layering.py tests/unit/test_no_env_access.py -q` | `109 passed in 0.55s` | y — the project's central layering claim, unaffected by this round |
+
+Full pytest tail:
+```
+........................................................................ [ 18%]
+........................................................................ [ 37%]
+........................................................................ [ 55%]
+........................................................................ [ 74%]
+........................................................................ [ 92%]
+...........................s                                             [100%]
+387 passed, 1 skipped, 2 warnings in 25.50s
+```
+(The two warnings are the pre-existing `StarletteDeprecationWarning`/`anyio` deprecation
+noise from the pinned FastAPI/Starlette/anyio versions, unrelated to this round — present
+at baseline too.)
+
+## Tests written
+
+**Finding 1 (`src/api/main.py`, medium) — `tests/integration/test_error_response_headers_and_bounds.py`:**
+- `test_405_on_a_matched_route_carries_a_nonempty_allow_header` — `DELETE /v1/runs` → 405
+  with `Allow: POST` exactly (the real, verified value for this route's registration
+  order, not just "non-empty").
+- `test_http_exception_with_www_authenticate_header_is_forwarded` — hand-built
+  `HTTPException(401, headers={"WWW-Authenticate": "Bearer"})` through
+  `handle_http_exception` directly → header intact.
+- `test_http_exception_with_retry_after_header_is_forwarded` — same for
+  `HTTPException(429, headers={"Retry-After": "30"})`.
+- `test_http_exception_without_headers_is_unaffected` — control: no headers on the
+  exception, no regression to the ordinary 404 case.
+
+**Finding 3 (`src/api/main.py`, low) — same file:**
+- `test_422_detail_is_capped_and_notes_the_remainder_under_many_extra_keys` — 300
+  unrecognized JSON keys on `POST /v1/runs` → `detail` ≤ 2000 bytes, exactly 20 rendered
+  `"Extra inputs are not permitted"` entries, `"... and 280 more error(s)"` tail.
+- `test_422_detail_hard_caps_a_single_pathologically_long_key` — one 5000-char JSON key →
+  `detail` == exactly 2000 bytes, ends with `"…"`, no bogus `"more error(s)"` tail.
+- `test_422_detail_for_an_ordinary_small_request_is_unaffected_by_the_new_bounds` —
+  non-vacuity control on the common case.
+
+**Finding 5 (`src/api/main.py`, low) — same file:**
+- `test_get_run_with_a_non_ulid_id_omits_run_id_from_the_body` — `GET
+  /v1/runs/not-a-real-run-id` → 404, no `run_id` key at all.
+- `test_get_run_with_a_ulid_shaped_unknown_id_still_echoes_it` — positive control: a
+  real-`RunId`-shaped but unknown id is still echoed.
+- `test_problem_omits_an_unshaped_run_id_when_called_directly` — unit-level pin on
+  `problem()` itself with a path-traversal-shaped `run_id` (`"../etc/passwd"`).
+
+**Finding 2 (`src/harness/recovery.py`, low) — `tests/unit/test_recovery_finish_reason_admission.py`:**
+- `test_terminal_finish_reasons_end_the_loop_on_the_first_attempt`, parametrized over
+  `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`,
+  `NO_CANDIDATE_FINISH_REASON` — `call` invoked exactly once, `attempts[0].outcome ==
+  "fatal"`, `error.detail == {"finish_reason": <reason>}`.
+- `test_excluded_finish_reasons_are_retried_to_the_structured_budget`, parametrized over
+  `MALFORMED_FUNCTION_CALL`, `IMAGE_SAFETY`, `LANGUAGE`, `OTHER`, `UNSTATED_FINISH_REASON`
+  (`"UNKNOWN"`) — `call` invoked exactly `STRUCTURED_MAX_ATTEMPTS` times (imported from
+  `src.harness.recovery`, not hardcoded `3`), every attempt `"validation_error"`, terminal
+  `error.detail` carries `"last_error"` and **not** `"finish_reason"` — this is the half
+  that pins the exclusions so a future widening of `_TERMINAL_FINISH_REASONS` cannot
+  quietly make one of these terminal without a test failing.
+
+**Finding 4 (`src/integrations/cicd/schemas.py`, low) — `tests/unit/test_cicd_schemas.py` (extended):**
+- `test_model_copy_with_unavailable_flipped_on_fails_closed_to_999` — the exact hole the
+  audit found: `PriorHistory(...).model_copy(update={"unavailable": True})` → `999`
+  (previously `0`), and the original instance is untouched.
+- `test_model_copy_explicit_retries_in_the_same_update_call_still_wins` —
+  `model_copy(update={"unavailable": True, "retries_in_24h": 0})` → `0`.
+- `test_model_copy_preserves_an_already_fail_closed_instance_on_an_unrelated_update` — a
+  construction-time explicit `retries_in_24h=5` survives an unrelated later `model_copy`.
+- `test_model_copy_deep_variant_also_fails_closed` — `deep=True` variant.
+- `test_model_construct_deliberately_bypasses_the_fail_closed_rule` —
+  `model_construct(unavailable=True).retries_in_24h == 0`, pinned as the documented,
+  intended bypass rather than a residual bug.
+
+## Failures
+
+None. All 26 new tests pass against the current source; the full suite (387 tests) is
+green with zero regressions.
+
+## Non-vacuity check
+
+`git worktree add` against `HEAD` (to run the new tests against the pre-fix tree) failed
+on this Windows filesystem — unrelated to this round, a `fixtures/scenarios/real_regression/
+api/...json` fixture filename exceeds `MAX_PATH` on checkout ("Filename too long"), and the
+worktree was cleanly removed afterward (`git worktree list` confirms only the primary tree
+remains). Temporarily overwriting the three fixed files in `src/**` with their pre-fix
+content to run tests against them, even transiently, would cross into territory this agent
+does not own, so that path was not taken either.
+
+Verified instead by reading the actual diff against `741a292` (the commit both the audit
+and the fixes are against) and confirming every symbol each new test depends on is genuinely
+new, not a restatement of prior behaviour:
+- `git show 741a292:src/api/main.py | grep -n '_RUN_ID_PATTERN\|_MAX_DETAIL_LENGTH\|_MAX_VALIDATION_ERRORS\|headers:'` → **no matches**. `problem()` at that revision took no
+  `headers` parameter at all, so `test_http_exception_with_www_authenticate_header_is_forwarded`
+  and its sibling would have raised `TypeError: problem() got an unexpected keyword argument
+  'headers'` inside `handle_http_exception`, not merely failed an assertion; the two
+  `_MAX_*`-referencing tests would have raised `AttributeError: module 'src.api.main' has
+  no attribute '_MAX_DETAIL_LENGTH'` at collection/call time.
+- `git show 741a292:src/harness/recovery.py | grep -n 'PROHIBITED_CONTENT\|SPII'` → **no
+  matches** — both values were absent from `_TERMINAL_FINISH_REASONS` at baseline, so the
+  terminal-reason test parametrized on them would have asserted `calls == 1` against a
+  loop that actually ran `STRUCTURED_MAX_ATTEMPTS` times, a genuine assertion failure.
+- `git show 741a292:src/integrations/cicd/schemas.py | grep -n 'model_copy'` → **no
+  matches** — `PriorHistory` had no `model_copy` override at all, so
+  `test_model_copy_with_unavailable_flipped_on_fails_closed_to_999` would have exercised
+  pydantic's own `BaseModel.model_copy` and observed `retries_in_24h == 0`, the exact
+  failure the audit reported.
+
+This is weaker than an executed red/green transition, but it is not a guess: every
+assertion above names a symbol or a concrete pre-fix value read directly out of the
+baseline commit, not out of any agent's prose description of it.
+
+## Coverage gaps
+
+None new against this round's five findings — each has at least one test naming the exact
+reproduction recipe both fixing agents' handoffs specified (api-surface's three numbered
+recipes, harness-core's admitting-test parametrization, cicd-integration's four bullet
+points), and the boundary/control cases (non-vacuity: ordinary small 422, non-`unavailable`
+`model_copy`, non-terminal finish reasons) are covered alongside the fixes themselves.
+
+Pre-existing gaps (unrelated to this round, restated from the prior section for
+continuity): `AdditionalToolCallOutcome.reason` PLAN.md-amendment cross-check still owed to
+the coordinator, not to `tests/**`; `test_guardrails.py`, `test_fingerprint.py`,
+`test_evaluator.py`, `test_no_secret_leak.py`, `test_idempotency.py`,
+`contract/test_tool_gateway_contract.py` remain correctly absent — no Guardrails,
+Evaluator, Memory, or multi-gateway contract exists yet in this tree.
+
+## Notes for the reviewer
+
+- `PLAN.md`'s working-tree diff (B.1's safety row naming `PROHIBITED_CONTENT`/`SPII` and
+  pointing at `recovery._TERMINAL_FINISH_REASONS`; A.11's `retries_in_24h` comment) was
+  read and cross-checked against the shipped source for consistency, not edited — `PLAN.md`
+  is out of this agent's territory.
+- `./data/harness.db` confirmed untouched by the autouse `_guard_real_db_untouched`
+  fixture across the whole 387-test run (it would have failed loudly otherwise); no test
+  in this round's three new/extended files touches a database at all (the recovery tests
+  use an unbound `TraceRecorder` against `Path("unused.db")`, never opened; the schema and
+  header/bounds tests that do open one go through `tmp_db_path`).
+- Both mypy pins (2.3.1 via `uv run`, 1.14.1 bare-PATH) were run against
+  `src/harness` specifically, matching the phase's `[[tool.mypy.overrides]]` strict scope;
+  neither was run in `--strict` mode against `src/api` or `src/integrations`, which
+  `pyproject.toml` deliberately does not hold to `--strict` (typed but not strict, per the
+  Phase 0 note in `pyproject.toml` itself) — consistent with every prior round in this file.

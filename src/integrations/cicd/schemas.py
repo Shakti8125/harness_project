@@ -13,8 +13,9 @@ returns, so a ``Diagnosis.confidence_adjustments`` list built from that
 function's output validates without a foreign-model coercion error.
 """
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -103,8 +104,7 @@ class PriorHistory(BaseModel):
     sample_run_ids: list[str] = []
     unavailable: bool = False
 
-    @model_validator(mode="after")
-    def _fail_closed_retry_cap_when_unavailable(self) -> "PriorHistory":
+    def _apply_fail_closed_retry_cap(self) -> None:
         """Appendix B.3: the degraded-memory path must default the retry-cap fact to
         a conservative ``999`` "so that the flaky-retry rule fails closed" -- an
         unreadable history must not read as "no retries yet" once a retry cap is
@@ -116,13 +116,49 @@ class PriorHistory(BaseModel):
         "supplied as 0", so an explicit ``retries_in_24h=0`` from a caller who
         genuinely means it still survives untouched.
 
+        Shared by the ``after`` validator below (construction, ``model_validate``,
+        ``model_validate_json``) and by the ``model_copy`` override further down
+        (which pydantic deliberately does *not* run validators for -- see that
+        method's docstring for why a second call site is required here rather
+        than relying on the validator alone).
+
         ``object.__setattr__`` bypasses the model's own ``frozen=True`` -- the
-        documented way to mutate a field from inside an ``after`` validator, which
-        runs once, before the model is handed to any caller.
+        documented way to mutate a field from a place that runs once, before the
+        model is handed to any caller.
         """
         if self.unavailable and "retries_in_24h" not in self.model_fields_set:
             object.__setattr__(self, "retries_in_24h", 999)
+
+    @model_validator(mode="after")
+    def _fail_closed_retry_cap_when_unavailable(self) -> "PriorHistory":
+        self._apply_fail_closed_retry_cap()
         return self
+
+    def model_copy(
+        self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+    ) -> "PriorHistory":
+        """``BaseModel.model_copy`` is documented as copying without re-running
+        validators -- so the ``unavailable`` implies ``retries_in_24h == 999``
+        guarantee above would silently stop holding on exactly the shape Phase 3's
+        memory wiring needs: read a history, then flip ``unavailable`` on the
+        already-constructed object when the read degrades, i.e.
+        ``history.model_copy(update={"unavailable": True})`` almost verbatim.
+
+        Reapplying the same rule against the *copy* fixes that without changing
+        ``PriorHistory``'s field shape: ``model_copy`` already unions the parent's
+        ``model_fields_set`` with ``update``'s keys on the returned instance, so an
+        explicit ``retries_in_24h`` supplied in the *same* ``update`` call is still
+        authoritative, exactly like the constructor and ``model_validate`` paths.
+
+        ``model_construct`` (pydantic's documented validation bypass) is
+        deliberately left unguarded: a caller reaching for it is opting out of
+        validation on purpose, and re-deriving fail-closed state there would mean
+        this model runs validator-equivalent logic even when explicitly told not
+        to.
+        """
+        copied = super().model_copy(update=update, deep=deep)
+        copied._apply_fail_closed_retry_cap()
+        return copied
 
 
 class InvestigationNotes(BaseModel):  # the Investigator's LLM output

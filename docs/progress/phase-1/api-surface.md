@@ -222,3 +222,138 @@ all run directly against `from src.api.main import app` with `fastapi.testclient
   (422), but the pinned FastAPI/Starlette version in this environment emits a
   `StarletteDeprecationWarning` for the `_ENTITY` name; using the non-deprecated alias
   avoids a warning that would otherwise show up on every 422 in test output.
+
+---
+
+## Fix round: re-audit findings 1, 3, 5 (FIX FIRST verdict)
+
+### Summary
+
+Three findings against the exception-handling work above, all confined to
+`src/api/main.py`. Finding 1 (medium) was a live regression: `handle_http_exception`
+built its `problem()` response from `exc.status_code`/`exc.detail` only and never read
+`exc.headers`, so any header Starlette or a route attaches to an `HTTPException` — most
+concretely `Allow` on Starlette's own 405, which RFC 9110 §15.5.6 makes a MUST — was
+silently dropped once routing went through `problem()`. Findings 3 and 5 (both low) were
+about `problem()`'s two echo paths: the 422 handler's docstring claimed "nothing the
+client sent is reproduced" when `RunRequest`'s `extra="forbid"` puts caller-supplied JSON
+*key names* into `loc` verbatim, and the same handler had no bound on `detail`'s length,
+letting a large request body of nonsense keys produce a larger response body on an
+unauthenticated route; `problem()` separately echoed a `run_id` path segment into the
+response body without checking it was shaped like a real `RunId` first.
+
+Fixed all three in `problem()` and its two callers (`handle_http_exception`,
+`handle_validation_error`), without touching the third handler
+(`handle_unhandled_exception`) or any route — none of the three findings implicated them.
+
+### Files written
+
+- `src/api/main.py` — the only file touched this round.
+
+### Contract deviations
+
+None.
+
+### Fixes and rationale
+
+**Finding 1 — `problem()` now takes `headers: Mapping[str, str] | None` and attaches it
+to the `JSONResponse` unchanged; `handle_http_exception` passes `exc.headers` through.**
+Deliberately *not* run through the `Redactor`: headers reaching `problem()` are always
+framework- or route-authored (`StarletteHTTPException.headers`), never request-derived,
+the same trust boundary already extended to `exc.detail` and to `title`. Scrubbing them
+generically would risk corrupting a spec-shaped value (`Allow: HEAD, POST, GET`,
+`Retry-After: 30`) against a threat model — this process's own code leaking a secret
+through a header it authored — that the body scrub doesn't defend against either; the
+call site is where that discipline belongs, same as `detail`. Documented as a deliberate
+choice in `problem()`'s docstring, per the finding's explicit ask to decide and say which.
+
+Verified by direct probe (`TestClient`, not a committed test — tests are
+test-verifier's): `DELETE /v1/runs` now returns `405` with `Allow: POST` (matches
+Starlette's own default-handler output for this route's registration order, confirmed by
+reproducing the same result against a bare FastAPI app with no custom handlers — the
+content of `Allow` is inherent to Starlette's partial-match routing, not something this
+fix controls or needs to). A synthetic route raising
+`HTTPException(401, headers={"WWW-Authenticate": "Bearer"})` now returns `401` with
+`WWW-Authenticate: Bearer` intact (previously stripped); `HTTPException(429,
+headers={"Retry-After": "30"})` now returns `429` with `Retry-After: 30` intact.
+
+**Finding 3 — bounded `detail` and corrected the docstring.** `handle_validation_error`
+now renders at most `_MAX_VALIDATION_ERRORS` (20) individual `loc: msg` entries, appends
+an `"... and N more error(s)"` note for the remainder instead of silently dropping them,
+and then hard-caps the assembled `detail` string at `_MAX_DETAIL_LENGTH` (2000 bytes) —
+applied after joining, so it also bounds the pathological case of one single enormous
+`loc` (a caller-chosen huge JSON key), not just many small ones. The docstring no longer
+claims "nothing the client sent is reproduced"; it now states the narrower, true
+guarantee (`err["input"]`, the submitted *value*, is never touched) and names the
+`loc`-carries-key-names caveat explicitly, including that a registered secret in key
+position is still caught by `problem()`'s `Redactor` pass but an arbitrary non-secret key
+is not.
+
+Verified by probe: a `POST /v1/runs` body with 500 extra unrecognized keys produces a
+`422` whose `detail` is exactly 2000 bytes (previously unbounded — the finding measured
+11,959→18,384 bytes on a 1-key payload; the pattern used here goes further and confirms
+the cap holds under many-key amplification too, not just one long key).
+
+**Finding 5 — `problem()` validates `run_id`'s shape before echoing it.** Added
+`_RUN_ID_PATTERN`, a module-level regex mirroring `RunId`'s `StringConstraints` pattern
+in `src/harness/contracts.py` (kept as a plain local regex rather than reaching into
+`RunId.__metadata__` to extract it, to avoid depending on pydantic internals for
+something this small). `problem()` now only sets `body["run_id"]` when the value matches;
+an unvalidated path segment (`GET /v1/runs/x`) is silently omitted rather than echoed.
+Fixed once, in `problem()` itself, so every call site — not just `get_run` — is covered,
+per the finding's note that `_run_id_in_scope` extends the same reflection to every
+handler.
+
+Verified by probe: `GET /v1/runs/x` now returns a `404` problem body with no `run_id` key
+at all (previously `{"run_id": "x"}`); `GET /v1/runs/<real-ULID-shaped-id>` for a
+non-existent run still echoes that id, since it matches the pattern.
+
+### Commands run
+
+- `uv run ruff check src/ app.py` → clean.
+- `uv run mypy src/settings.py src/api app.py` → 10 pre-existing errors, all in
+  `src/integrations/**` and `app.py:184` (`_zerogpu_handshake`); identical set and count
+  confirmed via `git stash`/`git stash pop` against the pre-fix tree. Zero new errors
+  from this diff; `src/api/main.py` itself is clean.
+- Manual `TestClient` probes (not committed — see Handoffs) exercising all three findings
+  as described above.
+
+### Deploy state
+
+Not redeployed, per instructions. No local server was left running.
+
+### Handoffs
+
+For test-verifier, a recipe for each finding (none of these are committed test files):
+
+1. **Finding 1:** `DELETE /v1/runs` (or any matched path hit with a method it doesn't
+   support) returns `405` with a non-empty `Allow` header. Separately, register a
+   throwaway route (or reuse an existing one if a suitable 401/429 case exists later)
+   that raises `HTTPException(401, headers={"WWW-Authenticate": "Bearer"})` and assert
+   the response carries that header unchanged; same for `HTTPException(429,
+   headers={"Retry-After": "..."})`.
+2. **Finding 3:** `POST /v1/runs` with a body containing many (order of hundreds)
+   unrecognized extra keys returns `422` with `len(body["detail"]) <= 2000`. Also assert
+   a normal small validation error's `detail` still reads sensibly (no regression to the
+   common case).
+3. **Finding 5:** `GET /v1/runs/<not-a-ulid>` returns `404` with `"run_id"` absent from
+   the body; `GET /v1/runs/<valid-ULID-shaped-but-unknown-id>` returns `404` with
+   `"run_id"` present and equal to the requested id.
+
+### Notes for the reviewer
+
+- Finding 1's fix restores the header content Starlette's own default 405 handler would
+  produce for a given route registration order — that content depends on which route
+  Starlette's partial-match routing picks first when several `Route` objects share a
+  path (`/v1/runs` has separate `POST` and `GET` registrations, each its own `Route`), a
+  pre-existing framework mechanic unrelated to this diff. It is not a merged
+  "all-methods-for-this-path" `Allow`; that's what Starlette itself returns.
+  `handle_http_exception` forwards whatever `exc.headers` Starlette computed rather than
+  recomputing or merging it, so it is faithful to the framework's own behavior.
+- Left `handle_unhandled_exception` untouched: it never received headers or reflected
+  either `run_id` shape or client-supplied keys, and none of the three findings named it.
+- Did not add a `headers` parameter to any of the route functions' own `problem(...)`
+  calls (`replay`, `create_run`, `get_run`, `get_run_trace`) — none of those call sites
+  had a header to lose before this round, and the finding's example of a Phase-2 route
+  choosing `raise HTTPException(409, ...)` is exactly the shape now safe to add later
+  without revisiting `problem()` again.

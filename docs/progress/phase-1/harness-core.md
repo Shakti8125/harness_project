@@ -174,3 +174,77 @@ current tree is affected.
 the pinned SDK (`google_genai 2.22.0`, `google/genai/types.py:2959` and `:2975`) rather than
 from memory. Reproduction recipes were handed to `test-verifier`, which wrote the durable
 tests; no tests were written by this agent.
+
+---
+
+# harness-core — re-audit finding 2 (terminal finish reasons)
+
+Recorded by the coordinator. The agent flagged that three instructions in its brief conflict
+on whether it should write this file: its territory rule (`src/harness/**` only), its
+standing instruction to return findings as text, and the report-back section asking for a
+docs file. **The territory rule wins and the coordinator records it** — that is the standing
+resolution, so the conflict does not need re-litigating each round.
+
+## What changed
+
+`_TERMINAL_FINISH_REASONS` (`src/harness/recovery.py`) now holds `SAFETY`, `RECITATION`,
+`BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` and the `NO_CANDIDATES` sentinel.
+
+## The finding's arithmetic was wrong, and the fix is better for it
+
+The audit said "4 of the pinned SDK's 8 deterministic-refusal reasons". The `FinishReason`
+enum in `google_genai 2.22.0` (`types.py:488-529`) has **18** members, and the audit's
+candidate list omitted seven that a consistency argument reaches — `LANGUAGE`,
+`UNEXPECTED_TOOL_CALL`, `TOO_MANY_TOOL_CALLS`, `IMAGE_PROHIBITED_CONTENT`, `IMAGE_RECITATION`,
+`IMAGE_OTHER`, `NO_IMAGE`. The agent read the enum rather than the finding and ruled on all
+18, which is what makes the set defensibly *closed* rather than merely larger.
+
+## The admitting test
+
+*Is the refusal a function of the content we sent, such that asking again cannot change the
+answer?*
+
+**Admitted:** `PROHIBITED_CONTENT` and `SPII` — both are verdicts on the input, and the repair
+instruction this loop appends cannot un-say what the evidence already contains, so all three
+attempts draw the identical refusal. `SPII` is the realistic daily case for this application:
+the input is job logs, and a log carrying an email address or a pasted credential is ordinary.
+One call instead of three, against a 20/day quota.
+
+**Declined, with reasons:** `MALFORMED_FUNCTION_CALL` and the tool-call family describe a
+generated artefact that came out wrong, not a refusal to generate — a re-sample is the remedy
+and is already what the loop applies. The image family is unreachable (this loop asks for text
+validating against a JSON schema and never requests an image modality) and would be
+re-samplable anyway. `LANGUAGE` is ambiguous in the SDK's own gloss, and ambiguity resolves
+towards retrying. `OTHER` and `FINISH_REASON_UNSPECIFIED` are catch-alls carrying no claim
+about reproducibility.
+
+## Where the agent said it is least certain
+
+`MALFORMED_FUNCTION_CALL`. At `temperature=0.0` the same prompt plausibly produces the same
+malformed call, which would make three attempts a waste. It came down on retrying because the
+failure is a defective sample rather than a refusal, and because being wrong in that direction
+costs three attempts while being wrong in the other costs a failed run. The client declares no
+tools, so it should be unreachable today. Re-litigate with real observations if that changes.
+
+## Recorded, not changed
+
+The terminal branch's message is the generic "provider returned no usable candidate" for all
+six reasons. It reads oddly for `SPII` — there *was* a candidate and it was refused — but the
+specific reason is preserved in `detail.finish_reason`, which is what B.1 requires be recorded
+and what escalation reads. Changing the message text is contract-adjacent and was left to the
+coordinator.
+
+## Plan amendment made
+
+PLAN.md B.1's safety row named only `SAFETY`. The implemented set was already wider than that
+row *before* this round, so the row is now updated to name the five provider values and to
+point at `recovery._TERMINAL_FINISH_REASONS` for the admitting test and the exclusions —
+pointing at the constant rather than restating the list, so the row does not go stale the next
+time the SDK pin moves.
+
+## Verification
+
+`uv run ruff check src/` clean; `uv run mypy --strict src/harness` clean; `tests/test_layering.py`
+71 passed; full suite 361 passed, 1 skipped at the time of the change. Recipes handed to
+test-verifier, which owns the durable tests — including the load-bearing half, which pins the
+*exclusions* so a future widening cannot quietly make a re-samplable condition terminal.

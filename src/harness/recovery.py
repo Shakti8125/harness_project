@@ -94,18 +94,66 @@ ATTR_CONTEXT_DOWNSHIFT: Final[str] = "context_downshift"
 
 #: Finish reasons that are terminal: no retry can change them.
 #:
-#: The first three are the provider's own words for a deterministic refusal. The fourth is
-#: the sentinel :mod:`src.harness.llm` writes when the response carried nothing to read at
-#: all -- Appendix B.1 puts both halves in one row ("`finish_reason == "SAFETY"` or no
-#: candidates -> no retry (deterministic)"), and an empty response is as reproducible as a
-#: stated refusal. It is imported rather than spelled again here so the writer and the
-#: reader cannot drift.
+#: Appendix B.1 names one value, ``SAFETY``, in a row that also covers "no candidates".
+#: This set is deliberately wider than that row, because ``SAFETY`` is one member of a
+#: family the provider spells with several names and a retry is worth nothing against any
+#: of them. Every member below was read off the pinned SDK's ``FinishReason`` enum
+#: (google-genai 2.22.0) rather than recalled, and admitted only after answering one
+#: question in the affirmative:
 #:
-#: Deliberately *not* included: the sentinel for a candidate that stated no finish reason.
-#: That one means "the field was absent", which says nothing about whether a second attempt
-#: would succeed, and making it terminal would turn an omission into a run failure.
+#:     *Is the refusal a function of the content we sent, such that asking again cannot
+#:     change the answer?*
+#:
+#: The asymmetry behind that question: a reason wrongly left out costs attempts from a
+#: metered budget, while a reason wrongly put in ends a run that asking again would have
+#: completed. So anything arguably re-samplable stays out.
+#:
+#: **In.** ``SAFETY``, ``RECITATION`` and ``BLOCKLIST`` (the provider's classifications of
+#: the material it was handed), plus ``PROHIBITED_CONTENT`` and ``SPII``. The last two
+#: matter in practice rather than in theory: the evidence this harness feeds a model is
+#: machine-produced text that no one wrote by hand or reviewed, so an email address, a
+#: personal identifier or a pasted secret inside it is a routine occurrence rather than an
+#: exotic one -- and the omission would bite hardest exactly there. ``SPII`` in particular
+#: is a verdict on the input, and the repair instruction this loop appends after a failed
+#: attempt cannot un-say what the evidence already contains -- so all three attempts would
+#: draw the identical refusal.
+#:
+#: Plus the sentinel :mod:`src.harness.llm` writes when the response carried nothing to
+#: read at all: Appendix B.1 puts both halves in one row ("`finish_reason == "SAFETY"` or
+#: no candidates -> no retry (deterministic)"), and an empty response is as reproducible
+#: as a stated refusal. It is imported rather than spelled again here so the writer and
+#: the reader cannot drift.
+#:
+#: **Deliberately out**, each for a stated reason rather than by oversight:
+#:
+#: * ``MALFORMED_FUNCTION_CALL``, ``UNEXPECTED_TOOL_CALL``, ``TOO_MANY_TOOL_CALLS`` --
+#:   these describe a *generated* artefact that came out wrong, not a refusal to generate.
+#:   A re-sample is exactly the remedy, and it is the remedy this loop already applies:
+#:   the attempt is scored ``validation_error`` and the next prompt carries a repair
+#:   instruction. Making them terminal would break the one case retrying reliably fixes.
+#: * ``IMAGE_SAFETY``, ``IMAGE_PROHIBITED_CONTENT``, ``IMAGE_RECITATION``, ``IMAGE_OTHER``,
+#:   ``NO_IMAGE`` -- refusals of a generated image. Twice inapplicable: this loop asks for
+#:   text that validates against a JSON schema and never requests an image modality, and a
+#:   second attempt would produce a *different* image, so the refusal is not a function of
+#:   the input at all.
+#: * ``LANGUAGE`` -- the SDK glosses it as "using an unsupported language" without saying
+#:   whose language, the prompt's or the completion's. Read the second way it is a
+#:   property of one sample and re-samplable. Ambiguity resolves towards retrying.
+#: * ``OTHER`` and ``FINISH_REASON_UNSPECIFIED`` -- catch-alls that carry no claim about
+#:   reproducibility either way.
+#: * :data:`src.harness.llm.UNSTATED_FINISH_REASON`, the sentinel for a candidate that
+#:   stated no finish reason. That one means "the field was absent", which says nothing
+#:   about whether a second attempt would succeed, and making it terminal would turn an
+#:   omission into a run failure.
 _TERMINAL_FINISH_REASONS: Final[frozenset[str]] = frozenset(
-    {"SAFETY", "RECITATION", "BLOCKLIST", NO_CANDIDATE_FINISH_REASON}
+    {
+        "SAFETY",
+        "RECITATION",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        NO_CANDIDATE_FINISH_REASON,
+    }
 )
 
 

@@ -242,3 +242,127 @@ Boundary note: I did not touch `tests/**`, `src/harness/**`, `src/api/**`, or `a
 The concurrent modifications visible in `git status` under `src/harness/` (`llm.py`,
 `orchestrator.py`, `recovery.py`) are harness-core's in-progress work, not mine —
 confirmed by `git diff` before I made any edit and left untouched throughout.
+
+---
+
+# Fix round: audit finding 4 — `PriorHistory` fail-closed validator does not
+# survive `model_copy(update=...)`
+
+## Summary
+
+The independent audit re-attacked the finding-11 validator above and found the one gap
+it doesn't cover: `PriorHistory(signature_id="x").model_copy(update={"unavailable":
+True})` returns `retries_in_24h == 0`, not `999`. `model_copy` is pydantic's documented
+"copy without re-validating" path, so the `after` validator never runs on the copy. The
+coordinator flagged this as worth fixing structurally rather than documenting, because
+Phase 3's memory wiring is expected to be exactly this shape (read a history, then flip
+`unavailable` on the already-constructed object when the read degrades).
+
+**Mechanism chosen:** override `PriorHistory.model_copy` to reapply the same fail-closed
+rule against the returned copy, rather than turning the degraded state into a required
+constructor argument or a computed field. Trade-off: this is a second call site for one
+rule instead of a single one, but it keeps `PriorHistory`'s field shape byte-identical to
+Appendix A.11 (`retries_in_24h: int = 0` stays a plain stored field, not a
+`computed_field`/property, so JSON schema generation, `model_dump()` shape, and every
+already-passing path in the audit's table are untouched) and needs no new required
+argument that every existing and future call site would have to learn. I factored the
+rule itself into one shared private method, `_apply_fail_closed_retry_cap`, called from
+both the `model_validator(mode="after")` (construction, `model_validate`,
+`model_validate_json`) and the new `model_copy` override, so there is exactly one place
+that encodes "`unavailable` implies `retries_in_24h == 999` unless explicitly
+overridden" — not two independent copies of the conditional that could drift.
+
+`model_copy` already unions the parent instance's `model_fields_set` with the `update`
+dict's keys on the object it returns (pydantic's own behaviour, not something I added),
+so the override's `"retries_in_24h" not in self.model_fields_set` check correctly treats
+an explicit `retries_in_24h` supplied in the *same* `update=` call as authoritative —
+`h.model_copy(update={"unavailable": True, "retries_in_24h": 0})` still yields `0`,
+matching the constructor and `model_validate` semantics exactly.
+
+`model_construct` (row 9 in the audit's table) is left deliberately unguarded, per the
+coordinator's explicit go-ahead: it is pydantic's documented validation bypass, so a
+caller reaching for it directly is opting out of validation on purpose. Guarding it would
+mean this model runs validator-equivalent logic in the one place a caller explicitly told
+it not to, and no code in this tree calls `model_construct` on `PriorHistory`.
+
+**No contract change.** `PriorHistory`'s fields, types, `Literal` members, and defaults
+are unchanged — Appendix A.11's transcription still matches this class field-for-field.
+Only the reachable *states* of an already-`unavailable=True` instance change (a state
+that was previously wrong on the `model_copy` path is now consistent with the
+construction path). Per the coordinator's note, A.11 still owes the one-line amendment
+already flagged in the previous round recording that `retries_in_24h`'s zero default is
+conditional on `unavailable`/explicit-override, not a plain default — that amendment is
+the coordinator's to make; I did not edit `PLAN.md`.
+
+## Files written
+
+- `src/integrations/cicd/schemas.py` — refactored the finding-11 validator body into
+  `PriorHistory._apply_fail_closed_retry_cap()` (called unchanged from the existing
+  `model_validator(mode="after")`); added `PriorHistory.model_copy` override that calls
+  `super().model_copy(...)` then reapplies the same rule to the result. Added
+  `collections.abc.Mapping` and `typing.Any` imports for the override's signature (kept
+  identical to `BaseModel.model_copy`'s own signature, verified against the installed
+  pydantic 2.13.4 via `inspect.signature`). No field, default, or `Literal` changed.
+
+## Contract deviations
+
+None. `PriorHistory`'s declared shape (fields, types, defaults) is byte-identical to
+Appendix A.11 before and after this change; the field default `retries_in_24h: int = 0`
+is untouched, and an explicit `retries_in_24h=0` still survives on every path in the
+audit's table, including the two paths that motivated this round.
+
+## Prompt changes
+
+None. `prior_history_summary` remains a hardcoded string in both agents; no prompt file
+was read or touched, per the coordinator's explicit statement that this is out of scope.
+
+## Commands run
+
+- `uv run ruff check src/` → all checks passed.
+- `uv run mypy src/integrations/cicd` → 9 errors, same 9 as the previous round
+  (`gateway_replay.py` `JsonValue` narrowing ×3, the `**dict[str, float]`
+  kwargs-unpacking pattern in `investigator.py`/`diagnostician.py`, `wiring.py:81`
+  missing return annotation). None in `schemas.py`; this diff introduces zero new mypy
+  errors.
+- `uv run pytest tests/test_layering.py -q` → 71 passed, unchanged.
+- Ad hoc verification script (not committed) covering every row in the audit's table
+  plus the fix: `PriorHistory(signature_id="x").model_copy(update={"unavailable":
+  True})` → `999` (was `0`, now fixed); the same call with `retries_in_24h=0` also
+  present in the same `update` dict → `0` (explicit override still wins); a
+  construction-time explicit `retries_in_24h=5, unavailable=True` survives an unrelated
+  subsequent `model_copy(update={"occurrences": 2})` → `5`; `deep=True` variant of the
+  fix path → `999`; `model_dump()`/`model_dump_json()` round-trips of the *copied*
+  instance → `999` (re-derived by the validator on re-validation, as before);
+  `object.__setattr__`-based direct mutation still raises under `frozen=True`;
+  `model_construct(unavailable=True)` → `0`, confirmed and left unguarded as agreed.
+
+## Handoffs
+
+- **fixtures-eval / test-verifier**: recipe below covers the `model_copy(update=...)`
+  path and the one other path this round's mechanism touches (the `model_copy` override
+  itself, for the "explicit value in the same `update` call survives" and "unrelated
+  `model_copy` doesn't disturb an already-fail-closed instance" cases). No other path in
+  the audit's table changed behaviour, so no other recipe needs updating.
+- **coordinator**: A.11 still owes the one-line amendment flagged above (conditional
+  semantics of `retries_in_24h`'s default) — not made here, as it's the coordinator's
+  call per the brief.
+
+## Notes for the reviewer
+
+Reproduction recipe for this round's fix, for whoever writes the test:
+
+- `PriorHistory(signature_id="x").model_copy(update={"unavailable": True}).retries_in_24h
+  == 999` — the audit's failing case, now fixed.
+- `PriorHistory(signature_id="x").model_copy(update={"unavailable": True,
+  "retries_in_24h": 0}).retries_in_24h == 0` — explicit override supplied in the same
+  `update=` call still wins (mirrors the existing constructor-path test for finding 11).
+- `PriorHistory(signature_id="x", unavailable=True,
+  retries_in_24h=5).model_copy(update={"occurrences": 1}).retries_in_24h == 5` — an
+  already-explicit value from construction is not disturbed by an unrelated later copy.
+- `PriorHistory.model_construct(unavailable=True).retries_in_24h == 0` — still true,
+  still deliberately unguarded; if a future round decides `model_construct` must also be
+  fail-closed, that is a different mechanism (the bypass is documented as total) and
+  should be raised as its own finding rather than assumed as an oversight here.
+- Every row already covered by the previous round's validator (plain construction,
+  `model_dump`/`model_validate`, `model_dump_json`/`model_validate_json`, `frozen=True`)
+  is unchanged and re-verified above, not just assumed stable.
