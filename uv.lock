@@ -342,7 +342,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "freezegun" },
-    { name = "mypy" },
+    { name = "mypy", specifier = ">=1.18.2" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "respx" },

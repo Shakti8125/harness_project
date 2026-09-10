@@ -16,9 +16,23 @@ dependencies = [
 ]
 
 [dependency-groups]
+# mypy is floored, and only mypy: our gate depends on its *inference*, not just its exit
+# code, and inference changes across versions in ways that flip results on unchanged code
+# (see the divergence below). ruff and pytest report against a fixed rule set / fixed test
+# collection respectively — a version bump can add new lint rules or plugin behaviour, but
+# it does not reinterpret code that already passed as newly wrong the way mypy's narrowing
+# did here. So the same argument doesn't reach them; pinning them "for symmetry" would be
+# reflexive, not principled.
+#
+# Floor is 1.18.2: a bare-PATH mypy 1.14.1 reported a spurious `arg-type` at
+# orchestrator.py:312 (Mapping.get narrowing) that uv.lock's pinned 2.3.1 does not; the fix
+# landed upstream between those two versions. uv.lock already resolves to 2.3.1, so this
+# floor does not change what gets installed — it only stops a bare/unpinned mypy invocation
+# from silently regressing to the broken behaviour. See docs/progress/phase-1/review-2.md
+# and docs/progress/phase-1/test-verifier.md for the incident.
 dev = [
     "ruff",
-    "mypy",
+    "mypy>=1.18.2",
     "pytest",
     "pytest-asyncio",
     "respx",
