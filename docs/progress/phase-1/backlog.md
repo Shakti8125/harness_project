@@ -27,48 +27,75 @@ survived them; it does not restate their reasoning.
 | `review` 5 | medium | Closed. `RequestValidationError`, `StarletteHTTPException` and a catch-all `Exception` handler all return RFC 9457. The 422 is built from `loc`/`msg` only and never echoes the submitted input. |
 | `review` 6 | medium | Closed. `problem()` scrubs its whole body through the same `Redactor` instance `_serialize_run_outcome` uses, so PLAN.md:1556 is now descriptive rather than aspirational. |
 
-## Open — ranked
+## Open — none
 
-**Count of record: 7** — one medium (`review.md` 4) and six lows (`review-2.md` 4;
-`review.md` 7, 8, 9, 11, 12). Down from the 13 that were open entering the urgent bundle.
+**Count of record: 0.** All 13 findings open entering the urgent bundle were closed, as
+were the 5 the second independent audit surfaced and the 6 the third did — 24 in total
+across the phase. What remains below the line are residuals and hazards, which are real
+but are not findings against a stated contract, plus the audit-provenance gap above.
 
 > Correction, in the spirit of `87cb276`: commit `830332e`'s message says "Open backlog is
-> now 9: one medium and eight lows." That is wrong — it double-counted. The count above is
-> the one to trust, and the item tables below are what it is derived from. The commit
-> message is left as written rather than rewritten, the same way `review-2.md`'s own
-> miscounted verdict line was left and corrected here instead.
+> now 9: one medium and eight lows." That is wrong — it double-counted; the real number at
+> that commit was 7. The commit message is left as written rather than rewritten, the same
+> way `review-2.md`'s own miscounted verdict line was left and corrected here instead.
 
-### Medium
+## Closed by `741a292` — the seven that would have hindered later phases
 
-| # | Source | One line | Verified open by |
+These were the standing backlog at `d5a6d21`, triaged by forward-coupling rather than by
+severity: each one was closed because leaving it would have cost more in a later phase than
+fixing it cost here. `d5a6d21` is the last tree on which they were open, which is why the
+`phase-1-green` tag does not stay there.
+
+| # | Source | Was | Closed by |
 |---|---|---|---|
-| 4 | `review.md` | `Diagnosis` asks the model for `final_confidence` / `confidence_adjustments`, which A.11 marks harness-added. Overwritten today; wrong one consumer away. | `to_gemini_schema(Diagnosis)["propertyOrdering"]` still ends with both fields |
+| 4 | `review.md` | medium | `_diagnosis_schema()` strips `final_confidence` / `confidence_adjustments` from the wire schema, so the model is never asked for the two fields A.11 marks harness-added. The overwrite still runs; the difference is that a second consumer can now trust `diagnosis.final_confidence` without going through it. **Phase 2 depends on this** — the policy thresholds read that field directly. |
+| 4 | `review-2.md` | low | `AdditionalToolCallOutcome` + `FailureBundle.additional_tool_outcomes` make optional tool calls observable per call (`obtained` / `refused` / `failed`), rather than `executed` being populated and never read. Transcribed into Appendix A. |
+| 7 | `review.md` | low | `orchestrator.py` writes `ATTR_DEGRADED_COMPONENT`, the same constant `observability.py` reads, so the run view and the trace view no longer disagree about which components degraded. |
+| 8 | `review.md` | low | `minLength` / `maxLength` added to `_ALLOWED_SCHEMA_KEYS` and the copy loop, so a `Field(max_length=…)` is visible to the model instead of being enforced only by Pydantic after the fact. `format` was removed in the same pass, aligning the allow-list to PLAN.md:170. |
+| 9 | `review.md` | low | The empty-response half of B.1's safety row is terminal, via the `NO_CANDIDATES` sentinel. The finding conflated two conditions that `llm.py` now distinguishes: no candidates at all (terminal) versus a candidate that stated no reason (`UNKNOWN`, still retryable — an omission is not a refusal). |
+| 11 | `review.md` | low | `PriorHistory` fails closed at `999` on the degraded path per B.3. Tightened again by final-audit finding 2 above, which found the first version's escape hatch fell open on the very shape it was written for. |
+| 12 | `review.md` | low | `gateway_replay.py`'s `forbidden` is a required keyword argument, so the authoritative safety re-check can no longer be skipped by omission at construction. **This is the pattern `GitHubToolGateway` must follow in Phase 2** — that gateway is the one where the re-check actually stops something. |
 
-Finding 4 is the only medium left open, and it is the one with no consumer today: the
-harness overwrites both fields before anything reads them. It becomes real the moment a
-second consumer reads `Diagnosis` without going through that overwrite.
+## Closed by the final audit round (`741a292..862e8e0`, fixed at HEAD)
 
-**Findings 5 and 6 were closed before the tag** rather than carried, because together they
-were the *general* case of a defect the urgent bundle fixed one *instance* of. The
-missing-template `500 text/plain` was one instance of finding 5's gap; eager validation
-removed the instance, and the catch-all handler removed the class. Note the sequencing that
-made this worth doing in one round: finding 5's catch-all is precisely a path where an
-exception string is in scope, which is what turned finding 6 from a discipline guarantee
-(`detail` is authored at each call site) into a structural one (`detail` is scrubbed
-regardless of who authored it).
+The third independent `phase-reviewer` pass of the phase. Six findings, all fixed; five
+cleared suspicions are recorded below because a cleared one is worth as much as a finding.
 
-### Low
-
-| # | Source | One line |
+| # | Was | Now |
 |---|---|---|
-| 4 | `review-2.md` | Optional tool calls unobservable: `executed` populated and never read, `result.data` discarded, `additional_errors` only logged. Bites in Phase 2 when `GitHubToolGateway` makes those calls real. |
-| 7 | `review.md` | `GET /v1/runs/{id}` and `.../trace` report different `degraded_components` for the same run (`orchestrator.py` writes `"degraded"`; `observability.py` reads `"degraded_component"`). |
-| 8 | `review.md` | `_ALLOWED_SCHEMA_KEYS` drops `maxLength`/`minLength`, so `Field(max_length=…)` is invisible to the model but enforced by Pydantic — burns repair attempts. |
-| 9 | `review.md` | B.1's "empty candidates" half of the safety row is not terminal; `finish_reason = "UNKNOWN"` is not in `_TERMINAL_FINISH_REASONS`, so it retries the full 3 attempts. |
-| 11 | `review.md` | `PriorHistory` degraded path leaves `retries_in_24h` at `0` instead of B.3's fail-closed `999`. Phase 2 wires the retry cap to it. |
-| 12 | `review.md` | `gateway_replay.py`'s `forbidden: tuple = ()` makes the authoritative safety re-check opt-in at construction. |
+| final 1 | medium | Closed by **reverting**, not by extending. `PROHIBITED_CONTENT` and `SPII` are out of `_TERMINAL_FINISH_REASONS` again. `finish_reason` is read off `candidates[0]`, so it says why *generation* stopped — a verdict on the sample, not on the prompt. A prompt-level block arrives as empty candidates and `NO_CANDIDATES` already covers it. The module's own admitting test says anything arguably re-samplable stays out, and these are. They were also scope creep: `review.md` finding 9 asked only for the no-candidates half. B.1 reverted to match. |
+| final 2 | low-medium | Closed. `unavailable=True` now implies `retries_in_24h == 999` **unconditionally**; the `model_fields_set` escape hatch is gone, along with the four tests that pinned it. See the note below — this was a fail-open wearing a test as a disguise. |
+| final 3 | low | Closed. The cap moved out of the 422 handler and into `problem()`, *after* the `Redactor` pass. Truncating first defeats scrubbing: a credential straddling the cut stops matching `SECRET_PATTERNS` and its prefix is served. |
+| final 5 | low | Closed. `_MAX_DETAIL_LENGTH` is documented as characters, which is what `len()` and slicing count. |
+| final 6 | low | Closed. The "... and N more error(s)" note travels as `problem(detail_suffix=...)` and is appended after the cap, so the bound cannot eat the count that announces the elision. |
+| final 7 | low, latent | Closed. `problem()` drops any `Content-Type` from forwarded headers — Starlette's `init_headers` lets one displace `media_type`, which would have silently broken A.12's media type the first time Phase 2 raised an `HTTPException` with headers. |
 
-### Audit provenance — one gap, recorded deliberately
+Cleared, not findings: the cap cannot split a multi-byte sequence (it slices a `str` by code
+point); no request-derived value reaches an unscrubbed header on any path in this build;
+`_RUN_ID_PATTERN` rejects no legitimate id (its class is character-for-character
+`orchestrator._CROCKFORD`, and 20 000 `new_run_id()` mints passed); `RETRY_DELAY_BUDGET_S`
+is a true ceiling, returning before the sleep rather than overshooting by one; and
+`AdditionalToolCallOutcome`, the `format` removal, `ATTR_DEGRADED_COMPONENT` and
+`_diagnosis_schema` all match their contracts field for field.
+
+> **On finding 2, because the shape is worth remembering.** The fail-open was not just in
+> the code, it was pinned by a passing test —
+> `test_unavailable_with_an_explicit_zero_survives_untouched` asserted that
+> `PriorHistory(unavailable=True, retries_in_24h=0)` keeps the `0`. It read as
+> thoughtfulness ("a caller who explicitly means zero must not be overwritten") and it was
+> exactly B.3's fail-open with a docstring in front of it. A caller cannot both know the
+> count and declare the history unreadable; there is no legitimate reading under which the
+> supplied value wins. A green suite is not evidence when the assertion itself encodes the
+> defect.
+
+> **On the new hazard the finding-3 fix introduces.** Cutting after scrubbing means the cut
+> can now land inside `***REDACTED***`, and `***RED` in a served body reads as content, not
+> as an elision. `_bound_detail` drops a trailing partial marker for that reason. This is
+> the same pattern as every other round in this phase: the fix is right and it moves the
+> hazard rather than removing it. The trimming branch is exercised — the test sweeps the
+> cut across 13 offsets and three of them split a marker.
+
+### Audit provenance — one gap, and one round verified by the coordinator
 
 Everything up to `dcf480f` was audited twice by `phase-reviewer`, independently, offline.
 **The findings 5 and 6 delta (`dcf480f..830332e`) was not.** That agent hit a session rate
@@ -92,10 +119,19 @@ adversarial checks the reviewer had been briefed to run, and recorded the result
   fails invisibly after the 202. Pre-existing; no HTTP handler could have caught it.
 
 This is a coordinator self-check, not an independent audit, and it is weaker evidence than
-the two that preceded it. An independent `phase-reviewer` pass over that delta is still
+the three independent passes. An independent `phase-reviewer` pass over that delta is still
 owed and is cheap to run; it is the first thing to spend on if anything in the error paths
 misbehaves.
 
+**The final fix round itself (`862e8e0..HEAD`) is likewise coordinator-verified, not
+audited** — the same regress the phase kept hitting, stopped deliberately rather than
+resolved. It is better evidenced than the earlier self-check, and the difference is worth
+stating so a later reader can weigh it: each of the six fixes carries a test, and each test
+was shown non-vacuous by reproducing the defect it guards against under the *old* code, not
+merely by passing under the new. The straddle test was confirmed to leak
+`ghp_AAAAAAAAAAAAAAAA` when the cut runs before the scrub; the marker sweep was confirmed to
+split a marker at three of its thirteen offsets. That is a real check, and it is still the
+author checking their own work.
 ### Residuals and hazards — real, but not findings against a stated contract
 
 - **The retry bound is on sleeps, not on call durations.** `gemini_timeout_s = 60.0` with a
@@ -110,12 +146,13 @@ misbehaves.
   `AgentResult.evidence` is read by nothing downstream. With a 20-request/day quota this is
   the demo's normal daily output. Adjacent to `review-2.md` finding 4; the fix is a bundle
   field, not an adjustment. The misleading comment that obscured this was corrected.
-- **`pyproject.toml` declares `"mypy"` unpinned** while `uv.lock` pins 2.3.1, so type-check
-  answers differ by resolution path — this already happened once, producing an `arg-type`
-  false positive at `orchestrator.py:312` under 1.14.1 that 2.3.1 does not report. Ranked
-  low because `uv.lock` is the pin of record, the `Dockerfile` uses `uv sync --frozen`, and
-  no CI resolves independently. If pinned, pin the dev group as a group; singling out mypy
-  is arbitrary.
+- **~~`pyproject.toml` declares `"mypy"` unpinned~~** — closed in `862e8e0` with a
+  `mypy>=1.18.2` floor on the dev group. The hazard was real and cost this session an hour:
+  a system mypy 1.14.1 reported an `arg-type` false positive at `orchestrator.py:312` that
+  the pinned 2.3.1 does not, and the coordinator reported the gate claim as unreproducible
+  before harness-core established which toolchain was authoritative. `uv.lock` remains the
+  pin of record (2.3.1) and the `Dockerfile` still uses `uv sync --frozen`; the floor only
+  stops an independent resolution landing below the version the gate was verified on.
 - **One test skips because `gradio` is deliberately absent from the lockfile.**
   `test_app_py_main_hand_calls_validate_prompt_templates_before_launch` is the only thing
   pinning that `app.py`'s `main()` performs the template hand-call before `demo.launch()` —

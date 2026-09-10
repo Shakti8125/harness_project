@@ -33,6 +33,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from src.api.deps import AppContext, get_app_context, mint_run_id
 from src.api.run_registry import RunRegistry
 from src.harness.contracts import RunId, RunOutcome, RunRequest
+from src.harness.observability import REDACTION_PLACEHOLDER
 from src.integrations.cicd.agents.investigator import parse_subject
 from src.integrations.cicd.rendering import validate_prompt_templates
 from src.integrations.cicd.wiring import INTEGRATION
@@ -186,6 +187,7 @@ def problem(
     status_code: int,
     title: str,
     detail: str,
+    detail_suffix: str = "",
     run_id: str | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
@@ -219,6 +221,13 @@ def problem(
     it for them, because doing so for every header would break the ones above (re-audit
     finding 1).
 
+    One header is not passed through: `Content-Type`. Starlette's `Response.init_headers`
+    lets an explicit `Content-Type` in `headers` *displace* `media_type`, so a future
+    route raising `HTTPException(409, headers={"Content-Type": ...})` would silently
+    serve something other than `application/problem+json` and break A.12 with no test
+    noticing. The media type of a problem document is not a call site's to choose, so it
+    is dropped here rather than honoured (final-audit finding 7).
+
     `run_id` is echoed into the body only when it is shaped like a real `RunId`
     (`_RUN_ID_PATTERN`) — a caller-supplied path segment that failed to route (`GET
     /v1/runs/x`, `_run_id_in_scope` reading `request.path_params["run_id"]`) is silently
@@ -235,12 +244,21 @@ def problem(
         body["run_id"] = run_id
     scrubbed = get_app_context().recorder.redactor.scrub(body)
     assert isinstance(scrubbed, dict)  # body was a dict; Redactor preserves the JSON shape
+    scrubbed["detail"] = _bound_detail(str(scrubbed["detail"]), detail_suffix)
     return JSONResponse(
         status_code=status_code,
         content=scrubbed,
         media_type=PROBLEM_JSON,
-        headers=dict(headers) if headers else None,
+        headers=_response_headers(headers),
     )
+
+
+def _response_headers(headers: Mapping[str, str] | None) -> dict[str, str] | None:
+    """`headers` minus any `Content-Type` -- see `problem`'s docstring."""
+    if not headers:
+        return None
+    kept = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+    return kept or None
 
 
 def _run_id_in_scope(request: Request) -> str | None:
@@ -262,7 +280,44 @@ def _run_id_in_scope(request: Request) -> str | None:
 
 
 _MAX_VALIDATION_ERRORS = 20   # errors beyond this are counted, not rendered
-_MAX_DETAIL_LENGTH = 2000     # bytes; applied after joining, so it also bounds one huge loc
+_MAX_DETAIL_LENGTH = 2000     # characters, not bytes: `len()` and slicing count code points,
+                              # and Starlette renders with `ensure_ascii=False`, so the served
+                              # body's byte length can exceed this by the UTF-8 expansion
+                              # factor. Characters are what this cap is for -- bounding a
+                              # caller-chosen key reflected back -- and a character costs the
+                              # same bytes in the request as in the response, so there is no
+                              # amplification either way (final-audit finding 5).
+
+
+def _bound_detail(detail: str, suffix: str) -> str:
+    """Cap `detail` at `_MAX_DETAIL_LENGTH`, then append the harness-authored `suffix`.
+
+    Called from `problem()` *after* the `Redactor` pass, which is the whole point: cutting
+    a caller-influenced string before scrubbing it leaves a credential that no longer
+    matches `SECRET_PATTERNS`, and its surviving prefix is then served (final-audit
+    finding 3).
+
+    Cutting *after* the scrub buys that at the cost of a hazard the old order did not
+    have: the cut can now land inside a `***REDACTED***` marker, and a bare `***RED` in
+    the served body reads as content rather than as an elision. So a trailing partial
+    marker is dropped. A *complete* marker is never trimmed — no proper prefix of
+    `***REDACTED***` is also one of its suffixes — and over-trimming a run of literal
+    asterisks that merely looks like a marker prefix costs at most 13 characters of an
+    already-truncated string.
+
+    `suffix` is exempt from the cap by design. It is the "... and N more error(s)" note,
+    authored here around an `int`, and it exists precisely to say that something was
+    elided — letting the cap eat it would hide the elision it announces (finding 6).
+    Nothing caller-derived may be passed here, since it does not see the `Redactor`.
+    """
+    if len(detail) > _MAX_DETAIL_LENGTH:
+        cut = detail[: _MAX_DETAIL_LENGTH - 1]
+        for size in range(len(REDACTION_PLACEHOLDER) - 1, 0, -1):
+            if cut.endswith(REDACTION_PLACEHOLDER[:size]):
+                cut = cut[:-size]
+                break
+        detail = cut.rstrip() + "…"
+    return detail + suffix
 
 
 @app.exception_handler(RequestValidationError)
@@ -288,10 +343,18 @@ async def handle_validation_error(
 
     Two bounds keep that reflection from becoming an amplification vector on this
     unauthenticated route: at most `_MAX_VALIDATION_ERRORS` errors are rendered (the rest
-    are counted into a trailing "N more" note, not dropped silently), and the assembled
-    `detail` is hard-capped at `_MAX_DETAIL_LENGTH` bytes regardless of how many errors
-    contributed to it or how long any single `loc` is — so one caller-chosen giant key
-    bounds the same way many small ones do.
+    are counted into a trailing "N more" note), and the assembled `detail` is hard-capped
+    at `_MAX_DETAIL_LENGTH` characters regardless of how many errors contributed to it or
+    how long any single `loc` is — so one caller-chosen giant key bounds the same way many
+    small ones do.
+
+    Neither bound is applied here. Both live in `problem()`, *after* the `Redactor` pass,
+    because truncating first defeats scrubbing: a credential straddling the cut is no
+    longer shaped like one, so no `SECRET_PATTERNS` entry matches it and the surviving
+    prefix is served (final-audit finding 3). The "N more" note travels as
+    `detail_suffix` rather than as part of `detail`, so the cap cannot eat the very count
+    that says something was elided (final-audit finding 6); it is harness-authored — a
+    fixed string around an `int` — so nothing caller-derived skips the scrub by riding it.
     """
     errors = exc.errors()
     reasons: list[str] = []
@@ -300,15 +363,12 @@ async def handle_validation_error(
         reasons.append(f"{loc}: {error['msg']}")
     detail = "; ".join(reasons) or "The request could not be validated."
     remaining = len(errors) - len(reasons)
-    if remaining > 0:
-        detail += f"; ... and {remaining} more error(s)"
-    if len(detail) > _MAX_DETAIL_LENGTH:
-        detail = detail[: _MAX_DETAIL_LENGTH - 1].rstrip() + "…"
     return problem(
         request,
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         title="Validation error",
         detail=detail,
+        detail_suffix=f"; ... and {remaining} more error(s)" if remaining > 0 else "",
         run_id=_run_id_in_scope(request),
     )
 

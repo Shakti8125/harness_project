@@ -15,7 +15,7 @@ function's output validates without a foreign-model coercion error.
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,6 +26,10 @@ from src.harness.gateway import ToolCall, ToolError, ToolResult
 from src.harness.guardrails import PolicyDecision
 
 _MODEL_CONFIG = ConfigDict(extra="forbid", frozen=True)
+
+#: Appendix B.3's fail-closed retry count. Deliberately far above any cap a policy rule
+#: would set, so an unreadable history can never read as "room for another retry".
+FAIL_CLOSED_RETRIES_IN_24H: Final[int] = 999
 
 
 class JobRef(BaseModel):
@@ -111,10 +115,19 @@ class PriorHistory(BaseModel):
         wired to this field (Phase 2). Structural rather than a discipline guarantee
         at each construction site, the same principle already applied to the
         whole-body ``Redactor`` and to ``problem()``'s scrub: ``unavailable=True``
-        implies ``retries_in_24h == 999`` unless the caller explicitly supplied a
-        different value. ``model_fields_set`` distinguishes "not supplied" from
-        "supplied as 0", so an explicit ``retries_in_24h=0`` from a caller who
-        genuinely means it still survives untouched.
+        implies ``retries_in_24h == 999``, unconditionally.
+
+        The first version of this carried an escape hatch -- ``model_fields_set``
+        distinguishes "not supplied" from "supplied as 0", so an explicitly supplied
+        count was left alone. That was wrong twice over. It fails open on the exact
+        shape it was written to defend: a caller that reads a degraded ``MemoryHit``,
+        computes ``0`` retries from its empty ``actions_in_window`` and passes that
+        ``0`` explicitly alongside ``unavailable=True`` gets ``0`` back, which is what
+        B.3 exists to prevent. And it is incoherent on its face: a caller claiming to
+        know the count while also declaring the history unreadable is asserting two
+        things that cannot both hold. There is no legitimate reading of
+        ``unavailable=True`` under which a supplied count is authoritative, so there is
+        no override (final-audit finding 2).
 
         Shared by the ``after`` validator below (construction, ``model_validate``,
         ``model_validate_json``) and by the ``model_copy`` override further down
@@ -126,8 +139,8 @@ class PriorHistory(BaseModel):
         documented way to mutate a field from a place that runs once, before the
         model is handed to any caller.
         """
-        if self.unavailable and "retries_in_24h" not in self.model_fields_set:
-            object.__setattr__(self, "retries_in_24h", 999)
+        if self.unavailable and self.retries_in_24h != FAIL_CLOSED_RETRIES_IN_24H:
+            object.__setattr__(self, "retries_in_24h", FAIL_CLOSED_RETRIES_IN_24H)
 
     @model_validator(mode="after")
     def _fail_closed_retry_cap_when_unavailable(self) -> "PriorHistory":
@@ -145,10 +158,10 @@ class PriorHistory(BaseModel):
         ``history.model_copy(update={"unavailable": True})`` almost verbatim.
 
         Reapplying the same rule against the *copy* fixes that without changing
-        ``PriorHistory``'s field shape: ``model_copy`` already unions the parent's
-        ``model_fields_set`` with ``update``'s keys on the returned instance, so an
-        explicit ``retries_in_24h`` supplied in the *same* ``update`` call is still
-        authoritative, exactly like the constructor and ``model_validate`` paths.
+        ``PriorHistory``'s field shape, and since the rule is unconditional the copy
+        lands on the same answer the constructor and ``model_validate`` would give for
+        the same field values -- including when ``update`` sets ``unavailable`` and a
+        retry count in one call.
 
         ``model_construct`` (pydantic's documented validation bypass) is
         deliberately left unguarded: a caller reaching for it is opting out of

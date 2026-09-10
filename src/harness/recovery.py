@@ -108,15 +108,8 @@ ATTR_CONTEXT_DOWNSHIFT: Final[str] = "context_downshift"
 #: metered budget, while a reason wrongly put in ends a run that asking again would have
 #: completed. So anything arguably re-samplable stays out.
 #:
-#: **In.** ``SAFETY``, ``RECITATION`` and ``BLOCKLIST`` (the provider's classifications of
-#: the material it was handed), plus ``PROHIBITED_CONTENT`` and ``SPII``. The last two
-#: matter in practice rather than in theory: the evidence this harness feeds a model is
-#: machine-produced text that no one wrote by hand or reviewed, so an email address, a
-#: personal identifier or a pasted secret inside it is a routine occurrence rather than an
-#: exotic one -- and the omission would bite hardest exactly there. ``SPII`` in particular
-#: is a verdict on the input, and the repair instruction this loop appends after a failed
-#: attempt cannot un-say what the evidence already contains -- so all three attempts would
-#: draw the identical refusal.
+#: **In.** ``SAFETY``, ``RECITATION`` and ``BLOCKLIST`` -- the provider's classifications
+#: of the material it was handed, and ``SAFETY`` is what Appendix B.1 names outright.
 #:
 #: Plus the sentinel :mod:`src.harness.llm` writes when the response carried nothing to
 #: read at all: Appendix B.1 puts both halves in one row ("`finish_reason == "SAFETY"` or
@@ -139,6 +132,18 @@ ATTR_CONTEXT_DOWNSHIFT: Final[str] = "context_downshift"
 #: * ``LANGUAGE`` -- the SDK glosses it as "using an unsupported language" without saying
 #:   whose language, the prompt's or the completion's. Read the second way it is a
 #:   property of one sample and re-samplable. Ambiguity resolves towards retrying.
+#: * ``PROHIBITED_CONTENT`` and ``SPII``. These were briefly admitted, on the reasoning
+#:   that the evidence this harness feeds a model is machine-produced text nobody
+#:   reviewed, so a personal identifier inside it is routine, and no repair instruction
+#:   can un-say what the evidence contains. That reasoning inverts where the field lives.
+#:   ``finish_reason`` is read off ``candidates[0]``: it states why *generation* stopped,
+#:   which is a verdict on the text the model produced, not on the text we sent. A
+#:   prompt-level block is a different response shape entirely -- empty ``candidates``
+#:   plus ``promptFeedback.blockReason`` -- and :data:`NO_CANDIDATE_FINISH_REASON` below
+#:   already covers it. So a candidate-level content refusal is a property of one sample:
+#:   the model chose to quote a line it should not have, and a re-sample carrying the
+#:   repair instruction can quote a different one. By this list's own admitting test they
+#:   are arguably re-samplable and therefore stay out (final-audit finding 1).
 #: * ``OTHER`` and ``FINISH_REASON_UNSPECIFIED`` -- catch-alls that carry no claim about
 #:   reproducibility either way.
 #: * :data:`src.harness.llm.UNSTATED_FINISH_REASON`, the sentinel for a candidate that
@@ -150,8 +155,6 @@ _TERMINAL_FINISH_REASONS: Final[frozenset[str]] = frozenset(
         "SAFETY",
         "RECITATION",
         "BLOCKLIST",
-        "PROHIBITED_CONTENT",
-        "SPII",
         NO_CANDIDATE_FINISH_REASON,
     }
 )

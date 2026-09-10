@@ -1,9 +1,16 @@
-"""Phase 1 re-audit finding 2 (harness-core, `docs/progress/phase-1/harness-core.md`):
-`_TERMINAL_FINISH_REASONS` (`src/harness/recovery.py`) was widened from three provider
-values (`SAFETY`, `RECITATION`, `BLOCKLIST`) plus the empty-response sentinel, to include
-`PROHIBITED_CONTENT` and `SPII` as well -- and, just as importantly, the agent read the
-pinned SDK's full 18-member `FinishReason` enum and ruled *out* seven more values by name
-rather than leaving them as an accident of omission.
+"""Phase 1 re-audit finding 2 and final-audit finding 1 (`src/harness/recovery.py`).
+`_TERMINAL_FINISH_REASONS` holds three provider values (`SAFETY`, `RECITATION`,
+`BLOCKLIST`) plus the empty-response sentinel, and the agent read the pinned SDK's full
+18-member `FinishReason` enum to rule the rest *out* by name rather than leaving them as
+an accident of omission.
+
+`PROHIBITED_CONTENT` and `SPII` were briefly in that terminal set and are now deliberately
+out, which is why they sit in `NON_TERMINAL_REASONS` below with the rest of the
+exclusions. `finish_reason` is read off `candidates[0]` -- it says why *generation*
+stopped, so a content refusal there is a verdict on the sample, not on the prompt; a
+prompt-level block arrives as empty candidates instead and is covered by
+`NO_CANDIDATE_FINISH_REASON`. This test file is the thing that would catch them drifting
+back in.
 
 Two halves, both load-bearing:
 
@@ -46,15 +53,13 @@ def recorder() -> TraceRecorder:
 
 
 # ---------------------------------------------------------------------------
-# Terminal: single call, regardless of which of the six admitted reasons it is.
+# Terminal: single call, regardless of which of the four admitted reasons it is.
 # ---------------------------------------------------------------------------
 
 TERMINAL_REASONS = [
     "SAFETY",
     "RECITATION",
     "BLOCKLIST",
-    "PROHIBITED_CONTENT",
-    "SPII",
     NO_CANDIDATE_FINISH_REASON,  # "NO_CANDIDATES" -- the empty-response sentinel
 ]
 
@@ -95,6 +100,8 @@ async def test_terminal_finish_reasons_end_the_loop_on_the_first_attempt(
 # ---------------------------------------------------------------------------
 
 NON_TERMINAL_REASONS = [
+    "PROHIBITED_CONTENT",  # candidate-level refusal: a re-sample can quote elsewhere
+    "SPII",                # ditto -- not a verdict on the prompt (final-audit finding 1)
     "MALFORMED_FUNCTION_CALL",
     "IMAGE_SAFETY",
     "LANGUAGE",

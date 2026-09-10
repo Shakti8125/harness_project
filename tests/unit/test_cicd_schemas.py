@@ -19,12 +19,15 @@ def test_unavailable_and_not_supplied_defaults_to_the_fail_closed_cap() -> None:
     assert history.retries_in_24h == 999
 
 
-def test_unavailable_with_an_explicit_zero_survives_untouched() -> None:
-    """`model_fields_set` distinguishes "not supplied" from "supplied as 0": a caller
-    who explicitly means zero must not have it silently overwritten.
+def test_unavailable_overrides_an_explicit_zero() -> None:
+    """The fail-open the final audit found, now closed. An earlier version honoured an
+    explicitly supplied count via `model_fields_set`, which fails open on the exact
+    shape it was written for: a caller reading a degraded `MemoryHit`, computing `0`
+    from its empty `actions_in_window`, and passing that `0` alongside
+    `unavailable=True`. B.3 does not admit an override, so neither does this.
     """
     history = PriorHistory(signature_id=None, unavailable=True, retries_in_24h=0)
-    assert history.retries_in_24h == 0
+    assert history.retries_in_24h == 999
 
 
 def test_not_unavailable_keeps_the_ordinary_zero_default() -> None:
@@ -35,9 +38,13 @@ def test_not_unavailable_keeps_the_ordinary_zero_default() -> None:
     assert history.retries_in_24h == 0
 
 
-def test_unavailable_with_an_explicit_nonzero_value_also_survives() -> None:
+def test_unavailable_overrides_an_explicit_nonzero_value_too() -> None:
+    """Not only the zero case: a stale count read before the store degraded is still a
+    count nobody can vouch for, and B.3's answer to "we cannot read the history" is the
+    same number regardless of what the last readable value happened to be.
+    """
     history = PriorHistory(signature_id=None, unavailable=True, retries_in_24h=3)
-    assert history.retries_in_24h == 3
+    assert history.retries_in_24h == 999
 
 
 def test_still_frozen_after_the_validator_mutates_it() -> None:
@@ -77,29 +84,42 @@ def test_model_copy_with_unavailable_flipped_on_fails_closed_to_999() -> None:
     assert history.unavailable is False
 
 
-def test_model_copy_explicit_retries_in_the_same_update_call_still_wins() -> None:
-    """`model_copy` unions the parent's `model_fields_set` with `update`'s keys on the
-    object it returns -- an explicit `retries_in_24h` supplied in the *same* `update=`
-    call must still be authoritative, exactly like the constructor and
-    `model_validate` paths above.
+def test_model_copy_explicit_retries_in_the_same_update_call_is_overridden_too() -> None:
+    """`model_copy` must land on the same answer the constructor gives for the same
+    field values -- setting `unavailable` and a count in one `update=` call is the
+    `model_copy` spelling of the constructor case above, and answers the same way.
     """
     history = PriorHistory(signature_id="sig_123")
     degraded = history.model_copy(update={"unavailable": True, "retries_in_24h": 0})
     assert degraded.unavailable is True
-    assert degraded.retries_in_24h == 0
+    assert degraded.retries_in_24h == 999
 
 
 def test_model_copy_preserves_an_already_fail_closed_instance_on_an_unrelated_update() -> None:
-    """A later, unrelated `model_copy` must not disturb a value that was already
-    explicit (from construction or from a prior fail-closed application).
+    """A later, unrelated `model_copy` must not disturb the fail-closed value, and must
+    not re-derive it into something else either -- the rule is idempotent.
     """
     history = PriorHistory(signature_id="sig_123", unavailable=True, retries_in_24h=5)
-    assert history.retries_in_24h == 5  # explicit at construction, not the 999 default
+    assert history.retries_in_24h == 999  # supplied count does not override B.3
 
     later = history.model_copy(update={"occurrences": 1})
-    assert later.retries_in_24h == 5
+    assert later.retries_in_24h == 999
     assert later.occurrences == 1
     assert later.unavailable is True
+
+
+def test_read_then_degrade_is_the_shape_the_override_exists_for() -> None:
+    """The final audit's repro, verbatim: read a real history carrying a real retry
+    count, then flip `unavailable` on the constructed object when a follow-up read
+    degrades. This is the Phase 3 wiring shape, and it used to keep the stale count.
+    """
+    history = PriorHistory.model_validate(
+        {"signature_id": "sig_123", "retries_in_24h": 2, "occurrences": 5}
+    )
+    assert history.retries_in_24h == 2  # readable history: the real count stands
+
+    degraded = history.model_copy(update={"unavailable": True})
+    assert degraded.retries_in_24h == 999
 
 
 def test_model_copy_deep_variant_also_fails_closed() -> None:

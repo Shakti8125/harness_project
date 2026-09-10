@@ -37,7 +37,7 @@ from starlette.requests import Request
 from src.api import main as api_main
 from src.api.deps import SECRET_PATTERNS, AppContext, build_secret_registry
 from src.harness.context_manager import ContextBudget, ContextManager
-from src.harness.observability import Redactor, TraceRecorder
+from src.harness.observability import REDACTION_PLACEHOLDER, Redactor, TraceRecorder
 from src.settings import get_settings
 
 
@@ -198,9 +198,12 @@ def test_422_detail_is_capped_and_notes_the_remainder_under_many_extra_keys(
 
     assert response.status_code == 422
     detail = response.json()["detail"]
-    assert len(detail) <= api_main._MAX_DETAIL_LENGTH
+    note = "; ... and 280 more error(s)"
+    # The note is appended *after* the cap (final-audit finding 6), so the bound it
+    # must respect is the cap plus that harness-authored tail, not the cap alone.
+    assert len(detail) <= api_main._MAX_DETAIL_LENGTH + len(note)
     # 300 extra keys, 20 rendered -> 280 left out, and that count must be named.
-    assert "... and 280 more error(s)" in detail
+    assert detail.endswith(note)
     assert detail.count("Extra inputs are not permitted") == api_main._MAX_VALIDATION_ERRORS
 
 
@@ -287,3 +290,130 @@ def test_problem_omits_an_unshaped_run_id_when_called_directly(
 
     body = json.loads(bytes(response.body).decode())
     assert "run_id" not in body
+
+
+# ---------------------------------------------------------------------------
+# Final-audit findings 3, 6, 7 -- the order of scrub, cut and note
+# ---------------------------------------------------------------------------
+
+_GITHUB_PAT = "ghp_" + "A" * 36   # matches SECRET_PATTERNS' first entry exactly
+
+
+def _key_straddling_the_cut() -> str:
+    """A filler JSON key sized so the *next* key starts before `_MAX_DETAIL_LENGTH`
+    and ends after it.
+
+    `RunRequest` is `extra="forbid"`, so each rejected key `K` renders as
+    `f"body.{K}: Extra inputs are not permitted"` and the entries are joined with
+    `"; "`. Deriving the length here rather than hardcoding one keeps this test honest
+    if either the cap or Pydantic's message ever moves.
+    """
+    rendered = len("body.") + len(": Extra inputs are not permitted")
+    # Place the start of the second key's value ~20 chars before the cut, so the cut
+    # lands inside `_GITHUB_PAT` rather than before or after it.
+    return "k" * (api_main._MAX_DETAIL_LENGTH - 1 - 20 - rendered - 2 - len("body."))
+
+
+def test_a_secret_straddling_the_cut_is_redacted_not_truncated(client: TestClient) -> None:
+    """Final-audit finding 3, the one that motivated moving the cap into `problem()`.
+
+    A caller-chosen JSON key that is itself credential-shaped becomes part of `loc` and
+    therefore part of `detail`. If `detail` is truncated *before* the `Redactor` runs,
+    the cut leaves `ghp_AAAA…` — a prefix too short to match `SECRET_PATTERNS` — and it
+    is served verbatim. Scrubbing first means the whole token is replaced before any
+    cut can reach it, so the token's prefix must appear nowhere in the response.
+    """
+    response = client.post(
+        "/v1/runs",
+        json={
+            "integration": "cicd",
+            "subject": {"marker": "irrelevant"},
+            "idempotency_key": "a" * 16,
+            _key_straddling_the_cut(): "x",
+            _GITHUB_PAT: "x",
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.text
+    assert "ghp_" not in body, "a truncated credential prefix reached the client"
+    assert REDACTION_PLACEHOLDER in body, "the token should have been replaced, not dropped"
+
+
+def test_the_cut_never_leaves_a_partial_redaction_marker(client: TestClient) -> None:
+    """The hazard the new order introduces, and the reason `_bound_detail` trims.
+
+    Cutting after the scrub can land inside `***REDACTED***`, and a bare `***RED` in the
+    body reads as content rather than as an elision. Every run of asterisks in the served
+    `detail` must therefore belong to a complete marker.
+    """
+    findings = []
+    for offset in range(-6, 7):
+        filler = "k" * (
+            api_main._MAX_DETAIL_LENGTH
+            - 1
+            - offset
+            - (len("body.") + len(": Extra inputs are not permitted"))
+            - 2
+            - len("body.")
+        )
+        response = client.post(
+            "/v1/runs",
+            json={
+                "integration": "cicd",
+                "subject": {"marker": "irrelevant"},
+                "idempotency_key": "a" * 16,
+                filler: "x",
+                _GITHUB_PAT: "x",
+            },
+        )
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        residue = detail.replace(REDACTION_PLACEHOLDER, "")
+        if "*" in residue:
+            findings.append((offset, detail[-40:]))
+
+    assert not findings, f"partial redaction marker served at offsets: {findings}"
+
+
+def test_the_remainder_note_survives_the_hard_cap(client: TestClient) -> None:
+    """Final-audit finding 6: both bounds firing at once used to drop the very count
+    that says something was elided. 40 extra keys of 200 characters each blows past
+    `_MAX_VALIDATION_ERRORS` *and* `_MAX_DETAIL_LENGTH`; the note must still be there.
+    """
+    extra_keys = {f"{i:03d}" + "x" * 197: "v" for i in range(40)}
+    response = client.post(
+        "/v1/runs",
+        json={
+            "integration": "cicd",
+            "subject": {"marker": "irrelevant"},
+            "idempotency_key": "a" * 16,
+            **extra_keys,
+        },
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "…" in detail, "the hard cap should have fired on this body"
+    assert detail.endswith("; ... and 20 more error(s)")
+
+
+async def test_a_content_type_in_exc_headers_cannot_displace_problem_json(
+    app_context: AppContext,
+) -> None:
+    """Final-audit finding 7. Starlette's `Response.init_headers` lets an explicit
+    `Content-Type` in `headers` win over `media_type`, so a future route raising
+    `HTTPException(409, headers={"Content-Type": ...})` would silently stop serving
+    `application/problem+json` and break A.12 with nothing to catch it. The media type
+    of a problem document is not a call site's to choose.
+    """
+    exc = StarletteHTTPException(
+        status_code=409,
+        detail="Conflict",
+        headers={"Content-Type": "text/plain", "X-Kept": "yes"},
+    )
+    response = await api_main.handle_http_exception(_bare_request(), exc)
+
+    assert response.headers["content-type"].startswith(api_main.PROBLEM_JSON)
+    assert response.headers["x-kept"] == "yes"  # everything else still forwarded
+    assert json.loads(bytes(response.body))["title"]
