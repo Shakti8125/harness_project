@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Final
 
+from pydantic import BaseModel, JsonValue
+
 from src.harness.agent import AgentPrompt, LLMAgent
 from src.harness.confidence import Adjustment, ConfidenceModel, calibrate
 from src.harness.context_manager import (
@@ -25,7 +27,7 @@ from src.harness.context_manager import (
     Section,
 )
 from src.harness.contracts import AgentResult, Evidence
-from src.harness.llm import LlmClient
+from src.harness.llm import LlmClient, to_gemini_schema
 from src.harness.observability import TraceRecorder
 from src.harness.orchestrator import RunState
 from src.harness.recovery import RetryPolicy
@@ -57,6 +59,42 @@ EMPTY_DIFF_CONTRADICTION_DELTA: Final[float] = -0.10
 _LOG_PRIORITY: Final[int] = 10
 _DIFF_PRIORITY: Final[int] = 7
 
+#: Appendix A.11 marks these two `Diagnosis` fields "added by the harness after the
+#: model returns, not requested from the model" -- `Diagnostician.run` below writes
+#: them post-hoc via `model_copy`. Both carry Pydantic defaults (`0.0` and `[]`), so
+#: omitting them from the wire schema does not change what `retry_structured`
+#: validates the model's response against; the response simply lacks the keys and the
+#: defaults fill in.
+_HARNESS_ADDED_FIELDS: Final[frozenset[str]] = frozenset(
+    {"final_confidence", "confidence_adjustments"}
+)
+
+
+def _diagnosis_schema(model: type[BaseModel]) -> dict[str, JsonValue]:
+    """`to_gemini_schema`, minus the two harness-added `Diagnosis` fields.
+
+    `to_gemini_schema` has no field-exclusion mechanism of its own -- that would be a
+    `src/harness` change, not this layer's to make -- so this wraps it instead: the
+    schema shown to the model never asks for `final_confidence` or
+    `confidence_adjustments`, closing the gap PLAN.md Appendix A.11 calls out
+    ("not requested from the model"). `output_model` passed to `LLMAgent` stays
+    `Diagnosis` unchanged, so validation and the rest of the contract are untouched.
+    """
+    schema = to_gemini_schema(model)
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for name in _HARNESS_ADDED_FIELDS:
+            properties.pop(name, None)
+    ordering = schema.get("propertyOrdering")
+    if isinstance(ordering, list):
+        schema["propertyOrdering"] = [
+            name for name in ordering if name not in _HARNESS_ADDED_FIELDS
+        ]
+    required = schema.get("required")
+    if isinstance(required, list):
+        schema["required"] = [name for name in required if name not in _HARNESS_ADDED_FIELDS]
+    return schema
+
 
 class Diagnostician(LLMAgent[Diagnosis]):
     """Turns a failure bundle into a cited, calibrated diagnosis."""
@@ -83,6 +121,7 @@ class Diagnostician(LLMAgent[Diagnosis]):
             model=model,
             recorder=recorder,
             retry_policy=retry_policy,
+            schema_translator=_diagnosis_schema,
             **({"timeout_s": timeout_s} if timeout_s is not None else {}),
         )
         self.context_manager = context_manager

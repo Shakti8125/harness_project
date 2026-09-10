@@ -588,3 +588,262 @@ assertion firing.
   (edited — updated `test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500` for
   the new RFC 9457 catch-all body shape; module docstring updated to explain why; no
   other test in the file touched)
+
+---
+
+# Backlog fix round — the 7 open findings + the bonus `format` fix (2026-09-10)
+
+## VERDICT           PASS
+
+Closes the count-of-record-7 backlog (`docs/progress/phase-1/backlog.md`: `review.md` 4,
+7, 8, 9, 11, 12; `review-2.md` 4) plus the bonus, undispatched `format`-key fix in
+`_ALLOWED_SCHEMA_KEYS`. One pre-existing test was wrong by design and is fixed per the
+dispatch's own instruction (`maxLength` removed from the strip-list assertion, `format`
+added, positive coverage added for the string-bound survival the finding was about). Full
+suite, `ruff`, and `mypy --strict src/harness` (both the 2.3.1 pin of record and bare-PATH
+1.14.1) are clean. Zero live Gemini quota — every new test uses a stub `LlmClient` or
+mocks the `google-genai` SDK call directly; no `respx` was needed since nothing under
+test makes an outbound HTTP call.
+
+Every new/changed assertion was checked for non-vacuity by `git stash`-ing the relevant
+source file(s) and confirming the test fails (either on the pinned assertion or, where the
+fix introduced a new symbol, on `ImportError` — both are legitimate proof the test exercises
+the fix) before restoring them. Shown inline per test below.
+
+## Gate results
+
+**1. Full suite.**
+```
+$ python -m pytest -q
+........................................................................ [ 19%]
+........................................................................ [ 39%]
+........................................................................ [ 59%]
+........................................................................ [ 79%]
+........................................................................ [ 99%]
+.s                                                                       [100%]
+361 passed, 1 skipped, 2 warnings in 25.59s
+```
+Expected: baseline 341 passed / 1 skipped + 20 new tests (3 in `test_llm_schema_and_errors.py`
++ 1 in `test_gateway_replay.py` + 2 in `test_recovery_terminal_finish_reasons.py` [new] +
+2 in `test_gemini_client_finish_reason_sentinels.py` [new] + 2 in
+`test_orchestrator_degraded_trace.py` [new] + 5 in `test_cicd_schemas.py` [new] + 3 in
+`test_diagnostician_wire_schema_excludes_harness_fields.py` [new] + 2 in
+`test_investigator_additional_tool_outcomes.py` [new]) = 361 passed / 1 skipped.
+**Matches exactly.** The 1 skip is the pre-existing, disclosed `gradio`-absent skip,
+unchanged. The one previously-failing assertion this dispatch named
+(`test_unsupported_keywords_are_stripped` asserting `"maxLength" not in rendered`, which
+the finding-8 fix makes false) is fixed, not deleted — reproduced the failure directly
+against the pre-fix test body and the post-fix source before editing it:
+```
+$ python -m pytest tests/unit/test_llm_schema_and_errors.py -q   # old test body, new src/harness/llm.py
+...F...........                                                          [100%]
+FAILED tests/unit/test_llm_schema_and_errors.py::test_unsupported_keywords_are_stripped
+E       assert 'maxLength' not in "{'type': 'O...., 'inner']}"
+1 failed, 14 passed in 0.26s
+```
+
+**2. `ruff check src/ tests/ app.py`**
+```
+$ python -m ruff check src/ tests/ app.py
+All checks passed!
+```
+y (one `I001` import-order finding in my own new
+`test_recovery_terminal_finish_reasons.py`, fixed with `ruff check --fix` before this
+run — noted for the record, not a source defect.)
+
+**3. `mypy --strict src/harness`**
+```
+$ uv run mypy --version
+mypy 2.3.1 (compiled: yes)
+$ uv run mypy --strict src/harness
+Success: no issues found in 14 source files
+
+$ mypy --version                    # bare PATH, not the pin of record
+mypy 1.14.1 (compiled: yes)
+$ mypy --strict src/harness
+Success: no issues found in 14 source files
+```
+y — both versions agree, no divergence to flag.
+
+## Tests written
+
+**review.md finding 7 — trace/outcome `degraded_components` parity**
+(`tests/unit/test_orchestrator_degraded_trace.py`, new, 2 tests). Runs the real
+`Orchestrator` (no cicd dependency) against a stub `Agent` whose `run()` reproduces
+`Investigator`'s exact shape: append to `state.degraded` only *after* its own `agent.run`
+span has already closed and been persisted.
+- `test_trace_degraded_components_matches_outcome_degraded_components` — the regression
+  fix itself: `outcome.degraded_components == trace.degraded_components ==
+  ["investigator_notes"]`. Confirmed this was `trace.degraded_components == []` before the
+  fix (`git stash` on `src/harness/orchestrator.py` alone):
+  ```
+  E       AssertionError: assert [] == ['investigator_notes']
+  ```
+- `test_a_component_reported_by_both_the_stage_span_and_the_run_span_appears_once` — the
+  dedup guard the task flagged as worth pinning on its own (`read_trace`'s
+  `if component not in degraded`): a component reported on both the per-stage span and
+  `state.degraded` appears exactly once in the trace, not doubled.
+
+**review.md finding 8 — `minLength`/`maxLength` reach the dialect**
+(`tests/unit/test_llm_schema_and_errors.py`, edited + 2 new tests):
+- `test_unsupported_keywords_are_stripped` — fixed per the dispatch: `maxLength` removed
+  from the strip-list (it is now deliberately carried), `format` added (the bonus fix).
+- `test_string_length_bounds_survive_into_the_dialect` — a local `Bounded` model with
+  `min_length`/`max_length`, asserting the exact dict shape reaches `to_gemini_schema`'s
+  output.
+- `test_diagnosis_and_investigation_notes_string_bounds_pinned_against_the_sdk` — the
+  concrete values named in the brief, against the real models: `Diagnosis.reasoning`
+  maxLength 1200, `summary` 280, `citations.items.quote` 500, `citations.items.note` 200,
+  `InvestigationNotes.narrative` 800 — and `citations.maxItems == 6` with `"maxLength" not
+  in citation_schema` (the list-bound-stays-`maxItems` guard named explicitly in the task).
+  Field names (`min_length`/`max_length`, "if type is STRING") cross-checked directly
+  against the pinned SDK on disk:
+  ```
+  $ python -c "from google import genai; print(genai.__version__)"
+  2.22.0
+  $ sed -n '2959p;2975p' .venv/Lib/site-packages/google/genai/types.py
+  max_length: Optional[int] = Field(... "If type is `STRING`, `max_length`..."
+  min_length: Optional[int] = Field(... "If type is `STRING`, `min_length`..."
+  ```
+
+**review.md finding 9 — the "empty candidates" half of B.1's safety row is terminal**
+(two new files, both halves pinned):
+- `tests/unit/test_recovery_terminal_finish_reasons.py` — `retry_structured`-level.
+  `test_no_candidates_is_terminal_on_the_first_attempt`: `calls == 1`,
+  `error.kind == "invalid_output"`, `error.detail == {"finish_reason": "NO_CANDIDATES"}`,
+  `attempts[0].outcome == "fatal"`. `test_unstated_finish_reason_is_not_terminal` (the
+  guard against over-broadening, named explicitly in the brief): `calls == 3`, all
+  attempts `"validation_error"` — proves the sentinel split did not collapse the
+  non-terminal half back into the terminal one.
+- `tests/unit/test_gemini_client_finish_reason_sentinels.py` — one level lower, at
+  `GeminiClient.generate` itself (no network; `client._client.aio.models.generate_content`
+  monkeypatched to return a fabricated `SimpleNamespace`, never a real SDK call):
+  `test_no_candidates_at_all_writes_the_no_candidate_sentinel` (`candidates=[]` →
+  `finish_reason == "NO_CANDIDATES"`) and
+  `test_a_candidate_that_states_no_reason_writes_the_unstated_sentinel`
+  (`candidates=[SimpleNamespace(finish_reason=None)]` → `"UNKNOWN"`, and explicitly
+  `!= NO_CANDIDATE_FINISH_REASON`).
+
+**Bonus fix — `format` stripped from the dialect, non-vacuously**
+(`tests/unit/test_llm_schema_and_errors.py::test_format_is_stripped_and_the_pin_is_non_vacuous`):
+built exactly to the recipe — a local `Formatted` model with `datetime`/`UUID`/`HttpUrl`
+fields, asserts `"format" in Formatted.model_json_schema()["properties"][...]` for all
+three (the non-vacuity half) before asserting `"format" not in
+repr(to_gemini_schema(Formatted))`.
+
+**review.md finding 11 — `PriorHistory` fail-closed retry cap**
+(`tests/unit/test_cicd_schemas.py`, new file, 5 tests): unavailable + not supplied → 999;
+unavailable + explicit `0` → `0` (survives, `model_fields_set` distinguishes "not
+supplied" from "supplied as 0"); not unavailable → ordinary `0` default; unavailable +
+explicit nonzero → survives; and `frozen=True` still raises `ValidationError` on a
+post-construction mutation attempt even though the validator itself mutates via
+`object.__setattr__`. Confirmed non-vacuous — `git stash` on `schemas.py` alone fails the
+first and last of the five:
+```
+E       AssertionError: assert 0 == 999
+```
+
+**review.md finding 12 — `ReplayToolGateway.forbidden` is now required**
+(`tests/unit/test_gateway_replay.py`, 1 new test in the existing file):
+`test_forbidden_has_no_default_and_must_be_passed_explicitly` — omitting the keyword
+raises `TypeError` at construction; passing `forbidden=()` explicitly (the stated-decision
+escape hatch) still succeeds.
+
+**review.md finding 4 — `Diagnosis`'s two harness-added fields excluded from the wire
+schema** (`tests/integration/test_diagnostician_wire_schema_excludes_harness_fields.py`,
+new file, 3 tests, driven through the real orchestrator over HTTP with `TestClient`,
+`ReplayToolGateway`, and a schema-capturing stub `LlmClient` — the same shape
+`test_replay_e2e.py` uses for the rest of this pipeline):
+- `test_the_two_harness_added_fields_are_absent_from_the_wire_schema` — captures the real
+  outgoing `LlmRequest.schema` the Diagnostician sends and asserts `final_confidence` /
+  `confidence_adjustments` are absent from `properties`, `propertyOrdering`, and
+  `required`.
+- `test_both_fields_are_still_present_and_populated_on_the_served_diagnosis` — the other
+  half named in the brief: both fields are still on the served `RunOutcome`, and
+  `final_confidence` is `> 0.0` (genuinely populated by the post-hoc `model_copy`, not
+  left at the untouched Pydantic default) even though the model's own JSON response never
+  supplied either key.
+- `test_the_harness_level_translator_is_unchanged_by_this_fix` — pins the deliberate
+  scope boundary the finding itself states: `to_gemini_schema(Diagnosis)` (the
+  harness-level function) still ends its `propertyOrdering` with both fields; only the
+  Diagnostician-local wrapper excludes them. Confirmed non-vacuous — reverting
+  `diagnostician.py` alone breaks collection (`_diagnosis_schema` does not exist yet).
+
+**review-2.md finding 4 — optional tool call outcomes observable**
+(`tests/integration/test_investigator_additional_tool_outcomes.py`, new file, 2 tests,
+same real-orchestrator-over-HTTP shape): a stub `InvestigationNotes` response names three
+optional calls, each exercising a genuinely different gateway path against the real
+`real_regression` fixture (no invented gateway behaviour) — `compare_commits` with the
+fixture's own recorded base/head resolves ("obtained"), `merge_pull_request` is refused
+before any file is touched ("refused", outside the read-only catalog), `get_commit` with
+an unrecorded sha 404s ("failed", carrying the `ToolError`). Both outcome and (for
+"failed") `error.kind == "not_found"` are asserted off `final["bundle"]
+["additional_tool_outcomes"]`. `test_optional_tool_failures_do_not_trip_gateway_degraded`
+is the B.2 guard: the optional failure must stay off `gateway_errors` and must not fire
+the `gateway_degraded` confidence adjustment, even though it is now visible elsewhere.
+Confirmed non-vacuous (`git stash` on `investigator.py` + `schemas.py`):
+```
+E       KeyError: 'additional_tool_outcomes'
+```
+
+## Failures found (not fixed — not my territory to fix source)
+
+None against source this round. The one pre-existing test wrong by design
+(`test_unsupported_keywords_are_stripped`) is the dispatch's own named instruction, not a
+source defect discovered independently — fixed under `tests/**` as directed.
+
+## Coverage gaps
+
+- **`AdditionalToolCallOutcome.reason: str = ""`** — `schemas.py`'s implementation carries
+  a `reason` field that PLAN.md's Appendix A amendment (the shape given in this dispatch:
+  `tool`, `outcome`, `error`) does not list. cicd-integration's own handoff
+  (`docs/progress/phase-1/cicd-integration.md`, "Contract deviations") flags this exact
+  gap itself — "not independently re-verified against the coordinator's amendment text."
+  My tests assert the `reason` field's actual runtime behaviour (populated on `"refused"`)
+  since it exists and is exercised by the real code path, but I did not add a test
+  asserting its *absence*, since PLAN.md is not mine to hold the source to unilaterally
+  and the field is additive (does not break anything, does not violate `extra="forbid"`
+  since it is a real declared field). Flagged here rather than silently pinned as correct:
+  **a PLAN.md/coordinator confirmation is owed**, not a test-territory fix.
+- **`docs/progress/phase-1/harness-core.md` was not updated** for this round's three
+  findings (7, 8, 9) or the bonus `format` fix — `git diff --stat -- docs/` shows only
+  `cicd-integration.md` changed. Not a test gap, but worth the coordinator's attention:
+  the harness-core builder's own progress doc does not reflect work that is, per the
+  diffs read directly from `src/harness/**`, actually done and correctly done.
+- Broader PLAN.md test-suite items (`test_layering.py` already exists and passes
+  unaffected by this round; `test_guardrails.py`, `test_fingerprint.py`,
+  `test_evaluator.py`, `test_no_secret_leak.py`, `test_idempotency.py`,
+  `contract/test_tool_gateway_contract.py`) remain correctly absent — no Guardrails,
+  Evaluator, Memory, or multi-gateway contract exist yet per PLAN.md and every prior
+  section of this file.
+
+## Notes for the reviewer
+
+- All eight closed items (7 backlog + 1 bonus) were verified against the real diffs
+  (`git diff` per file), not against the builders' own handoff prose — in particular the
+  SDK field-name claim for finding 8 was cross-checked against `google_genai==2.22.0` on
+  disk (installed version matches the pin the dispatch names) rather than taken on faith.
+- Every new/changed test in this round was confirmed non-vacuous by `git stash`-ing the
+  relevant source file(s), re-running, observing a real failure (assertion or, where a
+  new symbol was introduced, `ImportError`), then restoring — shown inline above for each.
+- Zero live Gemini quota: `GeminiClient.generate` is exercised directly in
+  `test_gemini_client_finish_reason_sentinels.py` by monkeypatching
+  `client._client.aio.models.generate_content` to a fabricated async function — the SDK's
+  own `Client(api_key=...)` constructor does not itself make a network call, and nothing
+  past it is real for these two tests. Every other new test uses a stub `LlmClient`
+  returning canned JSON, the same pattern `test_replay_e2e.py` already established. No
+  `respx` was needed anywhere this round; nothing under test makes an outbound HTTP call.
+- `./data/harness.db` and `unused.db` confirmed untouched (`git status --short` clean for
+  both; the autouse `_guard_real_db_untouched` fixture would have failed loudly otherwise).
+
+## Files touched (all under `tests/**`)
+
+- `D:\Documents\harness_project\tests\unit\test_llm_schema_and_errors.py` (edited — fixed
+  the wrong-by-design assertion; +3 new tests)
+- `D:\Documents\harness_project\tests\unit\test_gateway_replay.py` (edited — +1 new test)
+- `D:\Documents\harness_project\tests\unit\test_orchestrator_degraded_trace.py` (new)
+- `D:\Documents\harness_project\tests\unit\test_recovery_terminal_finish_reasons.py` (new)
+- `D:\Documents\harness_project\tests\unit\test_gemini_client_finish_reason_sentinels.py` (new)
+- `D:\Documents\harness_project\tests\unit\test_cicd_schemas.py` (new)
+- `D:\Documents\harness_project\tests\integration\test_diagnostician_wire_schema_excludes_harness_fields.py` (new)
+- `D:\Documents\harness_project\tests\integration\test_investigator_additional_tool_outcomes.py` (new)

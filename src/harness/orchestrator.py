@@ -34,7 +34,7 @@ from src.harness.contracts import (
     TokenUsage,
 )
 from src.harness.errors import ConfigurationError
-from src.harness.observability import TraceRecorder
+from src.harness.observability import ATTR_DEGRADED_COMPONENT, TraceRecorder
 
 if TYPE_CHECKING:
     from src.harness.agent import Agent
@@ -335,7 +335,15 @@ class Orchestrator:
 
                 run_span.set_attribute("status", status)
                 if state.degraded:
-                    run_span.set_attribute("degraded", list(state.degraded))
+                    # `ATTR_DEGRADED_COMPONENT`, not a second spelling of the same idea:
+                    # the trace read path aggregates *this* key, and `RunOutcome`
+                    # aggregates `state.degraded`. Written under any other name, the two
+                    # read paths answer differently for the same run -- one from the list
+                    # below, one from a key nothing writes. This span is also the only
+                    # place the run-level list is complete: a stage may append to
+                    # `state.degraded` after its own `agent.run` span has closed, so the
+                    # per-stage writes are a subset, not a substitute.
+                    run_span.set_attribute(ATTR_DEGRADED_COMPONENT, list(state.degraded))
 
         completed_at = datetime.now(UTC)
         return RunOutcome(

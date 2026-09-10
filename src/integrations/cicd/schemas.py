@@ -16,7 +16,7 @@ function's output validates without a foreign-model coercion error.
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.harness.confidence import Adjustment
 from src.harness.context_manager import TruncationReport
@@ -103,6 +103,27 @@ class PriorHistory(BaseModel):
     sample_run_ids: list[str] = []
     unavailable: bool = False
 
+    @model_validator(mode="after")
+    def _fail_closed_retry_cap_when_unavailable(self) -> "PriorHistory":
+        """Appendix B.3: the degraded-memory path must default the retry-cap fact to
+        a conservative ``999`` "so that the flaky-retry rule fails closed" -- an
+        unreadable history must not read as "no retries yet" once a retry cap is
+        wired to this field (Phase 2). Structural rather than a discipline guarantee
+        at each construction site, the same principle already applied to the
+        whole-body ``Redactor`` and to ``problem()``'s scrub: ``unavailable=True``
+        implies ``retries_in_24h == 999`` unless the caller explicitly supplied a
+        different value. ``model_fields_set`` distinguishes "not supplied" from
+        "supplied as 0", so an explicit ``retries_in_24h=0`` from a caller who
+        genuinely means it still survives untouched.
+
+        ``object.__setattr__`` bypasses the model's own ``frozen=True`` -- the
+        documented way to mutate a field from inside an ``after`` validator, which
+        runs once, before the model is handed to any caller.
+        """
+        if self.unavailable and "retries_in_24h" not in self.model_fields_set:
+            object.__setattr__(self, "retries_in_24h", 999)
+        return self
+
 
 class InvestigationNotes(BaseModel):  # the Investigator's LLM output
     model_config = _MODEL_CONFIG
@@ -110,6 +131,34 @@ class InvestigationNotes(BaseModel):  # the Investigator's LLM output
     observations: list[str] = Field(max_length=8)
     additional_tool_calls: list[ToolCall] = Field(max_length=3)  # read-only tools only
     narrative: str = Field(max_length=800)
+
+
+class AdditionalToolCallOutcome(BaseModel):
+    """What happened to one of the Investigator's up-to-three optional,
+    model-requested read-only tool calls (`InvestigationNotes.additional_tool_calls`).
+
+    Visibility only. PLAN.md's confidence-adjustment table has no row for "the model
+    asked for something and it was refused, or it failed" -- inventing one would put a
+    number on the confidence scale that no `calibrate()` row justifies, the same
+    reasoning `gateway_errors` above already rests on for the required calls. This
+    field carries no confidence signal in either direction; it exists so a
+    `RunOutcome` reader can tell obtained from refused from failed, which
+    `review-2.md` finding 4 (Phase 1 backlog) found impossible before this field
+    existed -- `executed` was populated and never read, and `result.data` was
+    discarded.
+    """
+
+    model_config = _MODEL_CONFIG
+
+    tool: str
+    outcome: Literal["obtained", "refused", "failed"]
+    # Populated when `outcome == "failed"`: the same `ToolError` the gateway
+    # returned, e.g. `kind="not_found"` for a 404 on a read tool (B.2: "data, not a
+    # run failure").
+    error: ToolError | None = None
+    # Populated when `outcome == "refused"`: the model named a tool outside this
+    # gateway's read-only catalog, so the call was never placed at all.
+    reason: str = ""
 
 
 class FailureBundle(BaseModel):  # the Investigator's stage output
@@ -130,6 +179,9 @@ class FailureBundle(BaseModel):  # the Investigator's stage output
     # conditions on "any REQUIRED read tool returned an error", and this field is the only
     # thing `Diagnostician.signals` reads to decide that row.
     gateway_errors: list[ToolError] = []
+    # One entry per optional call the model actually named (at most 3, the cap on
+    # `InvestigationNotes.additional_tool_calls`). See `AdditionalToolCallOutcome`.
+    additional_tool_outcomes: list[AdditionalToolCallOutcome] = []
 
 
 class Citation(BaseModel):
@@ -233,6 +285,7 @@ __all__ = [
     "DependencyChange",
     "PriorHistory",
     "InvestigationNotes",
+    "AdditionalToolCallOutcome",
     "FailureBundle",
     "Citation",
     "Adjustment",

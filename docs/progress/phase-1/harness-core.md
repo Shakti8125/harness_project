@@ -103,3 +103,74 @@ path — header, body, HTTP-date — is bounded at one point.
 `tests/test_layering.py` 71 passed. Two offline reproduction scripts, all-PASS, zero live
 requests: 24 assertions for the retry-delay extraction, 7 for `llm_upstream`. Recipes handed
 to `test-verifier` rather than written as tests.
+
+---
+
+# harness-core — Phase 1 backlog round
+
+Recorded by the coordinator, not by the agent: `harness-core`'s exclusive write glob is
+`src/harness/**`, so it returned this as text rather than writing outside its territory.
+That was the correct call and the record belongs here rather than being lost.
+
+Closes `review.md` findings 7, 8 and 9, plus one coordinator ruling.
+
+## What changed
+
+| Finding | Change | File |
+|---|---|---|
+| 7 | The run span writes `ATTR_DEGRADED_COMPONENT` instead of the literal `"degraded"`, so `GET /v1/runs/{id}` and `.../trace` read the same key. | `orchestrator.py` |
+| 8 | `minLength`/`maxLength` added to `_ALLOWED_SCHEMA_KEYS` and the copy loop, so a `Field(max_length=…)` is a rule the model is shown, not only one it is graded against. | `llm.py` |
+| 9 | `NO_CANDIDATE_FINISH_REASON` (`"NO_CANDIDATES"`) and `UNSTATED_FINISH_REASON` (`"UNKNOWN"`) split; only the former joins `_TERMINAL_FINISH_REASONS`. | `llm.py`, `recovery.py` |
+| — | `format` removed from `_ALLOWED_SCHEMA_KEYS` and the copy loop, aligning code to PLAN.md:170. | `llm.py` |
+
+## Why `degraded_component` won rather than `degraded`
+
+Nothing anywhere read the `"degraded"` spelling. `ATTR_DEGRADED_COMPONENT` already had one
+reader (`observability.py:457`) and one established writer (`agent.py:213`); the literal had
+one stray writer. Changing the reader would have meant editing a constant plus a working
+writer to accommodate the stray. Double counting was checked: the run span's list is a
+superset of the per-stage writes, and `read_trace` de-duplicates, so a component reported by
+both appears once — unlike token totals, which are filtered to `component == "llm"`
+precisely because they *would* double.
+
+## Why the finish-reason sentinel was split rather than broadened
+
+`"UNKNOWN"` was overloaded: it meant both "no candidate at all" and "a candidate that stated
+no finish reason". Only the first is the deterministic, non-retryable condition Appendix B.1's
+safety row describes. Making the whole bucket terminal would have turned a genuinely transient
+condition non-retryable — a worse bug than the one being fixed. An empty response now costs 1
+provider call instead of 3, against a 20-requests/day quota; a candidate that omits the field
+still gets its 3 attempts.
+
+`"NO_CANDIDATES"` is our word, not the provider's. If a future SDK introduces a real finish
+reason with that spelling it would inherit terminal treatment — which is the behaviour we want
+anyway, so the collision is benign. Recorded because it is a coincidence rather than a design.
+
+## The `format` ruling — coordinator's call, not the agent's
+
+The agent surfaced a PLAN.md divergence rather than resolving it, per the standing instruction
+added in `0ffeef1`: PLAN.md:170 lists `format` in the strip list, but `_ALLOWED_SCHEMA_KEYS`
+had carried it since the original build.
+
+Ruled: strip it. No current schema emits `format` (`to_gemini_schema` over `Diagnosis` and
+`InvestigationNotes` yields zero occurrences), so the change is zero-risk today and closes a
+latent trap — the first Phase 2 field typed `datetime`, `UUID` or `HttpUrl` would otherwise
+pass a Pydantic-emitted `format` through to the provider, producing exactly the opaque 400 the
+set's own docstring warns about. Code catching up to the plan, so no PLAN.md amendment was
+owed.
+
+## One consequence worth knowing before Phase 2
+
+`HttpUrl` carries `minLength: 1, maxLength: 2083` in Pydantic's JSON schema. With finding 8's
+change, a Phase 2 URL field now ships those bounds to the provider where the node used to be
+bare. That is correct — they are genuine string bounds — but the blast radius is wider than
+the hand-written `Field(max_length=…)` declarations that motivated the fix. Nothing in the
+current tree is affected.
+
+## Verification
+
+`uv run ruff check src/` clean. `uv run mypy --strict src/harness` clean on both the pinned
+2.3.1 and bare-PATH 1.14.1. The dialect's support for the string bounds was confirmed against
+the pinned SDK (`google_genai 2.22.0`, `google/genai/types.py:2959` and `:2975`) rather than
+from memory. Reproduction recipes were handed to `test-verifier`, which wrote the durable
+tests; no tests were written by this agent.

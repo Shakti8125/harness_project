@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from src.harness.contracts import AgentError, TokenUsage, TOut
 from src.harness.llm import (
     DEFAULT_REQUEST_TIMEOUT_S,
+    NO_CANDIDATE_FINISH_REASON,
     LlmAuthError,
     LlmContextTooLarge,
     LlmRateLimited,
@@ -91,8 +92,21 @@ RETRY_DELAY_BUDGET_S: Final[float] = 20.0
 #: Span attribute set when the prompt was halved after an oversized-request failure.
 ATTR_CONTEXT_DOWNSHIFT: Final[str] = "context_downshift"
 
-#: Provider finish reasons that are terminal: no retry can change them.
-_TERMINAL_FINISH_REASONS: Final[frozenset[str]] = frozenset({"SAFETY", "RECITATION", "BLOCKLIST"})
+#: Finish reasons that are terminal: no retry can change them.
+#:
+#: The first three are the provider's own words for a deterministic refusal. The fourth is
+#: the sentinel :mod:`src.harness.llm` writes when the response carried nothing to read at
+#: all -- Appendix B.1 puts both halves in one row ("`finish_reason == "SAFETY"` or no
+#: candidates -> no retry (deterministic)"), and an empty response is as reproducible as a
+#: stated refusal. It is imported rather than spelled again here so the writer and the
+#: reader cannot drift.
+#:
+#: Deliberately *not* included: the sentinel for a candidate that stated no finish reason.
+#: That one means "the field was absent", which says nothing about whether a second attempt
+#: would succeed, and making it terminal would turn an omission into a run failure.
+_TERMINAL_FINISH_REASONS: Final[frozenset[str]] = frozenset(
+    {"SAFETY", "RECITATION", "BLOCKLIST", NO_CANDIDATE_FINISH_REASON}
+)
 
 
 class RetryPolicy(BaseModel):

@@ -81,6 +81,7 @@ from src.integrations.cicd.rendering import (
     render_truncation,
 )
 from src.integrations.cicd.schemas import (
+    AdditionalToolCallOutcome,
     DependencyChange,
     DiffSummary,
     FailureBundle,
@@ -475,6 +476,10 @@ class Investigator(LLMAgent[InvestigationNotes]):
                 dependency_changes=dependency_changes,
                 # Memory arrives in Phase 3; until then every run is its own first
                 # sighting and says so, rather than claiming a history it cannot read.
+                # `retries_in_24h` is deliberately NOT set here: `PriorHistory`'s own
+                # `model_validator` makes `unavailable=True` imply the Appendix B.3
+                # fail-closed `999` structurally, so this call site does not have to
+                # remember to. See `PriorHistory._fail_closed_retry_cap_when_unavailable`.
                 prior_history=PriorHistory(signature_id=None, unavailable=True),
                 cold_start=cold_start,
                 gateway_errors=errors,
@@ -570,9 +575,13 @@ class Investigator(LLMAgent[InvestigationNotes]):
 
         # The extensibility point: up to three read-only calls the model asked for. The
         # cap and the read-only restriction are enforced here rather than trusted to the
-        # prompt -- a model that can name a tool can name a write tool.
-        executed: list[str] = []
-        additional_errors: list[ToolError] = []
+        # prompt -- a model that can name a tool can name a write tool. Each call's
+        # outcome is recorded on `bundle.additional_tool_outcomes` (obtained / refused /
+        # failed) so it stays observable in the served `RunOutcome` -- see
+        # `AdditionalToolCallOutcome` and `review-2.md` finding 4 (Phase 1 backlog):
+        # before this, `executed` was populated and never read, `result.data` was
+        # discarded, and a refusal or a failure was visible only in a log line.
+        additional_outcomes: list[AdditionalToolCallOutcome] = []
         if notes is not None:
             for call in notes.additional_tool_calls[:3]:
                 if call.tool not in READ_TOOLS:
@@ -585,21 +594,40 @@ class Investigator(LLMAgent[InvestigationNotes]):
                         "(policy engine arrives in Phase 2); no gateway call made",
                         call.tool,
                     )
+                    additional_outcomes.append(
+                        AdditionalToolCallOutcome(
+                            tool=call.tool,
+                            outcome="refused",
+                            reason=(
+                                "not a read-only tool in this gateway's catalog "
+                                "(policy engine arrives in Phase 2)"
+                            ),
+                        )
+                    )
                     continue
-                result = await self._call_tool(call.tool, dict(call.args), additional_errors)
+                call_errors: list[ToolError] = []
+                result = await self._call_tool(call.tool, dict(call.args), call_errors)
                 if result.ok:
-                    executed.append(call.tool)
-                elif additional_errors:
+                    additional_outcomes.append(
+                        AdditionalToolCallOutcome(tool=call.tool, outcome="obtained")
+                    )
+                elif call_errors:
                     # An optional probe coming back empty (`not_found` and friends) is a
                     # normal outcome for evidence nobody was guaranteed to find -- see
                     # B.2 "404 on a read tool is data, not a run failure". It is
                     # deliberately excluded from `bundle.gateway_errors` so it cannot
-                    # trip `gateway_degraded`.
+                    # trip `gateway_degraded`, but it is not discarded: it lands on
+                    # `additional_tool_outcomes` instead.
                     logger.info(
                         "investigator: optional tool call %r returned %s; excluded from "
                         "gateway_degraded",
                         call.tool,
-                        additional_errors[-1].kind,
+                        call_errors[-1].kind,
+                    )
+                    additional_outcomes.append(
+                        AdditionalToolCallOutcome(
+                            tool=call.tool, outcome="failed", error=call_errors[-1]
+                        )
                     )
 
         bundle = FailureBundle(
@@ -612,6 +640,7 @@ class Investigator(LLMAgent[InvestigationNotes]):
             cold_start=collected.cold_start,
             collected_at=datetime.now(UTC),
             gateway_errors=errors,
+            additional_tool_outcomes=additional_outcomes,
         )
         return AgentResult[FailureBundle](
             agent=self.key,

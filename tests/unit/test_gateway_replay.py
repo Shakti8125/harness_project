@@ -193,3 +193,19 @@ async def test_catalog_is_read_only_this_phase(gateway: ReplayToolGateway) -> No
     catalog = gateway.catalog()
     assert {spec.side_effect for spec in catalog} == {"read"}
     assert all(spec.idempotent for spec in catalog)
+
+
+def test_forbidden_has_no_default_and_must_be_passed_explicitly(scenario_dir: Path) -> None:
+    """review.md finding 12: `forbidden` used to default to `()`, making the gateway's
+    own copy of the authoritative safety re-check opt-in at construction — a caller that
+    forgot the keyword silently refused nothing. It is now required, with no default, so
+    a caller that forgets it gets a `TypeError` at construction rather than a gateway
+    that runs unguarded.
+    """
+    with pytest.raises(TypeError):
+        ReplayToolGateway(scenario_dir=scenario_dir, repo=REPO)  # type: ignore[call-arg]
+
+    # The stated-decision escape hatch still works: an explicit empty tuple is a real
+    # choice, not an accident, and construction must still succeed.
+    unguarded = ReplayToolGateway(scenario_dir=scenario_dir, repo=REPO, forbidden=())
+    assert unguarded.forbidden == frozenset()

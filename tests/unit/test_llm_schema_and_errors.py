@@ -8,10 +8,12 @@ models it was written for.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from src.harness.errors import SchemaTranslationError
 from src.harness.llm import (
@@ -73,11 +75,89 @@ def test_literals_become_enums_and_lists_keep_their_items() -> None:
 
 
 def test_unsupported_keywords_are_stripped() -> None:
+    """`maxLength` is deliberately absent from this list (review.md finding 8): the
+    dialect carries string bounds so the model can be shown a constraint it will
+    otherwise be graded against blind. `format` is added (the bonus fix): Pydantic
+    emits it for `datetime`/`UUID`/`HttpUrl` and the dialect accepts only a narrow
+    set of values for it, so an unrecognised one is an opaque 400 rather than a
+    silently-ignored keyword like the others here.
+    """
     schema = to_gemini_schema(Outer)
     rendered = repr(schema)
 
-    for keyword in ("title", "maxLength", "additionalProperties", "default", "$defs"):
+    for keyword in ("title", "format", "additionalProperties", "default", "$defs"):
         assert keyword not in rendered
+
+
+def test_string_length_bounds_survive_into_the_dialect() -> None:
+    """review.md finding 8: `Field(max_length=...)` must reach the model, not just
+    Pydantic's own validator on the way back -- otherwise every violation burns a
+    repair round trip against a daily request quota.
+    """
+
+    class Bounded(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        reasoning: str = Field(max_length=1200)
+        short: str = Field(min_length=2, max_length=10)
+
+    schema = to_gemini_schema(Bounded)
+
+    assert schema["properties"]["reasoning"] == {"type": "STRING", "maxLength": 1200}
+    assert schema["properties"]["short"] == {
+        "type": "STRING", "minLength": 2, "maxLength": 10,
+    }
+
+
+def test_diagnosis_and_investigation_notes_string_bounds_pinned_against_the_sdk() -> None:
+    """Pinned against the real dialect (`google_genai==2.22.0`, `types.py:2959`/`:2975`
+    define `min_length`/`max_length` on `Schema`, "If type is STRING"), not from memory.
+    A *list* bound stays `maxItems`, never `maxLength` -- the two keywords police
+    different things and the dialect would silently misapply a length bound to an array.
+    """
+    diagnosis_schema = to_gemini_schema(Diagnosis)
+    assert diagnosis_schema["properties"]["reasoning"] == {
+        "type": "STRING", "maxLength": 1200,
+    }
+    assert diagnosis_schema["properties"]["summary"] == {"type": "STRING", "maxLength": 280}
+    citation_schema = diagnosis_schema["properties"]["citations"]
+    assert citation_schema["type"] == "ARRAY"
+    assert citation_schema["maxItems"] == 6
+    assert "maxLength" not in citation_schema
+    quote_schema = citation_schema["items"]["properties"]["quote"]
+    assert quote_schema == {"type": "STRING", "maxLength": 500}
+    note_schema = citation_schema["items"]["properties"]["note"]
+    assert note_schema["maxLength"] == 200
+
+    notes_schema = to_gemini_schema(InvestigationNotes)
+    assert notes_schema["properties"]["narrative"] == {"type": "STRING", "maxLength": 800}
+
+
+def test_format_is_stripped_and_the_pin_is_non_vacuous() -> None:
+    """Bonus fix (not a numbered finding): `format` came out of `_ALLOWED_SCHEMA_KEYS`
+    and the copy loop, aligning code to PLAN.md:170. Nothing generated today emits a
+    `format` keyword, so a test that only checked "'format' not in repr(...)" against
+    an ordinary model would pass against a translator that never had the chance to
+    strip anything. The non-vacuity assertion (`Formatted`'s own
+    `model_json_schema()` genuinely contains `format` for each of these three types)
+    is the load-bearing half: it proves the input this test feeds `to_gemini_schema`
+    actually exercises the strip, not just a schema `format` was never going to touch.
+    """
+
+    class Formatted(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+
+        when: datetime
+        ident: UUID
+        link: HttpUrl
+
+    pydantic_schema = Formatted.model_json_schema()
+    assert "format" in pydantic_schema["properties"]["when"]  # non-vacuous
+    assert "format" in pydantic_schema["properties"]["ident"]
+    assert "format" in pydantic_schema["properties"]["link"]
+
+    rendered = repr(to_gemini_schema(Formatted))
+    assert "format" not in rendered
 
 
 def test_property_ordering_follows_declaration_order() -> None:

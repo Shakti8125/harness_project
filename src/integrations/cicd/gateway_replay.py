@@ -84,7 +84,7 @@ class ReplayToolGateway:
         *,
         scenario_dir: Path,
         repo: str,
-        forbidden: tuple[str, ...] = (),
+        forbidden: tuple[str, ...],
         dry_run: bool = True,
     ) -> None:
         """Bind the gateway to one scenario directory.
@@ -94,6 +94,12 @@ class ReplayToolGateway:
         deliberately not read out of the `PolicyDecision` argument: the failure mode the
         re-check exists for is a decision that never came from the engine at all, and a
         hand-forged decision would carry a hand-forged forbidden list with it.
+
+        Required, with no default: this is the gateway's own copy of the authoritative
+        safety re-check (see the module docstring), and a caller that forgets to pass it
+        must get a `TypeError` at construction, not a gateway that silently refuses
+        nothing. Pass `forbidden=()` explicitly if a caller genuinely wants an empty set
+        -- that is a stated decision, not an accident.
         """
         self.scenario_dir = scenario_dir
         self.repo = repo

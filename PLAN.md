@@ -1465,6 +1465,12 @@ class InvestigationNotes(BaseModel):          # the Investigator's LLM output
     additional_tool_calls: list[ToolCall] = Field(max_length=3)   # read-only tools only
     narrative: str = Field(max_length=800)
 
+class AdditionalToolCallOutcome(BaseModel):   # visibility only — carries no confidence signal
+    tool: str
+    outcome: Literal["obtained","refused","failed"]
+    error: ToolError | None = None            # populated when outcome == "failed"
+    reason: str = ""                          # why, when outcome == "refused" (no ToolError exists)
+
 class FailureBundle(BaseModel):               # the Investigator's stage output
     job: JobRef
     logs: list[LogExcerpt]
@@ -1475,6 +1481,7 @@ class FailureBundle(BaseModel):               # the Investigator's stage output
     cold_start: bool = False
     collected_at: datetime
     gateway_errors: list[ToolError] = []
+    additional_tool_outcomes: list[AdditionalToolCallOutcome] = []
 
 class Citation(BaseModel):
     claim_kind: Literal["quote_exists","file_in_diff","dependency_bump",

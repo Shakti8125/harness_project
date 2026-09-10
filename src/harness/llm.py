@@ -48,6 +48,20 @@ AUTH_FAILURE_MESSAGE: Final[str] = (
     "Gemini authentication failed; check HARNESS_GEMINI_API_KEY"
 )
 
+#: Written into `RawLlmResponse.finish_reason` when the provider answered with no
+#: candidate at all. This is *our* sentinel, not a value the provider sends -- the wire
+#: response simply has an empty list and no reason to state. Appendix B.1 makes this
+#: condition deterministic and non-retryable, so it needs a name of its own that the
+#: retry loop can match on; see `recovery._TERMINAL_FINISH_REASONS`.
+NO_CANDIDATE_FINISH_REASON: Final[str] = "NO_CANDIDATES"
+
+#: Written when a candidate *did* come back but stated no finish reason. Distinct from
+#: :data:`NO_CANDIDATE_FINISH_REASON` on purpose: there is a candidate here, its text may
+#: parse perfectly well, and a provider that simply omitted the field must not be treated
+#: as a deterministic refusal. One sentinel for both would make a transient omission
+#: non-retryable, which is a worse failure than the one the split exists to fix.
+UNSTATED_FINISH_REASON: Final[str] = "UNKNOWN"
+
 with warnings.catch_warnings():
     # `schema` is a deprecated classmethod on `BaseModel`, so declaring a field of that
     # name makes Pydantic v2 emit a shadowing UserWarning. Appendix A names the field
@@ -154,10 +168,14 @@ class LlmContextTooLarge(LlmTransportError):
 #: this list is dropped rather than passed through: an unrecognised keyword is either
 #: ignored (harmless but misleading, because the contract then says something the model
 #: never saw) or rejected outright with an opaque 400.
+#: `format` is deliberately absent, and its absence is the point: Pydantic emits it for
+#: `datetime`, `UUID` and `HttpUrl` among others, the dialect accepts only a narrow set of
+#: values for it, and an unrecognised one is exactly the opaque 400 described above. The
+#: plan's step 3 names it in the strip list; nothing generated today emits one, so the
+#: keyword is dead code sitting in front of a live trap for the first field typed that way.
 _ALLOWED_SCHEMA_KEYS: Final[frozenset[str]] = frozenset(
     {
         "type",
-        "format",
         "description",
         "nullable",
         "enum",
@@ -168,6 +186,15 @@ _ALLOWED_SCHEMA_KEYS: Final[frozenset[str]] = frozenset(
         "anyOf",
         "minItems",
         "maxItems",
+        # String bounds. Carried for the same reason `minItems`/`maxItems` are: the
+        # dialect's schema object declares them (`min_length` / `max_length`, stated as
+        # applying "if type is STRING"), and a bound the validator on the way back will
+        # enforce is a bound the model has to be shown on the way out. Dropped, a
+        # `Field(max_length=...)` becomes a rule the response is graded against and never
+        # told about, and every violation costs a repair round trip against a daily
+        # request quota. Not on the list of keywords the plan's step 3 says to strip.
+        "minLength",
+        "maxLength",
     }
 )
 
@@ -257,7 +284,11 @@ def _translate(
     elif isinstance(declared_type, str):
         out["type"] = _TYPE_NAMES.get(declared_type, "STRING")
 
-    for key in ("description", "format", "enum", "minItems", "maxItems", "nullable"):
+    for key in (
+        "description", "enum",
+        "minItems", "maxItems", "minLength", "maxLength",
+        "nullable",
+    ):
         if key in node and key in _ALLOWED_SCHEMA_KEYS:
             out[key] = node[key]
 
@@ -605,11 +636,17 @@ class GeminiClient:
             total=int(getattr(usage, "total_token_count", 0) or 0),
         )
 
+        # Two different facts, two different sentinels. "The provider returned nothing to
+        # read" is deterministic and terminal under Appendix B.1; "the provider returned
+        # something but did not say why it stopped" is neither. Collapsing them into one
+        # name is what made the first condition retryable.
         candidates = getattr(response, "candidates", None) or []
-        finish_reason = "UNKNOWN"
+        finish_reason = NO_CANDIDATE_FINISH_REASON
         if candidates:
             raw_reason = getattr(candidates[0], "finish_reason", None)
-            finish_reason = str(getattr(raw_reason, "name", raw_reason) or "UNKNOWN")
+            finish_reason = str(
+                getattr(raw_reason, "name", raw_reason) or UNSTATED_FINISH_REASON
+            )
 
         return RawLlmResponse(
             text=response.text or "",
