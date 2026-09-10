@@ -29,6 +29,15 @@ survived them; it does not restate their reasoning.
 
 ## Open — ranked
 
+**Count of record: 7** — one medium (`review.md` 4) and six lows (`review-2.md` 4;
+`review.md` 7, 8, 9, 11, 12). Down from the 13 that were open entering the urgent bundle.
+
+> Correction, in the spirit of `87cb276`: commit `830332e`'s message says "Open backlog is
+> now 9: one medium and eight lows." That is wrong — it double-counted. The count above is
+> the one to trust, and the item tables below are what it is derived from. The commit
+> message is left as written rather than rewritten, the same way `review-2.md`'s own
+> miscounted verdict line was left and corrected here instead.
+
 ### Medium
 
 | # | Source | One line | Verified open by |
@@ -58,6 +67,34 @@ regardless of who authored it).
 | 9 | `review.md` | B.1's "empty candidates" half of the safety row is not terminal; `finish_reason = "UNKNOWN"` is not in `_TERMINAL_FINISH_REASONS`, so it retries the full 3 attempts. |
 | 11 | `review.md` | `PriorHistory` degraded path leaves `retries_in_24h` at `0` instead of B.3's fail-closed `999`. Phase 2 wires the retry cap to it. |
 | 12 | `review.md` | `gateway_replay.py`'s `forbidden: tuple = ()` makes the authoritative safety re-check opt-in at construction. |
+
+### Audit provenance — one gap, recorded deliberately
+
+Everything up to `dcf480f` was audited twice by `phase-reviewer`, independently, offline.
+**The findings 5 and 6 delta (`dcf480f..830332e`) was not.** That agent hit a session rate
+limit with a multi-hour reset, and rather than stall the tag the coordinator ran the five
+adversarial checks the reviewer had been briefed to run, and recorded the results:
+
+- `problem()`'s new `get_app_context()` call cannot create a nested-failure path — the
+  accessor is `@lru_cache`d and warmed at startup on both entry points (`main.py`'s
+  lifespan and `app.py:203`), and the only construction failure available to it is invalid
+  `Settings`, which `main.py:59` raises on at import.
+- The catch-all masks nothing: `ServerErrorMiddleware` re-raises after the handler runs, so
+  `logger.exception` is a second record rather than the only one, and `CancelledError` is
+  not an `Exception` subclass.
+- `request.state` is per-request (`scope.setdefault("state", {})`, and this lifespan yields
+  no shared state), so no cross-request bleed; a pre-mint failure yields a body with no
+  `run_id` rather than an `AttributeError` inside the handler.
+- The `Redactor` pass on `problem()` carries the same accepted `MIN_REDACTABLE_SECRET_LEN`
+  residual already documented for `_serialize_run_outcome` — a second surface, not a new
+  class.
+- `POST /v1/runs`'s fire-and-forget `_execute` task is unchanged by the delta and still
+  fails invisibly after the 202. Pre-existing; no HTTP handler could have caught it.
+
+This is a coordinator self-check, not an independent audit, and it is weaker evidence than
+the two that preceded it. An independent `phase-reviewer` pass over that delta is still
+owed and is cheap to run; it is the first thing to spend on if anything in the error paths
+misbehaves.
 
 ### Residuals and hazards — real, but not findings against a stated contract
 
