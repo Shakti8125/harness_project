@@ -621,6 +621,38 @@ right, not that the PR gets written). Recovery is **not** deferred here; it ship
 > returning a real count under 2 for that scenario, or assert the deny and move the auto-retry
 > demonstration to Phase 3 where memory is real. Choose deliberately and write down which.
 
+> **Status: built, at `fc8209b` and after.** Four decisions against the plan as written, all in
+> `docs/progress/phase-2/dispatch.md` with their reasoning; the short form:
+>
+> **Verify step 1 is recorded against the deny.** The retry-count fact is read straight off
+> `bundle.prior_history.retries_in_24h`, which `PriorHistory(unavailable=True)` forces to 999 --
+> one fail-closed source of truth, no second stub constant. So the live `flaky_test` and
+> `infra_timeout` replays deny `rerun_failed_jobs` and escalate as `policy_denied`, and the
+> `<default>` decision's reason names the clause (`memory.retries_for_signature_24h: 999 fails
+> {lt: 2}`). The allow path is pinned by a test that supplies a readable history and asserts the
+> gateway executed the re-run. Phase 3 lights the live demonstration up.
+>
+> **A denied plan escalates the run.** `policy_denied` has existed in `EscalationReason` since
+> Phase 0 and nothing else could produce it; the `RemediationResult` with every decision stays in
+> `final`.
+>
+> **"Registered with a `NotImplementedError` body" is realised as a `ToolError`.** `invoke` must
+> not raise for anything but a programming error, and a person approving a fix PR through the API
+> is not one. The unimplemented write tools are in the catalog, the decision about them is real,
+> and invoking one answers `ToolError(kind="unknown", retryable=False)` naming the phase.
+>
+> **Tool calls are derived from the drafts whenever the drafts determine them.** The first live
+> run showed the model proposing `create_branch` with empty args and no PR; the harness now builds
+> branch/files/PR from `pr_draft` (and the retry from the bundle's own run id), using the model's
+> proposed calls only when nothing can be derived. The model chooses the action and writes the
+> content; the calls are mechanical.
+>
+> Also: the `max_side_effecting_actions_per_run` invariant counts *actions* (executed plans), not
+> tool calls -- a fix PR is one action made of three write calls -- and fails closed when the count
+> fact is absent. Live mode reached the API behind two opt-ins (`HARNESS_GATEWAY=github` and the
+> repo allowlist), with `scripts/replay.py --live` driving the same path; step 5 is blocked on a
+> real token and a demo repository and is recorded that way in `docs/progress/phase-2/verify.md`.
+
 ---
 
 ## Phase 3 — Memory
@@ -1170,11 +1202,18 @@ class StageSpec(BaseModel):
     output_model: type[BaseModel]          # not serialized
     required: bool = True
     gate: Callable[["RunState"], "GateDecision"] | None = None
+    suspend: Callable[["RunState"], "Suspension | None"] | None = None   # runs AFTER the stage (Phase 2)
 
 class GateDecision(BaseModel):
     proceed: bool
     reason: str
     escalate_as: str | None = None
+
+class Suspension(BaseModel):               # Phase 2 amendment -- see the note below
+    status: Literal["awaiting_approval", "escalated"]
+    reason: str
+    escalate_as: str | None = None         # an EscalationReason; required when status == "escalated"
+    payload: dict[str, JsonValue] = {}
 
 class RunState(BaseModel):                 # mutable, extra="allow" — the only non-frozen model
     run_id: RunId
@@ -1186,6 +1225,15 @@ class RunState(BaseModel):                 # mutable, extra="allow" — the only
 class Orchestrator:
     async def run(self, request: RunRequest) -> RunOutcome: ...
 ```
+
+> **Amendment (Phase 2, 2026-09-11).** `StageSpec.suspend` and `Suspension` are derived, not
+> transcribed: A.2 as frozen had no way for a stage's *output* to end the run early, and
+> `AgentResult.status` (A.1) has no word for "valid, complete, and needs a person". The hook
+> is the post-stage mirror of `gate`: the integration supplies a closure over `RunState`,
+> the orchestrator sets the run status it names (escalating with `escalate_as` when asked),
+> stops, and keeps the stage's artifact in `final`. Defaulted, so no existing caller changes.
+> The CI/CD integration attaches it to the remediate stage: `awaiting_approval` for a plan
+> that needs approval, `escalated`/`policy_denied` for one the policy refused.
 
 The confidence short-circuit is a `StageSpec.gate` on the remediate stage:
 ```python
@@ -1674,20 +1722,27 @@ class RemediationResult(BaseModel):           # the remediate stage output
 
 | Method | Path | Request | Response |
 |---|---|---|---|
-| POST | `/v1/runs` | `RunRequest` | `202 {run_id, status}` |
+| POST | `/v1/runs` | `RunRequest` | `202 {run_id, status}` / `501` live mode when `HARNESS_GATEWAY=replay` / `403` live mode for a repo not in `HARNESS_ALLOWED_REPOS` / `422` replay mode with no `replay_fixture` |
 | GET | `/v1/runs/{run_id}` | — | `200 RunOutcome` / `404` |
 | GET | `/v1/runs` | `?status&integration&limit&cursor` | `200 {items: [RunSummary], next_cursor}` |
 | GET | `/v1/runs/{run_id}/trace` | — | `200 TraceResponse` |
 | GET | `/runs/{run_id}/view` | — | `200 text/html` |
 | POST | `/v1/replay/{scenario}` | `?fresh=bool&sync=bool` | `200 RunOutcome` (synchronous by default — the demo path) |
-| POST | `/v1/approvals/{approval_id}` | `{decision: "approve"\|"reject", actor: str, note?: str}` | `200 {state, executed: [ToolResult]}` / `409` if already decided / `410` if expired |
-| GET | `/v1/escalations` | `?limit` | `200 [EscalationRecord]` |
+| POST | `/v1/approvals/{approval_id}` | `{decision: "approve"\|"reject", actor: str, note?: str}` | `200 {state, executed: [ToolResult], decisions: [PolicyDecision], approval_id, run_id}` / `404` / `409` if already decided / `410` if expired -- the `409`/`410` problem document carries `state` as an extension member |
+| GET | `/v1/escalations` | `?limit` | `200 [EscalationRecord + run_id]` -- each item is the record's dump plus the `run_id` it belongs to |
 | POST | `/webhooks/github` | GitHub `workflow_run` payload + `X-Hub-Signature-256` | `202 {run_id, status}` / `204` ignored / `401` bad sig / `403` repo not allowlisted |
 | GET | `/healthz` | — | `200 {status, db, version}` |
 | GET | `/readyz` | — | `200`/`503 {db_writable, gemini_key_present, policy_loaded}` |
 
-Errors use RFC 9457 `application/problem+json`: `{type, title, status, detail, instance, run_id?}`.
-`detail` passes through the `Redactor`.
+Errors use RFC 9457 `application/problem+json`: `{type, title, status, detail, instance, run_id?}`,
+plus harness-authored extension members where a row above names one (`state` on the approval
+route). `detail` passes through the `Redactor`.
+
+> **Amendment (Phase 2).** Two additive divergences, recorded rather than decided silently:
+> `GET /v1/escalations` items carry `run_id` because `EscalationRecord` has no run id and
+> `extra="forbid"`, and a list of escalations nobody can trace to a run is not useful; and the
+> approval response carries `decisions` because the route re-evaluates policy before executing,
+> and a re-evaluation that refuses must be visible in the response that reports it.
 
 `200 RunOutcome` responses are the model dump with one documented exception: raw external content carried in `final` is replaced by its length and sha256 digest at the HTTP boundary — today `final.<artifact>.logs[].excerpt` → `excerpt_length` + `excerpt_sha256` and `final.<artifact>.diff.files[].patch` → `patch_length` + `patch_sha256`. `final` is opaque to the harness, so this substitution lives in the API layer and must be extended by hand when an integration adds a raw-content field. The whole body also passes through the `Redactor`.
 
@@ -2055,7 +2110,7 @@ returns 403 for anything not on it.
 |---|---|---|---|
 | 0 | **done** — `phase-0-green` | Scaffold, healthz, layering test | `pytest` + `docker compose up` green |
 | 1 | **done** — `phase-1-green` | Investigator + Diagnostician, 1 fixture, deployed, **plus Recovery** | Correct category + ≥1 citation from the public URL |
-| 2 | next | Remediator (retry) + Guardrails + approvals | Flaky auto-retries; regression blocked; 90-case deny test green |
+| 2 | **built** -- see the Phase 2 status block | Remediator (retry) + Guardrails + approvals, 2 fixtures, live gateway | Regression blocked pending approval; flaky *denied* by the fail-closed cap with the clause named (allow path pinned offline); 90-case deny test green |
 | 3 | | Memory | 4th flaky run shows `occurrences=3`, `likely_flaky`, retry cap bites on the 3rd |
 | 4 | | Evaluator + eval harness (Recovery shipped in 1) | Fabricated citation → escalate, no remediation; `eval.py` 4/4 |
 | 5 | | Trace view + real webhook | Redelivery dedupes; secret-leak test green; live run from the demo repo |

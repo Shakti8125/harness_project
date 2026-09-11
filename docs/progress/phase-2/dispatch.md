@@ -74,15 +74,24 @@ Every proposed call is decided before any executes. Any `deny` → nothing runs
 is built (`status="awaiting_approval"`). Otherwise everything runs in order. Half a plan
 (a branch with no PR) is worse than none.
 
-### 7. Tool calls are the model's, with a deterministic fallback
-The model proposes `tool_calls` per A.11. The Remediator re-mints `call_id` and sets
-Appendix C's `idempotency_key` on every write call — the model's ids are discarded, as the
-Investigator already does. If the model names an action but proposes no calls, the
-canonical calls for that action are derived from its own drafts (`retry_job` →
-`rerun_failed_jobs`; `file_ticket` → `create_issue` from `ticket_draft`; the two PR actions
-→ branch / file / PR from `pr_draft`) and the span records `tool_calls_derived=true`. A tool
-the catalog does not know is evaluated as `side_effect="destructive"` and falls to
-`<default>` deny — fail closed, visible in the trace.
+### 7. Tool calls are derived from the drafts whenever the drafts determine them
+*(Revised after the first live run — the original wording made derivation a fallback for an
+empty `tool_calls` only.)* The model chooses the action and writes the content; the calls
+are mechanical. `retry_job` → one `rerun_failed_jobs` from the bundle's own run id and
+attempt; `file_ticket` → `create_issue` from `ticket_draft`; the two PR actions → branch /
+one file call per draft file / draft PR from `pr_draft`. These replace whatever the model
+proposed, and the span records `tool_calls_derived=true`. The model's own calls are used
+only when nothing can be derived (a PR action with no draft), so a plan is never silently
+emptied. Every call gets a harness-minted `call_id` and every write call Appendix C's
+`idempotency_key`. A tool the catalog does not know is evaluated as
+`side_effect="destructive"` and falls to `<default>` deny — fail closed, visible in the
+trace.
+
+Why the revision: live, with the default 4 096 output budget, the model spent ~3 900 tokens
+thinking, hit `MAX_TOKENS`, and after Recovery's "answer more briefly" nudge returned
+`create_branch` with empty args and no draft. Raising the Remediator's output budget to
+8 192 fixed the truncation; making derivation authoritative removes the class of plan where
+the calls and the draft disagree. Re-run: the exact one-line fix, three canonical calls.
 
 ### 8. Approvals persist in an in-process registry, by the API layer
 Same shape and same caveat as `RunRegistry`: replaced when the memory phase lands the
