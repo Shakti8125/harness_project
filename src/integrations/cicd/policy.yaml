@@ -30,7 +30,8 @@ rules:
     when:
       diagnosis.category:         {in: [real_regression, dependency_break, config_issue]}
       diagnosis.final_confidence: {gte: 0.85}
-      evaluation.verdict:         {eq: pass}
+      evaluation.verdict:         {in: [pass, skipped]}   # `skipped` comes back out in Phase 4,
+                                                          # when a real verdict exists (amendment 2)
     obligations: [draft_only, label:agent-generated, no_auto_merge, assign_human_reviewer]
 
   - id: file-ticket

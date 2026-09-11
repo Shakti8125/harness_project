@@ -24,6 +24,7 @@ from src.harness.contracts import Evidence
 from src.harness.gateway import ToolGateway
 from src.integrations.cicd.schemas import (
     DependencyChange,
+    Diagnosis,
     DiffSummary,
     FileChange,
     InvestigationNotes,
@@ -88,7 +89,7 @@ def load_prompt_template(name: str) -> PromptTemplate:
 #: `_PROMPTS_DIR`, so that a stray or half-written `.md` file dropped in the directory
 #: does not silently become part of what startup validates -- only the names the agents
 #: actually call `load_prompt_template` with are load-bearing.
-_TEMPLATE_NAMES: Final[tuple[str, ...]] = ("investigator", "diagnostician")
+_TEMPLATE_NAMES: Final[tuple[str, ...]] = ("investigator", "diagnostician", "remediator")
 
 
 def validate_prompt_templates() -> None:
@@ -233,6 +234,45 @@ def render_catalog(gateway: ToolGateway) -> str:
     )
 
 
+def render_action_catalog(gateway: ToolGateway) -> str:
+    """The side-effecting half of the catalog, as the Remediator may propose from it.
+
+    Every write tool is listed -- including the ones no phase has implemented yet -- and
+    the one destructive tool is listed *as forbidden*, so the model is told rather than
+    left to discover that it will be refused. Read tools are omitted: a plan is an action,
+    and the evidence-gathering already happened.
+    """
+    lines = []
+    for spec in gateway.catalog():
+        if spec.side_effect == "read":
+            continue
+        marker = "  [FORBIDDEN -- never propose]" if spec.side_effect == "destructive" else ""
+        lines.append(
+            f"  {spec.name}({', '.join(_schema_args(spec.input_schema))}) - "
+            f"{spec.description}{marker}"
+        )
+    return "\n".join(lines)
+
+
+def render_diagnosis(diagnosis: Diagnosis) -> str:
+    """The Diagnostician's conclusion, for the Remediator's prompt."""
+    citations = "\n".join(
+        f"  - [{c.claim_kind}] {c.locator}: {c.quote!r}" + (f" ({c.note})" if c.note else "")
+        for c in diagnosis.citations
+    ) or "  (none)"
+    return (
+        f"category: {diagnosis.category}\n"
+        f"final_confidence: {diagnosis.final_confidence:.2f}\n"
+        f"suggested_action: {diagnosis.suggested_action}\n"
+        f"summary: {diagnosis.summary}\n"
+        f"suspected_commit_sha: {diagnosis.suspected_commit_sha or 'none'}\n"
+        f"suspected_test_ids: {', '.join(diagnosis.suspected_test_ids) or 'none'}\n"
+        f"suspected_package: {diagnosis.suspected_package or 'none'}\n"
+        f"reasoning: {diagnosis.reasoning}\n"
+        f"citations:\n{citations}"
+    )
+
+
 def _schema_args(schema: dict[str, Any]) -> list[str]:
     properties = schema.get("properties")
     return list(properties) if isinstance(properties, dict) else []
@@ -293,6 +333,26 @@ def render_investigator_prompt(
         tool_catalog=tool_catalog,
         context_bundle=context_bundle,
         truncation_note=truncation_note,
+    )
+
+
+def render_remediator_prompt(
+    *,
+    diagnosis_summary: str,
+    job_summary: str,
+    diff_summary: str,
+    diff_patches: str,
+    tool_catalog: str,
+    policy_summary: str,
+) -> str:
+    """Assemble the Remediator prompt from `prompts/remediator.md` and the artifacts."""
+    return Template(load_prompt_template("remediator").body).substitute(
+        diagnosis_summary=diagnosis_summary,
+        job_summary=job_summary,
+        diff_summary=diff_summary,
+        diff_patches=diff_patches,
+        tool_catalog=tool_catalog,
+        policy_summary=policy_summary,
     )
 
 

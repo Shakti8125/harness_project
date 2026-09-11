@@ -34,6 +34,7 @@ from src.harness.contracts import TokenUsage
 from src.harness.llm import LlmRequest, RawLlmResponse
 from src.harness.observability import Redactor, TraceRecorder
 from src.settings import get_settings
+from tests.stubs import remediation_plan
 
 HEAD_SHA = "e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df"
 BASE_SHA = "8d4d0a89231f66f3b3910ad16e033041c898512d"
@@ -86,6 +87,8 @@ class _StubLlm:
             payload: object = _NOTES_WITH_THREE_OPTIONAL_CALLS
         elif "You are the Diagnostician" in req.prompt:
             payload = _DIAGNOSIS_PAYLOAD
+        elif "You are the Remediator" in req.prompt:
+            payload = remediation_plan()
         else:  # pragma: no cover - a new agent would have to opt in here
             raise AssertionError("unrecognised prompt reached the stub model")
         return RawLlmResponse(
@@ -121,7 +124,9 @@ def test_obtained_refused_and_failed_all_reach_the_served_bundle(
     client: TestClient,
 ) -> None:
     body = client.post("/v1/replay/real_regression").json()
-    assert body["status"] == "completed"
+    # A regression diagnosis now runs on into a fix-PR plan that needs approval; that is
+    # the run's terminal state in this phase, and the bundle is served either way.
+    assert body["status"] == "awaiting_approval"
 
     outcomes = body["final"]["bundle"]["additional_tool_outcomes"]
     assert len(outcomes) == 3

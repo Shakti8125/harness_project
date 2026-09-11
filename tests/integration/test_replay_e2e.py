@@ -33,6 +33,7 @@ from src.harness.contracts import TokenUsage
 from src.harness.llm import LlmRequest, RawLlmResponse
 from src.harness.observability import Redactor, TraceRecorder
 from src.settings import get_settings
+from tests.stubs import remediation_plan
 
 HEAD_SHA = "e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df"
 
@@ -93,9 +94,15 @@ class StubLlm:
     receiving each other's output.
     """
 
-    def __init__(self, self_confidence: float = 0.92, citations: bool = True) -> None:
+    def __init__(
+        self,
+        self_confidence: float = 0.92,
+        citations: bool = True,
+        plan_action: str = "open_fix_pr",
+    ) -> None:
         self.self_confidence = self_confidence
         self.citations = citations
+        self.plan_action = plan_action
         self.prompts: list[str] = []
 
     async def generate(self, req: LlmRequest) -> RawLlmResponse:
@@ -104,6 +111,8 @@ class StubLlm:
             payload: object = NOTES
         elif "You are the Diagnostician" in req.prompt:
             payload = diagnosis(self.self_confidence, citations=self.citations)
+        elif "You are the Remediator" in req.prompt:
+            payload = remediation_plan(self.plan_action)
         else:  # pragma: no cover - a new agent would have to opt in here
             raise AssertionError("unrecognised prompt reached the stub model")
         return RawLlmResponse(
@@ -149,7 +158,10 @@ def test_replay_produces_a_cited_diagnosis(client: TestClient) -> None:
     assert response.status_code == 200
     body = response.json()
 
-    assert body["status"] == "completed"
+    # Phase 2: the regression's fix-PR plan needs a person, so the run's terminal
+    # state is `awaiting_approval` rather than `completed`. The diagnosis is served
+    # either way.
+    assert body["status"] == "awaiting_approval"
     diagnosis_payload = body["final"]["diagnosis"]
     assert diagnosis_payload["category"] == "real_regression"
     assert diagnosis_payload["final_confidence"] >= 0.75
@@ -274,15 +286,15 @@ def test_trace_is_persisted_and_readable(client: TestClient) -> None:
     assert {"run", "agent.run", "llm.attempt"} <= names
     # Aggregated from the `llm` spans only: the same counts also appear on the enclosing
     # `agent` spans as a roll-up, and summing both would double every figure.
-    assert payload["totals"]["total"] == 3000
-    assert payload["totals"]["prompt"] == 2400
+    assert payload["totals"]["total"] == 4500
+    assert payload["totals"]["prompt"] == 3600
     assert payload["duration_ms"] >= 0
 
     # Every span belongs to this run, and the agent spans hang off the run span.
     run_span = next(span for span in payload["spans"] if span["name"] == "run")
     assert run_span["parent_span_id"] is None
     agent_spans = [span for span in payload["spans"] if span["name"] == "agent.run"]
-    assert len(agent_spans) == 2
+    assert len(agent_spans) == 3
     assert all(span["parent_span_id"] == run_span["span_id"] for span in agent_spans)
 
 
@@ -328,7 +340,7 @@ def test_async_run_is_accepted_then_readable(client: TestClient) -> None:
         outcome = client.get(f"/v1/runs/{run_id}").json()
         if outcome["status"] != "in_progress":
             break
-    assert outcome["status"] == "completed"
+    assert outcome["status"] == "awaiting_approval"
     assert outcome["run_id"] == run_id
     assert outcome["final"]["diagnosis"]["category"] == "real_regression"
 

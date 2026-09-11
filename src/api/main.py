@@ -1,11 +1,11 @@
 """FastAPI application entry point.
 
-Phase 1 scope: `/healthz`, `/readyz`, and the run surface of PLAN.md Appendix A.12 that
-the Investigator + Diagnostician slice can actually back — `POST /v1/runs`,
-`GET /v1/runs/{run_id}`, `GET /v1/runs`, `GET /v1/runs/{run_id}/trace`, and the demo path
-`POST /v1/replay/{scenario}`. The rest of A.12 (`/v1/approvals/{id}`,
-`/v1/escalations`, `/webhooks/github`, `/runs/{id}/view`) is wired in later phases once
-the Guardrails, Evaluator and Memory exist to back them.
+The run surface of PLAN.md Appendix A.12 that the built slices can back: `/healthz`,
+`/readyz`, `POST /v1/runs` (replay, and live behind two opt-ins), `GET /v1/runs/{run_id}`,
+`GET /v1/runs`, `GET /v1/runs/{run_id}/trace`, the demo path `POST /v1/replay/{scenario}`,
+and -- since the Guardrails phase -- `POST /v1/approvals/{approval_id}` and
+`GET /v1/escalations`. `/webhooks/github` and `/runs/{id}/view` arrive with the
+observability phase.
 
 Errors use RFC 9457 `application/problem+json`, per A.12.
 """
@@ -20,23 +20,34 @@ import re
 import sqlite3
 from collections.abc import AsyncIterator, Coroutine, Mapping
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import aiosqlite
 from fastapi import FastAPI, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.api.approval_registry import ApprovalEntry, ApprovalRegistry, RunContext
 from src.api.deps import AppContext, get_app_context, mint_run_id
 from src.api.run_registry import RunRegistry
 from src.harness.contracts import RunId, RunOutcome, RunRequest
+from src.harness.gateway import ToolGateway
 from src.harness.observability import REDACTION_PLACEHOLDER
 from src.integrations.cicd.agents.investigator import parse_subject
+from src.integrations.cicd.remediation import (
+    build_facts,
+    decide_plan,
+    execute_plan,
+    plan_verdict,
+)
 from src.integrations.cicd.rendering import validate_prompt_templates
-from src.integrations.cicd.wiring import INTEGRATION
+from src.integrations.cicd.schemas import Diagnosis, FailureBundle, RemediationResult
+from src.integrations.cicd.wiring import INTEGRATION, REMEDIATION_KEY
 from src.settings import get_settings
 
 APP_VERSION = "0.1.0"
@@ -53,6 +64,7 @@ _RUN_ID_PATTERN = re.compile(r"^run_[0-9A-HJKMNP-TV-Z]{26}$")
 logger = logging.getLogger("harness.api")
 
 registry = RunRegistry()
+approvals = ApprovalRegistry()
 
 
 @asynccontextmanager
@@ -190,8 +202,14 @@ def problem(
     detail_suffix: str = "",
     run_id: str | None = None,
     headers: Mapping[str, str] | None = None,
+    extensions: Mapping[str, JsonValue] | None = None,
 ) -> JSONResponse:
     """An RFC 9457 `application/problem+json` body.
+
+    `extensions` are RFC 9457 §3.2 extension members (the approval route answers a `409`
+    with the approval's current `state`, which A.12 specifies). They are merged *before*
+    the `Redactor` pass, may not shadow a standard member, and are harness-authored --
+    a fixed key around an enum value -- never caller-derived.
 
     Every call site still authors `detail` itself rather than interpolating an upstream
     message verbatim — that discipline is worth keeping — but it is no longer the only
@@ -242,6 +260,9 @@ def problem(
     }
     if run_id is not None and _RUN_ID_PATTERN.match(run_id):
         body["run_id"] = run_id
+    for key, value in (extensions or {}).items():
+        if key not in body:
+            body[key] = value
     scrubbed = get_app_context().recorder.redactor.scrub(body)
     assert isinstance(scrubbed, dict)  # body was a dict; Redactor preserves the JSON shape
     scrubbed["detail"] = _bound_detail(str(scrubbed["detail"]), detail_suffix)
@@ -526,10 +547,10 @@ async def readyz(response: Response) -> dict[str, Any]:
 
     db_writable = await _db_writable(settings.database_path)
     gemini_key_present = bool(settings.gemini_api_key.get_secret_value())
-    # PLAN.md Appendix E / policy loading is Phase 2 work (owned by the cicd-integration
-    # agent's policy.yaml + the harness-core PolicyEngine loader). Reporting False here
-    # rather than faking readiness.
-    policy_loaded = False
+    # The engine is built from `policy.yaml` at startup (`deps.get_app_context`), and a
+    # malformed file raises there -- so reaching this line with an engine means the policy
+    # loaded. Reported off the object rather than as a constant.
+    policy_loaded = bool(get_app_context().engine.spec.rules)
 
     body = {
         "db_writable": db_writable,
@@ -614,19 +635,48 @@ def _spawn_run(coro: Coroutine[Any, Any, RunOutcome], run_id: RunId) -> None:
     task.add_done_callback(_background_runs.discard)
 
 
+def _gateway_for(context: AppContext, run_context: RunContext) -> ToolGateway:
+    if run_context.mode == "live":
+        return context.build_live_gateway(run_context.repo)
+    if run_context.scenario_dir is None:  # pragma: no cover - replay always names one
+        raise ValueError("a replay run must name a scenario directory")
+    return context.build_replay_gateway(run_context.scenario_dir, run_context.repo)
+
+
 async def _execute(
     context: AppContext,
     request_model: RunRequest,
-    scenario_dir: Path,
-    repo: str,
+    run_context: RunContext,
     run_id: RunId,
 ) -> RunOutcome:
-    """Run one request to completion under the concurrency limit."""
-    async with context.run_semaphore:
-        orchestrator = context.build_replay_orchestrator(scenario_dir, repo, run_id=run_id)
-        outcome = await orchestrator.run(request_model)
+    """Run one request to completion under the concurrency limit.
+
+    A run that ends `awaiting_approval` has its `ApprovalRequest` registered here, keyed
+    by approval id together with `run_context`, so `POST /v1/approvals/{id}` can rebuild
+    the same gateway later. The Remediator never touches storage; this is the "harness
+    stores the plan" half of PLAN.md's approval state machine, in the layer that owns
+    persistence.
+    """
+    gateway = _gateway_for(context, run_context)
+    try:
+        async with context.run_semaphore:
+            orchestrator = context.build_orchestrator_for(gateway, run_id=run_id)
+            outcome = await orchestrator.run(request_model)
+    finally:
+        await gateway.aclose()
     await registry.save(outcome)
+    if outcome.status == "awaiting_approval":
+        remediation = _remediation_of(outcome)
+        if remediation is not None and remediation.pending_approval is not None:
+            await approvals.save(remediation.pending_approval, run_context)
     return outcome
+
+
+def _remediation_of(outcome: RunOutcome) -> RemediationResult | None:
+    raw = outcome.final.get(REMEDIATION_KEY)
+    if not isinstance(raw, dict):
+        return None
+    return RemediationResult.model_validate(raw)
 
 
 def _load_scenario(context: AppContext, scenario: str) -> tuple[Path, dict[str, Any]]:
@@ -682,20 +732,18 @@ async def replay(
     run_id = mint_run_id()
     request.state.run_id = run_id  # so an unhandled exception below can still report it
 
+    run_context = RunContext(mode="replay", repo=parsed["repo"], scenario_dir=scenario_dir)
     if not sync:
         await registry.mark_in_progress(
             run_id, INTEGRATION, f"/v1/runs/{run_id}/trace"
         )
-        _spawn_run(
-            _execute(context, run_request, scenario_dir, parsed["repo"], run_id),
-            run_id,
-        )
+        _spawn_run(_execute(context, run_request, run_context, run_id), run_id)
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
             content={"run_id": run_id, "status": "in_progress"},
         )
 
-    outcome = await _execute(context, run_request, scenario_dir, parsed["repo"], run_id)
+    outcome = await _execute(context, run_request, run_context, run_id)
     return JSONResponse(
         status_code=status.HTTP_200_OK, content=_serialize_run_outcome(outcome)
     )
@@ -716,33 +764,47 @@ async def create_run(request: Request, run_request: RunRequest) -> Response:
             detail=f"No integration named {run_request.integration!r} is registered.",
         )
 
-    # Live gateways arrive with the Remediator phase; until then the only backing a run
-    # can have is a recorded scenario, and saying so plainly beats a confusing failure
-    # deep inside collection.
-    scenario = run_request.replay_fixture
-    if run_request.mode != "replay" or not scenario:
-        return problem(
-            request, status_code=501, title="Live mode not available",
-            detail=(
-                "This build serves replay runs only: set mode='replay' and name a "
-                "replay_fixture. The live gateway is wired in a later phase."
-            ),
-        )
-    try:
-        scenario_dir, _ = _load_scenario(context, scenario)
-    except (ValueError, FileNotFoundError):
-        return problem(
-            request, status_code=404, title="Scenario not found",
-            detail=f"No recorded scenario named {scenario!r}.",
-        )
-
     parsed = parse_subject(dict(run_request.subject))
+    run_context: RunContext
+    if run_request.mode == "live":
+        # Live mode is opt-in twice: the process must be configured for the live gateway,
+        # and the repository must be allowlisted. Each refusal names which one is missing,
+        # because "501" and "403" are the difference between a deployment choice and a
+        # request that named a repository this deployment does not serve.
+        if context.settings.gateway != "github":
+            return problem(
+                request, status_code=501, title="Live mode not available",
+                detail=(
+                    "This deployment is configured for replay only "
+                    "(HARNESS_GATEWAY=replay); set mode='replay' and name a replay_fixture."
+                ),
+            )
+        if not context.live_allowed(parsed["repo"]):
+            return problem(
+                request, status_code=403, title="Repository not allowlisted",
+                detail="The subject's repository is not in HARNESS_ALLOWED_REPOS.",
+            )
+        run_context = RunContext(mode="live", repo=parsed["repo"], scenario_dir=None)
+    else:
+        scenario = run_request.replay_fixture
+        if not scenario:
+            return problem(
+                request, status_code=422, title="Validation error",
+                detail="mode='replay' requires replay_fixture to name a recorded scenario.",
+            )
+        try:
+            scenario_dir, _ = _load_scenario(context, scenario)
+        except (ValueError, FileNotFoundError):
+            return problem(
+                request, status_code=404, title="Scenario not found",
+                detail=f"No recorded scenario named {scenario!r}.",
+            )
+        run_context = RunContext(mode="replay", repo=parsed["repo"], scenario_dir=scenario_dir)
+
     run_id = mint_run_id()
     request.state.run_id = run_id  # so an unhandled exception below can still report it
     await registry.mark_in_progress(run_id, run_request.integration, f"/v1/runs/{run_id}/trace")
-    _spawn_run(
-        _execute(context, run_request, scenario_dir, parsed["repo"], run_id), run_id
-    )
+    _spawn_run(_execute(context, run_request, run_context, run_id), run_id)
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
         content={"run_id": run_id, "status": "in_progress"},
@@ -798,4 +860,179 @@ async def get_run_trace(request: Request, run_id: str) -> Response:
         )
     return JSONResponse(
         status_code=status.HTTP_200_OK, content=trace.model_dump(mode="json")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Approvals
+# ---------------------------------------------------------------------------
+
+
+class ApprovalDecision(BaseModel):
+    """`POST /v1/approvals/{id}` body, per A.12."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    decision: Literal["approve", "reject"]
+    actor: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(None, max_length=1000)
+
+
+async def _settle_run(
+    run_id: RunId,
+    remediation: RemediationResult,
+    *,
+    run_status: Literal["completed", "escalated"] = "completed",
+) -> None:
+    """Write the decided remediation back into the stored `RunOutcome`.
+
+    Without this, `GET /v1/runs/{id}` would say `awaiting_approval` forever after the
+    approval was decided -- the response to the `POST` would be the only record.
+    """
+    outcome = await registry.get(run_id)
+    if outcome is None:
+        return
+    final = dict(outcome.final)
+    final[REMEDIATION_KEY] = remediation.model_dump(mode="json")
+    await registry.save(outcome.model_copy(update={"status": run_status, "final": final}))
+
+
+async def _execute_approved(
+    context: AppContext, entry: ApprovalEntry
+) -> tuple[RemediationResult, list[dict[str, Any]]]:
+    """Re-evaluate the stored plan against the run's artifacts, then execute if allowed.
+
+    PLAN.md: "the harness re-evaluates policy against the stored plan at execution time
+    before running it (the diagnosis may have been superseded)". The facts are rebuilt
+    from the run's own `final` -- the same `Diagnosis` and `FailureBundle` the Remediator
+    read -- rather than copied from the original decisions, so a later phase that lets
+    facts change between suspension and approval (memory, a re-diagnosis) changes nothing
+    here. A plan the re-evaluation now denies is not executed, whatever the person said;
+    the decisions in the response show why.
+    """
+    request = entry.request
+    outcome = await registry.get(request.run_id)
+    if outcome is None:
+        raise LookupError(request.run_id)
+    diagnosis = Diagnosis.model_validate(outcome.final["diagnosis"])
+    bundle = FailureBundle.model_validate(outcome.final["bundle"])
+    facts = build_facts(diagnosis, bundle, side_effecting_actions_so_far=0)
+    decisions = decide_plan(context.engine, request.plan, facts)
+    verdict = plan_verdict(request.plan, decisions)
+    executed = []
+    if verdict in ("execute", "await_approval"):
+        gateway = _gateway_for(context, entry.context)
+        try:
+            executed = await execute_plan(
+                gateway, request.plan, decisions, recorder=context.recorder.bind(request.run_id)
+            )
+        finally:
+            await gateway.aclose()
+        remediation_status: Literal["executed", "denied"] = "executed"
+    else:
+        remediation_status = "denied"
+    remediation = RemediationResult(
+        plan=request.plan,
+        decisions=decisions,
+        executed=executed,
+        pending_approval=request,
+        status=remediation_status,
+    )
+    return remediation, [d.model_dump(mode="json") for d in decisions]
+
+
+@app.post("/v1/approvals/{approval_id}")
+async def decide_approval(
+    request: Request, approval_id: str, body: ApprovalDecision
+) -> Response:
+    """Decide a pending approval. Single-use: `409` once decided, `410` once expired.
+
+    The transition is taken under the registry's lock *before* anything executes, so two
+    concurrent decisions on one approval cannot both run the plan -- the loser sees the
+    winner's state and answers `409`.
+    """
+    context = get_app_context()
+    entry = await approvals.get(approval_id)
+    if entry is None:
+        return problem(
+            request, status_code=404, title="Approval not found",
+            detail="No approval with that id is known to this process.",
+        )
+
+    if entry.request.state == "pending" and datetime.now(UTC) >= entry.request.expires_at:
+        entry, _ = await approvals.transition(approval_id, "expired")
+    if entry.request.state == "expired":
+        return problem(
+            request, status_code=410, title="Approval expired",
+            detail="This approval expired before a decision was recorded.",
+            run_id=entry.request.run_id,
+            extensions={"state": "expired"},
+        )
+
+    target: Literal["approved", "rejected"] = (
+        "approved" if body.decision == "approve" else "rejected"
+    )
+    entry, applied = await approvals.transition(
+        approval_id, target, actor=body.actor, note=body.note
+    )
+    if not applied:
+        return problem(
+            request, status_code=409, title="Approval already decided",
+            detail=f"This approval is already {entry.request.state}.",
+            run_id=entry.request.run_id,
+            extensions={"state": entry.request.state},
+        )
+
+    if target == "rejected":
+        remediation = RemediationResult(
+            plan=entry.request.plan,
+            decisions=entry.request.decisions,
+            executed=[],
+            pending_approval=entry.request,
+            status="denied",
+        )
+        await _settle_run(entry.request.run_id, remediation)
+        decisions = [d.model_dump(mode="json") for d in entry.request.decisions]
+        executed: list[dict[str, Any]] = []
+    else:
+        remediation, decisions = await _execute_approved(context, entry)
+        await _settle_run(entry.request.run_id, remediation)
+        executed = [r.model_dump(mode="json") for r in remediation.executed]
+
+    payload: dict[str, JsonValue] = {
+        "approval_id": approval_id,
+        "run_id": entry.request.run_id,
+        "state": entry.request.state,
+        "executed": list(executed),
+        "decisions": list(decisions),
+    }
+    return JSONResponse(
+        status_code=status.HTTP_200_OK, content=context.recorder.redactor.scrub(payload)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Escalations
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/escalations")
+async def list_escalations(limit: int = Query(50, ge=1, le=200)) -> Response:
+    """Every escalation this process has recorded, newest first.
+
+    Read off the run registry rather than a separate store: the `EscalationRecord` is a
+    field of the `RunOutcome`, and PLAN.md's durable `escalation` table arrives with the
+    memory phase alongside the `run` table it references. Each item is the record plus
+    `run_id` -- A.12's bare `[EscalationRecord]` would leave a reader unable to find the
+    run an escalation belongs to.
+    """
+    context = get_app_context()
+    runs = await registry.list(limit=200)
+    items: list[JsonValue] = [  # type: ignore[assignment]  # dict[str, Any] is JsonValue here
+        {"run_id": run.run_id, **run.escalation.model_dump(mode="json")}
+        for run in runs
+        if run.escalation is not None
+    ][:limit]
+    return JSONResponse(
+        status_code=status.HTTP_200_OK, content=context.recorder.redactor.scrub(items)
     )

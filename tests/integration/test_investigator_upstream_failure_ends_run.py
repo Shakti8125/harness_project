@@ -34,10 +34,12 @@ import pytest
 from src.harness import recovery as recovery_module
 from src.harness.context_manager import ContextBudget, ContextManager
 from src.harness.contracts import RunRequest, TokenUsage
+from src.harness.guardrails import PolicyEngine
 from src.harness.llm import LlmRateLimited, LlmRequest, RawLlmResponse
 from src.harness.observability import Redactor, SecretRegistry, TraceRecorder
 from src.integrations.cicd.gateway_replay import ReplayToolGateway
-from src.integrations.cicd.wiring import build_orchestrator
+from src.integrations.cicd.wiring import build_orchestrator, load_policy_spec
+from tests.stubs import remediation_plan
 
 REPO = "octo-org/harness-demo-repo"
 
@@ -93,6 +95,14 @@ class PermanentlyInvalidNotesLlm:
                 model=req.model,
                 latency_ms=5,
             )
+        if "You are the Remediator" in req.prompt:
+            return RawLlmResponse(
+                text=json.dumps(remediation_plan()),
+                tokens=TokenUsage(prompt=1000, completion=200, total=1200),
+                finish_reason="STOP",
+                model=req.model,
+                latency_ms=5,
+            )
         if "You are the Diagnostician" in req.prompt:
             return RawLlmResponse(
                 text=json.dumps(VALID_DIAGNOSIS),
@@ -131,6 +141,8 @@ async def _run(scenario_dir: Path, llm: object, idempotency_key: str) -> object:
         escalation_threshold=0.70,
         investigator_model="stub-model",
         diagnostician_model="stub-model",
+        remediator_model="stub-model",
+        engine=PolicyEngine(load_policy_spec()),
     )
     webhook = json.loads((scenario_dir / "webhook.json").read_text(encoding="utf-8"))
     request = RunRequest(

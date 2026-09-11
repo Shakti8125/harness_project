@@ -12,6 +12,17 @@ rather than a branch in this loop: "is the diagnosis good enough to act on" is a
 the moment something would act. In Phase 1 no remediating agent exists yet, so the
 integration registers the stage with its gate and no agent behind it; the gate still
 fires, still escalates, and Phase 2 fills in the agent without moving the condition.
+
+**A suspend hook reads the stage's output, after it ran, and may end the run early.**
+`StageSpec.suspend` is the mirror image of `gate` (Phase 2; A.2 amended). A stage can
+produce an output that is valid and complete and yet means "this run must not continue
+on its own" -- a plan that needs a person's approval before it executes, or a plan the
+policy refused -- and `AgentResult.status` (frozen in A.1) has no word for either. The
+integration supplies a closure that inspects `RunState.artifacts` and answers with a
+`Suspension`; the orchestrator sets the run status it names, escalates if asked, and
+stops. The artifact stays in `final` either way, which is the point: a *failed* stage
+loses its output, a *suspended* one keeps it, and the decisions a person needs to read
+are in that output.
 """
 
 from __future__ import annotations
@@ -137,6 +148,7 @@ class StageSpec(BaseModel):
     output_model: type[BaseModel]          # not serialized
     required: bool = True
     gate: Callable[[RunState], GateDecision] | None = None
+    suspend: Callable[[RunState], Suspension | None] | None = None   # runs AFTER the stage
 
 
 class GateDecision(BaseModel):
@@ -145,6 +157,23 @@ class GateDecision(BaseModel):
     proceed: bool
     reason: str
     escalate_as: str | None = None
+
+
+class Suspension(BaseModel):
+    """What a `StageSpec.suspend` hook returns when the run must stop after this stage.
+
+    DERIVED, NOT TRANSCRIBED (see the module docstring). ``status`` becomes the run's
+    status. ``escalate_as`` is required when ``status == "escalated"`` and must be an
+    `EscalationReason`; it is ignored otherwise. ``payload`` travels on the escalation
+    record so the reader can see what the stage decided without opening the artifact.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal["awaiting_approval", "escalated"]
+    reason: str
+    escalate_as: str | None = None
+    payload: dict[str, JsonValue] = {}
 
 
 class RunState(BaseModel):                 # mutable, extra="allow" -- the only non-frozen model
@@ -251,7 +280,7 @@ class Orchestrator:
         state = RunState(
             run_id=run_id, request=request, artifacts={}, degraded=[], stages=[]
         )
-        status: Literal["completed", "escalated", "failed"] = "completed"
+        status: Literal["completed", "escalated", "awaiting_approval", "failed"] = "completed"
         escalation: EscalationRecord | None = None
 
         # `run_scope` binds this recorder AND publishes `run_id` as the ambient run,
@@ -370,7 +399,41 @@ class Orchestrator:
 
                     if result.status == "ok" and result.output is not None:
                         state.artifacts[self._artifact_key(stage)] = result.output
-                        continue
+                        suspension = (
+                            stage.suspend(state) if stage.suspend is not None else None
+                        )
+                        if suspension is None:
+                            continue
+                        # The stage succeeded and its output is filed; what it produced
+                        # says the run must not carry on by itself. Recorded on the
+                        # stage's own record so the stage list reads the same way the
+                        # status does.
+                        state.stages[-1] = state.stages[-1].model_copy(
+                            update={"summary": suspension.reason}
+                        )
+                        if suspension.status == "escalated":
+                            reason = suspension.escalate_as or ""
+                            if reason not in _ESCALATION_REASONS:
+                                logger.warning(
+                                    "suspend hook on stage %r escalated as unknown "
+                                    "reason %r",
+                                    stage.name, reason,
+                                )
+                                reason = "unknown_category"
+                            status = "escalated"
+                            escalation = self._escalate(
+                                run_id=run_id,
+                                reason=reason,  # type: ignore[arg-type]
+                                message=suspension.reason,
+                                payload={"stage": stage.name, **suspension.payload},
+                            )
+                        else:
+                            status = suspension.status
+                            logger.info(
+                                "run %s suspended after stage %r: %s",
+                                run_id, stage.name, suspension.reason,
+                            )
+                        break
 
                     if not stage.required:
                         continue

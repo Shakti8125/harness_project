@@ -22,10 +22,11 @@ import pytest
 from src.harness import recovery as recovery_module
 from src.harness.context_manager import ContextBudget, ContextManager
 from src.harness.contracts import RunRequest
+from src.harness.guardrails import PolicyEngine
 from src.harness.llm import LlmRequest, LlmUpstreamError, RawLlmResponse
 from src.harness.observability import Redactor, SecretRegistry, TraceRecorder
 from src.integrations.cicd.gateway_replay import ReplayToolGateway
-from src.integrations.cicd.wiring import build_orchestrator
+from src.integrations.cicd.wiring import build_orchestrator, load_policy_spec
 
 REPO = "octo-org/harness-demo-repo"
 
@@ -63,9 +64,11 @@ async def test_a_persistently_unreachable_provider_escalates_as_llm_upstream(
         recorder=TraceRecorder(
             db_path=Path("unused.db"), redactor=Redactor(SecretRegistry(), ())
         ),
+        engine=PolicyEngine(load_policy_spec()),
         escalation_threshold=0.70,
         investigator_model="stub-model",
         diagnostician_model="stub-model",
+        remediator_model="stub-model",
     )
     webhook = json.loads(
         (scenario_dir / "webhook.json").read_text(encoding="utf-8")

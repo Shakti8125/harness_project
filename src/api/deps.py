@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Final
@@ -30,11 +30,14 @@ from pydantic import SecretStr
 
 from src.harness.context_manager import ContextBudget, ContextManager
 from src.harness.contracts import RunId
+from src.harness.gateway import ToolGateway
+from src.harness.guardrails import PolicyEngine
 from src.harness.llm import GeminiClient, LlmClient
 from src.harness.observability import Redactor, SecretRegistry, TraceRecorder
 from src.harness.orchestrator import Orchestrator, new_run_id
+from src.integrations.cicd.gateway_github import GitHubToolGateway
 from src.integrations.cicd.gateway_replay import ReplayToolGateway
-from src.integrations.cicd.wiring import build_orchestrator, load_forbidden
+from src.integrations.cicd.wiring import build_orchestrator, load_policy_spec
 from src.settings import Settings, get_settings
 
 logger = logging.getLogger("harness.api.deps")
@@ -64,6 +67,12 @@ class AppContext:
     context_manager: ContextManager
     llm: LlmClient
     run_semaphore: asyncio.Semaphore
+    #: Built once from `policy.yaml` at startup. A malformed policy raises here, so the
+    #: process fails to boot rather than serving runs a gateway would refuse nothing for;
+    #: `readyz` reports `policy_loaded` off this same object. The default factory loads
+    #: the same file, so a context assembled by hand (the test suite does this) enforces
+    #: the same policy the composition root does.
+    engine: PolicyEngine = field(default_factory=lambda: PolicyEngine(load_policy_spec()))
 
     def scenario_dir(self, scenario: str) -> Path:
         """Resolve a replay scenario directory, refusing anything outside the root.
@@ -77,42 +86,80 @@ class AppContext:
             raise ValueError(f"scenario {scenario!r} resolves outside the fixtures root")
         return candidate
 
-    def build_replay_orchestrator(
-        self, scenario_dir: Path, repo: str, run_id: RunId | None = None
+    @property
+    def forbidden(self) -> tuple[str, ...]:
+        """The gateway's own copy of the forbidden set, from the same loaded policy."""
+        return tuple(self.engine.spec.forbidden)
+
+    def build_replay_gateway(self, scenario_dir: Path, repo: str) -> ReplayToolGateway:
+        return ReplayToolGateway(
+            scenario_dir=scenario_dir,
+            repo=repo,
+            forbidden=self.forbidden,
+            dry_run=self.settings.dry_run,
+        )
+
+    def build_live_gateway(self, repo: str) -> GitHubToolGateway:
+        """The real gateway, for one repository. Never built unless `gateway == "github"`.
+
+        `dry_run` comes straight from settings and defaults to true, so the first live run
+        anyone starts reads everything and writes nothing.
+        """
+        return GitHubToolGateway(
+            repo=repo,
+            token=self.settings.github_token.get_secret_value(),
+            forbidden=self.forbidden,
+            dry_run=self.settings.dry_run,
+            api_base=str(self.settings.github_api_base),
+            read_timeout_s=self.settings.github_timeout_s,
+            recorder=self.recorder,
+        )
+
+    def live_allowed(self, repo: str) -> bool:
+        """Live mode is opt-in twice: the gateway setting, and the repo allowlist."""
+        return self.settings.gateway == "github" and repo in self.settings.allowed_repos
+
+    def build_orchestrator_for(
+        self, gateway: ToolGateway, run_id: RunId | None = None
     ) -> Orchestrator:
-        """An orchestrator wired to one recorded scenario.
+        """An orchestrator over an already-built gateway.
 
         Built per request rather than once at startup because the gateway is bound to a
-        specific scenario directory. Construction touches no I/O — it is a handful of
-        object references — so the cost is a rounding error next to the model call, and
-        the alternative (one mutable gateway re-pointed per request) would be shared
-        state between concurrent replays.
+        specific scenario directory or repository. Construction touches no I/O — it is a
+        handful of object references — so the cost is a rounding error next to the model
+        call, and the alternative (one mutable gateway re-pointed per request) would be
+        shared state between concurrent runs.
 
         ``run_id`` fixes the id the run will be recorded under, so a route that must
         answer with an id *before* the run finishes can mint one and still have the
         orchestrator agree with it.
         """
-        gateway = ReplayToolGateway(
-            scenario_dir=scenario_dir,
-            repo=repo,
-            forbidden=load_forbidden(),
-            dry_run=self.settings.dry_run,
-        )
         orchestrator = build_orchestrator(
             gateway=gateway,
             context_manager=self.context_manager,
             llm=self.llm,
             recorder=self.recorder,
+            engine=self.engine,
             escalation_threshold=self.settings.escalation_threshold,
             investigator_model=self.settings.model_investigator or self.settings.gemini_model,
             diagnostician_model=(
                 self.settings.model_diagnostician or self.settings.gemini_model
             ),
+            remediator_model=self.settings.model_remediator or self.settings.gemini_model,
             timeout_s=self.settings.gemini_timeout_s,
+            approval_ttl_h=self.settings.approval_ttl_h,
         )
         if run_id is not None:
             orchestrator.run_id_factory = lambda: run_id
         return orchestrator
+
+    def build_replay_orchestrator(
+        self, scenario_dir: Path, repo: str, run_id: RunId | None = None
+    ) -> Orchestrator:
+        """An orchestrator wired to one recorded scenario."""
+        return self.build_orchestrator_for(
+            self.build_replay_gateway(scenario_dir, repo), run_id=run_id
+        )
 
 
 def build_secret_registry(settings: Settings) -> SecretRegistry:
@@ -160,6 +207,7 @@ def get_app_context() -> AppContext:
         context_manager=context_manager,
         llm=llm,
         run_semaphore=asyncio.Semaphore(settings.max_concurrent_runs),
+        engine=PolicyEngine(load_policy_spec()),
     )
 
 

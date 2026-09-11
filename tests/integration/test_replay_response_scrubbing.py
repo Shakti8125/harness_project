@@ -42,6 +42,7 @@ from src.harness.llm import LlmClient, LlmRequest, RawLlmResponse
 from src.harness.observability import Redactor, TraceRecorder
 from src.settings import get_settings
 from tests.integration.test_replay_e2e import StubLlm
+from tests.stubs import remediation_plan
 
 SECRET_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"  # 36 chars after ghp_
 
@@ -77,6 +78,8 @@ class QuotingStubLlm:
                     "helper; the job log also contains an unrelated pasted line."
                 ),
             }
+        elif "You are the Remediator" in req.prompt:
+            payload = remediation_plan()
         elif "You are the Diagnostician" in req.prompt:
             quoted_line = _line_containing(req.prompt, SECRET_TOKEN)
             payload = {
@@ -154,7 +157,7 @@ def test_excerpt_and_patch_are_absent_from_the_real_response(client: TestClient)
     assert all(citation["quote"] for citation in citations)
 
     # Unaffected by this change, but shares the response body worth re-checking here.
-    assert body["status"] == "completed"
+    assert body["status"] == "awaiting_approval"
     assert body["final"]["diagnosis"]["category"] == "real_regression"
     assert body["final"]["diagnosis"]["suggested_action"] == "open_fix_pr"
     assert body["run_id"]
@@ -193,8 +196,9 @@ async def _run_orchestrator(
     scenario_dir: Path, llm: LlmClient, idempotency_key: str
 ) -> RunOutcome:
     from src.harness.contracts import RunRequest
+    from src.harness.guardrails import PolicyEngine
     from src.integrations.cicd.gateway_replay import ReplayToolGateway
-    from src.integrations.cicd.wiring import build_orchestrator
+    from src.integrations.cicd.wiring import build_orchestrator, load_policy_spec
 
     recorder = TraceRecorder(
         db_path=Path("unused.db"),
@@ -211,6 +215,8 @@ async def _run_orchestrator(
         escalation_threshold=0.70,
         investigator_model="stub-model",
         diagnostician_model="stub-model",
+        remediator_model="stub-model",
+        engine=PolicyEngine(load_policy_spec()),
     )
     webhook = json.loads((scenario_dir / "webhook.json").read_text(encoding="utf-8"))
     request = RunRequest(
@@ -258,8 +264,9 @@ async def test_the_premise_the_token_was_actually_in_scope_pre_scrub(
     out, or otherwise absent from the pipeline's evidence for reasons unrelated to the
     scrub). Confirms the raw, pre-serialisation `RunOutcome` really does carry it."""
     from src.harness.contracts import RunRequest
+    from src.harness.guardrails import PolicyEngine
     from src.integrations.cicd.gateway_replay import ReplayToolGateway
-    from src.integrations.cicd.wiring import build_orchestrator
+    from src.integrations.cicd.wiring import build_orchestrator, load_policy_spec
 
     settings = get_settings()
     recorder = TraceRecorder(
@@ -279,6 +286,8 @@ async def test_the_premise_the_token_was_actually_in_scope_pre_scrub(
         escalation_threshold=0.70,
         investigator_model="stub-model",
         diagnostician_model="stub-model",
+        remediator_model="stub-model",
+        engine=PolicyEngine(load_policy_spec()),
     )
     webhook = json.loads(
         (scenario_with_a_pasted_token / "webhook.json").read_text(encoding="utf-8")

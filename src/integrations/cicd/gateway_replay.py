@@ -16,9 +16,13 @@ Two things in here are load-bearing and easy to get subtly wrong:
    `content[-max_bytes:]` is the whole point and `f.read(max_bytes)` would silently hand
    the Diagnostician runner bootstrap noise and nothing else.
 
-Only read tools are in this phase's catalog. The write half of PLAN.md's CI/CD catalog
-arrives with the Remediator, which is the first thing that could call one; registering
-them now would mean shipping synthesized success responses that nothing exercises.
+The write half of the catalog (Phase 2) is synthesized, per `fixtures/README.md`: write
+calls have no prior state to reproduce, so `rerun_failed_jobs` answers a plausible success
+carrying `dry_run` as configured, and the tools no phase has implemented yet answer the
+same `ToolError(kind="unknown")` the live gateway does -- the catalog entry is real, the
+policy decision about it is real, and the trace shows both. Every write call's
+`idempotency_key` is remembered per gateway instance (Appendix C), so a retry inside one
+run returns the first result with `cached=True` rather than "firing" twice.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
@@ -33,21 +38,20 @@ from pydantic import JsonValue
 
 from src.harness.gateway import ToolCall, ToolError, ToolResult, ToolSpec
 from src.harness.guardrails import PolicyDecision
+from src.integrations.cicd.catalog import (
+    CATALOG,
+    IMPLEMENTED_WRITE_TOOLS,
+    READ_TOOLS,
+    WRITE_TOOLS,
+    not_implemented_message,
+)
 
 logger = logging.getLogger("harness.integrations.cicd.gateway_replay")
 
 #: PLAN.md line 222: keep the last 20 MB of a job log.
 LOG_DOWNLOAD_CAP_BYTES: Final[int] = 20 * 1024 * 1024
 
-READ_TOOLS: Final[tuple[str, ...]] = (
-    "list_workflow_run_jobs",
-    "get_job_logs",
-    "find_last_successful_run",
-    "compare_commits",
-    "get_commit",
-    "get_file_contents",
-    "search_workflow_runs",
-)
+__all__ = ["LOG_DOWNLOAD_CAP_BYTES", "READ_TOOLS", "ReplayToolGateway", "repo_slug"]
 
 
 def repo_slug(repo: str) -> str:
@@ -57,21 +61,6 @@ def repo_slug(repo: str) -> str:
     leading slash dropped and every remaining `/` replaced by `-`.
     """
     return repo.replace("/", "-")
-
-
-def _spec(
-    name: str,
-    description: str,
-    properties: dict[str, JsonValue],
-    required: list[str],
-) -> ToolSpec:
-    return ToolSpec(
-        name=name,
-        description=description,
-        input_schema={"type": "object", "properties": properties, "required": required},
-        side_effect="read",
-        idempotent=True,
-    )
 
 
 class ReplayToolGateway:
@@ -105,62 +94,13 @@ class ReplayToolGateway:
         self.repo = repo
         self.forbidden = frozenset(forbidden)
         self.dry_run = dry_run
+        # Appendix C: completed write calls, by idempotency key, for the life of this
+        # gateway -- which is one run, since the composition root builds one per request.
+        self._completed_writes: dict[str, ToolResult] = {}
 
     # -- catalog ------------------------------------------------------------------
     def catalog(self) -> list[ToolSpec]:
-        return [
-            _spec(
-                "list_workflow_run_jobs",
-                "List the jobs of one workflow run attempt, with their conclusions.",
-                {"run_id": {"type": "integer"}, "attempt": {"type": "integer"}},
-                ["run_id", "attempt"],
-            ),
-            _spec(
-                "get_job_logs",
-                "Fetch the raw text log of one job. Returns the LAST max_bytes bytes.",
-                {"job_id": {"type": "integer"}, "max_bytes": {"type": "integer"}},
-                ["job_id"],
-            ),
-            _spec(
-                "find_last_successful_run",
-                "Find the most recent successful run of a workflow on a branch.",
-                {
-                    "workflow_id": {"type": "integer"},
-                    "branch": {"type": "string"},
-                    "before": {"type": "string"},
-                },
-                ["workflow_id", "branch"],
-            ),
-            _spec(
-                "compare_commits",
-                "Compare two commits and return the changed files with their patches.",
-                {"base": {"type": "string"}, "head": {"type": "string"}},
-                ["base", "head"],
-            ),
-            _spec(
-                "get_commit",
-                "Fetch one commit, including the files it touched.",
-                {"sha": {"type": "string"}},
-                ["sha"],
-            ),
-            _spec(
-                "get_file_contents",
-                "Fetch the contents of one file at a given ref.",
-                {"path": {"type": "string"}, "ref": {"type": "string"}},
-                ["path", "ref"],
-            ),
-            _spec(
-                "search_workflow_runs",
-                "Search runs of a workflow, filtered by branch and status.",
-                {
-                    "workflow_id": {"type": "integer"},
-                    "branch": {"type": "string"},
-                    "status": {"type": "string"},
-                    "per_page": {"type": "integer"},
-                },
-                ["workflow_id"],
-            ),
-        ]
+        return list(CATALOG)
 
     # -- fixture resolution -------------------------------------------------------
     def _api_path(self, slug: str) -> Path:
@@ -232,6 +172,9 @@ class ReplayToolGateway:
                 "decision presented with it",
             )
 
+        if call.tool in WRITE_TOOLS:
+            return self._invoke_write(call, failure, success)
+
         if call.tool not in READ_TOOLS:
             return failure("invalid_args", f"unknown tool {call.tool!r} for replay gateway")
 
@@ -274,6 +217,41 @@ class ReplayToolGateway:
             return failure("malformed", f"recorded response api/{path.name} is not JSON: {exc}")
 
         return success(body if isinstance(body, dict) else {"items": body})
+
+    def _invoke_write(
+        self,
+        call: ToolCall,
+        failure: Callable[..., ToolResult],
+        success: Callable[[dict[str, JsonValue]], ToolResult],
+    ) -> ToolResult:
+        """The synthesized write half. Reached only after the forbidden re-check."""
+        if call.idempotency_key is not None:
+            cached = self._completed_writes.get(call.idempotency_key)
+            if cached is not None:
+                return cached.model_copy(update={"call_id": call.call_id, "cached": True})
+
+        if call.tool not in IMPLEMENTED_WRITE_TOOLS:
+            return failure("unknown", not_implemented_message(call.tool))
+
+        # `rerun_failed_jobs`: the one write this phase can take. Replay has no run to
+        # re-run, so the response is the shape the live gateway returns, with `dry_run`
+        # saying whether anything *would* have been touched.
+        raw_run_id = call.args.get("run_id")
+        if not isinstance(raw_run_id, int) or isinstance(raw_run_id, bool):
+            return failure("invalid_args", "rerun_failed_jobs requires an integer run_id")
+        result = success(
+            {
+                "run_id": raw_run_id,
+                "rerun_requested": not self.dry_run,
+                "dry_run": self.dry_run,
+                "note": (
+                    "replay gateway: no workflow run exists to re-run; response synthesized"
+                ),
+            }
+        )
+        if call.idempotency_key is not None:
+            self._completed_writes[call.idempotency_key] = result
+        return result
 
     async def aclose(self) -> None:
         """Nothing to close: this gateway holds no client and no connection."""

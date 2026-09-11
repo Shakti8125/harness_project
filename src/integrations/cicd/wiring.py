@@ -15,15 +15,20 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
-import yaml
-
 from src.harness.agent import Agent
 from src.harness.confidence import DEFAULT_ADJUSTMENT_DELTAS, ConfidenceModel
 from src.harness.context_manager import ContextManager
 from src.harness.gateway import ToolGateway
+from src.harness.guardrails import PolicyEngine, PolicySpec, load_policy
 from src.harness.llm import LlmClient
 from src.harness.observability import TraceRecorder
-from src.harness.orchestrator import GateDecision, Orchestrator, RunState, StageSpec
+from src.harness.orchestrator import (
+    GateDecision,
+    Orchestrator,
+    RunState,
+    StageSpec,
+    Suspension,
+)
 from src.harness.recovery import RetryPolicy
 from src.integrations.cicd.agents.diagnostician import (
     EMPTY_DIFF_CONTRADICTION,
@@ -31,7 +36,9 @@ from src.integrations.cicd.agents.diagnostician import (
     Diagnostician,
 )
 from src.integrations.cicd.agents.investigator import Investigator
-from src.integrations.cicd.schemas import Diagnosis, FailureBundle, RemediationPlan
+from src.integrations.cicd.agents.remediator import DEFAULT_APPROVAL_TTL_H, Remediator
+from src.integrations.cicd.remediation import denial_summary
+from src.integrations.cicd.schemas import Diagnosis, FailureBundle, RemediationResult
 
 INTEGRATION: Final[str] = "cicd"
 
@@ -48,6 +55,7 @@ ARTIFACT_KEYS: Final[Mapping[str, str]] = {
 
 DIAGNOSIS_KEY: Final[str] = "diagnosis"
 EVALUATION_KEY: Final[str] = "evaluation"
+REMEDIATION_KEY: Final[str] = "remediation"
 
 
 def build_confidence_model() -> ConfidenceModel:
@@ -66,16 +74,52 @@ def build_confidence_model() -> ConfidenceModel:
     )
 
 
+def load_policy_spec(path: Path = POLICY_PATH) -> PolicySpec:
+    """This integration's `policy.yaml`, validated. Raises on anything malformed."""
+    return load_policy(path)
+
+
 def load_forbidden(path: Path = POLICY_PATH) -> tuple[str, ...]:
     """The `forbidden` list out of `policy.yaml`, for the gateway's own re-check.
 
-    Not the policy loader — that arrives with the engine in the next phase. This reads
-    exactly one key, so that the gateway's hardcoded refusal list and the policy file
-    cannot drift apart in the meantime.
+    Read through the same loader the engine uses, so the gateway's refusal list and the
+    rules the engine enforces come from one validated parse of one file.
     """
-    spec = yaml.safe_load(path.read_text(encoding="utf-8"))
-    forbidden = spec.get("forbidden", []) if isinstance(spec, dict) else []
-    return tuple(str(name) for name in forbidden)
+    return tuple(load_policy_spec(path).forbidden)
+
+
+def remediation_suspend(state: RunState) -> Suspension | None:
+    """The post-stage hook on the remediate stage (A.2 amendment, Phase 2).
+
+    A `RemediationResult` that awaits approval suspends the run with that status; one the
+    policy denied escalates it as `policy_denied` with the first denying decision quoted,
+    so `GET /v1/escalations` reads as a sentence. Anything else lets the run complete.
+    """
+    result = state.artifacts.get(REMEDIATION_KEY)
+    if not isinstance(result, RemediationResult):
+        return None
+    if result.status == "awaiting_approval" and result.pending_approval is not None:
+        return Suspension(
+            status="awaiting_approval",
+            reason=(
+                f"plan {result.plan.action!r} requires approval "
+                f"({result.pending_approval.approval_id})"
+            ),
+        )
+    if result.status == "denied":
+        return Suspension(
+            status="escalated",
+            reason=denial_summary(result.decisions),
+            escalate_as="policy_denied",
+            payload={
+                "action": result.plan.action,
+                "decisions": [
+                    {"tool": d.tool, "rule_id": d.rule_id, "effect": d.effect}
+                    for d in result.decisions
+                ],
+            },
+        )
+    return None
 
 
 def make_remediation_gate(escalation_threshold: float):  # noqa: ANN201 - closure type is the contract
@@ -83,9 +127,6 @@ def make_remediation_gate(escalation_threshold: float):  # noqa: ANN201 - closur
 
     Attached to the remediate stage because that is the stage it guards: the question
     "is this diagnosis good enough to act on" belongs at the moment something would act.
-    In this phase no remediating agent is registered, so the stage runs its gate and is
-    then skipped — the short-circuit is live, the action it guards simply does not exist
-    yet.
     """
 
     def remediation_gate(state: RunState) -> GateDecision:
@@ -124,7 +165,7 @@ def make_remediation_gate(escalation_threshold: float):  # noqa: ANN201 - closur
 
 
 def build_stages(*, escalation_threshold: float) -> list[StageSpec]:
-    """The Phase 1 pipeline: investigate, diagnose, and the guarded remediate stage."""
+    """The pipeline: investigate, diagnose, and the gated-and-suspendable remediate stage."""
     return [
         StageSpec(
             name="investigate",
@@ -139,11 +180,9 @@ def build_stages(*, escalation_threshold: float) -> list[StageSpec]:
         StageSpec(
             name="remediate",
             agent_key="remediator",
-            output_model=RemediationPlan,
-            # Not required: no remediating agent exists in this phase, so the stage is
-            # recorded as skipped rather than failing the run. The gate above still runs.
-            required=False,
+            output_model=RemediationResult,
             gate=make_remediation_gate(escalation_threshold),
+            suspend=remediation_suspend,
         ),
     ]
 
@@ -154,14 +193,28 @@ def build_agents(
     context_manager: ContextManager,
     llm: LlmClient,
     recorder: TraceRecorder,
+    engine: PolicyEngine,
     investigator_model: str,
     diagnostician_model: str,
+    remediator_model: str,
     confidence_model: ConfidenceModel | None = None,
     retry_policy: RetryPolicy | None = None,
     timeout_s: float | None = None,
+    approval_ttl_h: int = DEFAULT_APPROVAL_TTL_H,
 ) -> dict[str, Agent[Any]]:
-    """The two agents this phase runs, keyed by `StageSpec.agent_key`."""
+    """The three agents, keyed by `StageSpec.agent_key`."""
     return {
+        "remediator": Remediator(
+            llm=llm,
+            model=remediator_model,
+            recorder=recorder,
+            gateway=gateway,
+            engine=engine,
+            context_manager=context_manager,
+            approval_ttl_h=approval_ttl_h,
+            retry_policy=retry_policy,
+            timeout_s=timeout_s,
+        ),
         "investigator": Investigator(
             gateway=gateway,
             context_manager=context_manager,
@@ -189,15 +242,23 @@ def build_orchestrator(
     context_manager: ContextManager,
     llm: LlmClient,
     recorder: TraceRecorder,
+    engine: PolicyEngine,
     escalation_threshold: float,
     investigator_model: str,
     diagnostician_model: str,
+    remediator_model: str,
     confidence_model: ConfidenceModel | None = None,
     retry_policy: RetryPolicy | None = None,
     timeout_s: float | None = None,
+    approval_ttl_h: int = DEFAULT_APPROVAL_TTL_H,
     escalation_channels: Sequence[str] = ("log",),
 ) -> Orchestrator:
-    """Assemble the CI/CD orchestrator from primitives the caller already built."""
+    """Assemble the CI/CD orchestrator from primitives the caller already built.
+
+    `engine` is passed in rather than built here for the same reason the recorder and the
+    client are: the composition root builds it once at startup (so a malformed policy
+    fails the boot, not the first request), and `readyz` reports on that same object.
+    """
     return Orchestrator(
         stages=build_stages(escalation_threshold=escalation_threshold),
         agents=build_agents(
@@ -205,11 +266,14 @@ def build_orchestrator(
             context_manager=context_manager,
             llm=llm,
             recorder=recorder,
+            engine=engine,
             investigator_model=investigator_model,
             diagnostician_model=diagnostician_model,
+            remediator_model=remediator_model,
             confidence_model=confidence_model,
             retry_policy=retry_policy,
             timeout_s=timeout_s,
+            approval_ttl_h=approval_ttl_h,
         ),
         recorder=recorder,
         artifact_keys=ARTIFACT_KEYS,

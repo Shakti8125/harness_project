@@ -35,6 +35,7 @@ from src.harness.observability import Redactor, TraceRecorder
 from src.integrations.cicd.agents.diagnostician import _diagnosis_schema
 from src.integrations.cicd.schemas import Diagnosis
 from src.settings import get_settings
+from tests.stubs import remediation_plan
 
 HEAD_SHA = "e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df"
 
@@ -79,6 +80,8 @@ class _SchemaCapturingLlm:
             payload: object = _NOTES
         elif "You are the Diagnostician" in req.prompt:
             payload = _DIAGNOSIS_PAYLOAD
+        elif "You are the Remediator" in req.prompt:
+            payload = remediation_plan()
         else:  # pragma: no cover - a new agent would have to opt in here
             raise AssertionError("unrecognised prompt reached the stub model")
         return RawLlmResponse(

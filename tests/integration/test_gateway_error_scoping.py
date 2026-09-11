@@ -23,10 +23,12 @@ import pytest
 
 from src.harness.context_manager import ContextBudget, ContextManager
 from src.harness.contracts import RunRequest, TokenUsage
+from src.harness.guardrails import PolicyEngine
 from src.harness.llm import LlmRequest, RawLlmResponse
 from src.harness.observability import Redactor, SecretRegistry, TraceRecorder
 from src.integrations.cicd.gateway_replay import ReplayToolGateway
-from src.integrations.cicd.wiring import build_orchestrator
+from src.integrations.cicd.wiring import build_orchestrator, load_policy_spec
+from tests.stubs import remediation_plan
 
 REPO = "octo-org/harness-demo-repo"
 HEAD_SHA = "e2cdf1b44e7ca3dd9eca76b1caf3e9dc837846df"
@@ -75,6 +77,8 @@ class StubLlm:
             payload: object = self.notes
         elif "You are the Diagnostician" in req.prompt:
             payload = BASE_DIAGNOSIS
+        elif "You are the Remediator" in req.prompt:
+            payload = remediation_plan()
         else:  # pragma: no cover
             raise AssertionError("unrecognised prompt reached the stub model")
         return RawLlmResponse(
@@ -118,6 +122,8 @@ async def _run(scenario_dir: Path, notes: dict[str, object]):
         escalation_threshold=0.70,
         investigator_model="stub-model",
         diagnostician_model="stub-model",
+        remediator_model="stub-model",
+        engine=PolicyEngine(load_policy_spec()),
     )
     return await orchestrator.run(_run_request())
 

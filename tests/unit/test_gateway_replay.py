@@ -189,10 +189,28 @@ async def test_missing_recording_is_not_found_not_an_empty_success(
     assert result.error.kind == "not_found"
 
 
-async def test_catalog_is_read_only_this_phase(gateway: ReplayToolGateway) -> None:
+async def test_catalog_is_the_full_a4_catalog(gateway: ReplayToolGateway) -> None:
+    """Phase 2: the catalog is A.4's table in full, shared with the live gateway.
+
+    Until the Remediator existed the replay catalog was read-only; now both gateways
+    advertise the same thirteen tools so the model sees one catalog whichever gateway is
+    behind it. `merge_pull_request` is the only destructive entry and the only
+    non-idempotent one -- registered so the deny path is testable, never implemented.
+    """
     catalog = gateway.catalog()
-    assert {spec.side_effect for spec in catalog} == {"read"}
-    assert all(spec.idempotent for spec in catalog)
+    by_name = {spec.name: spec for spec in catalog}
+    assert len(by_name) == 13
+    assert [spec.name for spec in catalog if spec.side_effect == "read"] == [
+        "list_workflow_run_jobs", "get_job_logs", "find_last_successful_run",
+        "compare_commits", "get_commit", "get_file_contents", "search_workflow_runs",
+    ]
+    assert [spec.name for spec in catalog if spec.side_effect == "write"] == [
+        "rerun_failed_jobs", "create_branch", "create_or_update_file",
+        "open_pull_request", "create_issue",
+    ]
+    assert by_name["merge_pull_request"].side_effect == "destructive"
+    assert not by_name["merge_pull_request"].idempotent
+    assert all(spec.idempotent for spec in catalog if spec.name != "merge_pull_request")
 
 
 def test_forbidden_has_no_default_and_must_be_passed_explicitly(scenario_dir: Path) -> None:
