@@ -1,0 +1,26 @@
+name: flaky_test
+description: >
+  tests/test_scheduler.py::test_job_runs_within_deadline fails with "job took 1.207s,
+  expected < 1.0s" -- a wall-clock assertion on a thread scheduler, on a shared runner. The
+  diff touches only README.md and src/pricing/format.py (currency formatting), nothing the
+  scheduler imports. Same code, same test, timing-dependent outcome: a flaky test, and the
+  right action is to re-run the job, not to blame the commit.
+expected:
+  category: flaky_test
+  min_confidence: 0.75
+  # null, not omitted: the harness must NOT name this commit. Nothing in it can make a
+  # scheduler deadline slip, and blaming it is exactly the failure mode the scenario tests.
+  commit: null
+  cites_any_of:
+    - "test_job_runs_within_deadline"
+    - "job took 1.207s"
+    - "DeadlineExceeded"
+  action: retry
+  # Phase 2 label. `retry-suspected-flaky` also needs memory.retries_for_signature_24h < 2,
+  # and until the memory store exists (Phase 3) that fact is the fail-closed 999 from
+  # PriorHistory(unavailable=True) -- so the cap denies, honestly, and the run escalates as
+  # policy_denied with the clause named in the trace. Phase 3 flips this to `allow` when
+  # the count is real. See docs/progress/phase-2/dispatch.md decision 2.
+  effect: deny
+  baseline_kind: branch_green
+  cold_start: false

@@ -1,0 +1,511 @@
+2026-09-09T07:42:18.1205530Z Current runner version: '2.320.0'
+2026-09-09T07:42:18.2302970Z Runner name: 'gh-actions-runner-ubuntu-31'
+2026-09-09T07:42:18.2978680Z Runner group name: 'GitHub Actions'
+2026-09-09T07:42:18.3452330Z Machine name: 'fv-az1031-247'
+2026-09-09T07:42:18.4241420Z [36m##[group]GITHUB_TOKEN Permissions[0m
+2026-09-09T07:42:18.4897590Z Contents: read
+2026-09-09T07:42:18.6027340Z Metadata: read
+2026-09-09T07:42:18.6556480Z Packages: read
+2026-09-09T07:42:18.7302230Z [36m##[endgroup][0m
+2026-09-09T07:42:18.8181460Z Secret source: Actions
+2026-09-09T07:42:18.9466600Z Prepare workflow directory
+2026-09-09T07:42:19.0247460Z Prepare all required actions
+2026-09-09T07:42:19.0749760Z Getting action download info
+2026-09-09T07:42:19.1844520Z Download action repository 'actions/checkout@v4' (SHA:11bd71901bbe5b1630ceea73d27597364c9af683)
+2026-09-09T07:42:19.2767480Z Download action repository 'actions/setup-python@v5' (SHA:0a5c61591373683505ea898e09a3ea4f39ef2b9c)
+2026-09-09T07:42:19.3230610Z Download action repository 'actions/cache@v4' (SHA:0c907a75c2c80ebcb7f088228285e798b750cf8f)
+2026-09-09T07:42:19.4517790Z Complete job name: test (3.12)
+2026-09-09T07:42:19.5896270Z [36m##[group]Run actions/checkout@v4[0m
+2026-09-09T07:42:19.7059040Z with:
+2026-09-09T07:42:19.8336750Z   repository: octo-org/harness-demo-repo
+2026-09-09T07:42:19.8874430Z   token: ***
+2026-09-09T07:42:19.9936720Z   ssh-strict: true
+2026-09-09T07:42:20.1210270Z   persist-credentials: true
+2026-09-09T07:42:20.2215250Z   clean: true
+2026-09-09T07:42:20.2955430Z   fetch-depth: 1
+2026-09-09T07:42:20.3231310Z [36m##[endgroup][0m
+2026-09-09T07:42:20.3924020Z Syncing repository: octo-org/harness-demo-repo
+2026-09-09T07:42:20.4837630Z Getting Git version info
+2026-09-09T07:42:20.6128890Z /usr/bin/git version
+2026-09-09T07:42:20.7487150Z git version 2.46.0
+2026-09-09T07:42:20.8233410Z Deleting the contents of '/home/runner/work/harness-demo-repo/harness-demo-repo'
+2026-09-09T07:42:20.9465050Z Initializing the repository
+2026-09-09T07:42:20.9940670Z Disabling automatic garbage collection
+2026-09-09T07:42:21.1096950Z Setting up auth
+2026-09-09T07:42:21.1932820Z Fetching the repository
+2026-09-09T07:42:21.2100370Z remote: Enumerating objects: 418, done.
+2026-09-09T07:42:21.3150000Z remote: Counting objects: 100% (418/418), done.
+2026-09-09T07:42:21.3798530Z remote: Compressing objects: 100% (301/301), done.
+2026-09-09T07:42:21.4979590Z remote: Total 418 (delta 160), reused 384 (delta 142), pack-reused 0
+2026-09-09T07:42:21.5964780Z Receiving objects: 100% (418/418), 1.44 MiB | 9.02 MiB/s, done.
+2026-09-09T07:42:21.6116210Z Resolving deltas: 100% (160/160), done.
+2026-09-09T07:42:21.6883180Z From https://github.com/octo-org/harness-demo-repo
+2026-09-09T07:42:21.8117680Z  * [new ref]         7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c -> origin/main
+2026-09-09T07:42:21.8572570Z Determining the checkout info
+2026-09-09T07:42:21.9129080Z Checking out the ref
+2026-09-09T07:42:22.0367170Z /usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-09-09T07:42:22.0756000Z Switched to a new branch 'main'
+2026-09-09T07:42:22.1615390Z branch 'main' set up to track 'origin/main'.
+2026-09-09T07:42:22.2063660Z /usr/bin/git log -1 --format='%H'
+2026-09-09T07:42:22.3423090Z '7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c'
+2026-09-09T07:42:22.4577060Z [36m##[group]Run actions/setup-python@v5[0m
+2026-09-09T07:42:22.5287020Z with:
+2026-09-09T07:42:22.5537580Z   python-version: 3.12
+2026-09-09T07:42:22.6087650Z   cache: pip
+2026-09-09T07:42:22.6872580Z [36m##[endgroup][0m
+2026-09-09T07:42:22.8188620Z Installed versions
+2026-09-09T07:42:22.8474940Z   Successfully set up CPython (3.12.6)
+2026-09-09T07:42:22.9314020Z Received 0 of 31457280 (0.0%), 0.0 MBs/sec
+2026-09-09T07:42:23.0347220Z Received 31457280 of 31457280 (100.0%), 28.4 MBs/sec
+2026-09-09T07:42:23.1181520Z Cache Size: ~30 MB (31457280 B)
+2026-09-09T07:42:23.2349600Z /usr/bin/tar -xf /home/runner/work/_temp/cache.tzst -P -C /home/runner/work --use-compress-program unzstd
+2026-09-09T07:42:23.3174950Z Cache restored successfully
+2026-09-09T07:42:23.4529750Z Cache restored from key: setup-python-Linux-x64-python-3.12.6-pip-8c1f
+2026-09-09T07:42:23.5433730Z [36m##[group]Run pip install -v -r requirements.txt -r requirements-dev.txt[0m
+2026-09-09T07:42:23.6318250Z shell: /usr/bin/bash -e {0}
+2026-09-09T07:42:23.7024490Z env:
+2026-09-09T07:42:23.7919850Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.6/x64
+2026-09-09T07:42:23.8550980Z   PIP_DISABLE_PIP_VERSION_CHECK: 1
+2026-09-09T07:42:23.9420540Z [36m##[endgroup][0m
+2026-09-09T07:42:23.9933450Z Using pip 24.2 from /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pip (python 3.12)
+2026-09-09T07:42:24.0320190Z Looking in indexes: https://pypi.org/simple
+2026-09-09T07:42:24.0703600Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:24.1619570Z   Fetching project page and analyzing links: https://pypi.org/simple/pydantic/
+2026-09-09T07:42:24.2590390Z   Getting page https://pypi.org/simple/pydantic/
+2026-09-09T07:42:24.3336050Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/pydantic/)
+2026-09-09T07:42:24.3598330Z   Looking up "https://pypi.org/simple/pydantic/" in the cache
+2026-09-09T07:42:24.4695330Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:24.5941290Z   No cache entry available
+2026-09-09T07:42:24.7245520Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:24.8448600Z   https://pypi.org:443 "GET /simple/pydantic/ HTTP/1.1" 200 37948
+2026-09-09T07:42:24.9721320Z   Updating cache with response from "https://pypi.org/simple/pydantic/"
+2026-09-09T07:42:25.1025170Z   Skipping link: none of the wheel's tags (pydantic-2.8.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:25.1850920Z   Skipping link: none of the wheel's tags (pydantic-2.7.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:25.2490040Z   Skipping link: none of the wheel's tags (pydantic-2.6.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:25.3521640Z   Skipping link: none of the wheel's tags (pydantic-2.5.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:25.4016180Z   Skipping link: none of the wheel's tags (pydantic-2.4.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:25.5180720Z   Skipping link: none of the wheel's tags (pydantic-2.3.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:25.6392580Z   Skipping link: none of the wheel's tags (pydantic-2.2.1-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:25.7661380Z   Skipping link: none of the wheel's tags (pydantic-2.1.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:25.8548630Z   Found link https://files.pythonhosted.org/packages/85d8/c7a4c2366e25a4be10a06e4bed5fac07/pydantic-2.9.2-py3-none-any.whl (from https://pypi.org/simple/pydantic/), version: 2.9.2
+2026-09-09T07:42:25.9885840Z Collecting pydantic==2.9.2
+2026-09-09T07:42:26.0760460Z   Downloading pydantic-2.9.2-py3-none-any.whl (1807 kB)
+2026-09-09T07:42:26.1473660Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.6/0.1 MB 22.2 MB/s eta 0:00:00
+2026-09-09T07:42:26.2448970Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:26.3844290Z   Fetching project page and analyzing links: https://pypi.org/simple/fastapi/
+2026-09-09T07:42:26.5140470Z   Getting page https://pypi.org/simple/fastapi/
+2026-09-09T07:42:26.6282130Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/fastapi/)
+2026-09-09T07:42:26.6535100Z   Looking up "https://pypi.org/simple/fastapi/" in the cache
+2026-09-09T07:42:26.7451080Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:26.8209140Z   No cache entry available
+2026-09-09T07:42:26.9146820Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:27.0353170Z   https://pypi.org:443 "GET /simple/fastapi/ HTTP/1.1" 200 15134
+2026-09-09T07:42:27.0806960Z   Updating cache with response from "https://pypi.org/simple/fastapi/"
+2026-09-09T07:42:27.1871320Z   Skipping link: none of the wheel's tags (fastapi-0.114.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:27.2167740Z   Skipping link: none of the wheel's tags (fastapi-0.113.6-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:27.2593320Z   Skipping link: none of the wheel's tags (fastapi-0.112.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:27.3736550Z   Skipping link: none of the wheel's tags (fastapi-0.111.4-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:27.4302220Z   Skipping link: none of the wheel's tags (fastapi-0.110.5-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:27.5472110Z   Skipping link: none of the wheel's tags (fastapi-0.109.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:27.5747870Z   Skipping link: none of the wheel's tags (fastapi-0.108.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:27.6080820Z   Skipping link: none of the wheel's tags (fastapi-0.107.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:27.7102910Z   Found link https://files.pythonhosted.org/packages/6b90/96713efbf6ccf86d1cdab4ab01623c5d/fastapi-0.115.0-py3-none-any.whl (from https://pypi.org/simple/fastapi/), version: 0.115.0
+2026-09-09T07:42:27.7309450Z Collecting fastapi==0.115.0
+2026-09-09T07:42:27.8176780Z   Downloading fastapi-0.115.0-py3-none-any.whl (1800 kB)
+2026-09-09T07:42:27.9464300Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/0.5 MB 27.9 MB/s eta 0:00:00
+2026-09-09T07:42:28.0282050Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:28.1282790Z   Fetching project page and analyzing links: https://pypi.org/simple/httpx/
+2026-09-09T07:42:28.1466160Z   Getting page https://pypi.org/simple/httpx/
+2026-09-09T07:42:28.2409910Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/httpx/)
+2026-09-09T07:42:28.3317830Z   Looking up "https://pypi.org/simple/httpx/" in the cache
+2026-09-09T07:42:28.4187770Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:28.4826780Z   No cache entry available
+2026-09-09T07:42:28.5439450Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:28.6815100Z   https://pypi.org:443 "GET /simple/httpx/ HTTP/1.1" 200 87071
+2026-09-09T07:42:28.7010590Z   Updating cache with response from "https://pypi.org/simple/httpx/"
+2026-09-09T07:42:28.7187640Z   Skipping link: none of the wheel's tags (httpx-0.26.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:28.8538930Z   Skipping link: none of the wheel's tags (httpx-0.25.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:28.8920140Z   Skipping link: none of the wheel's tags (httpx-0.24.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:28.9225010Z   Skipping link: none of the wheel's tags (httpx-0.23.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:28.9638230Z   Skipping link: none of the wheel's tags (httpx-0.22.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:29.0789160Z   Skipping link: none of the wheel's tags (httpx-0.21.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:29.2110370Z   Skipping link: none of the wheel's tags (httpx-0.20.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:29.2288850Z   Skipping link: none of the wheel's tags (httpx-0.19.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:29.2970870Z   Found link https://files.pythonhosted.org/packages/164b/d456df3322f1ed2d6b3acf859919335b/httpx-0.27.2-py3-none-any.whl (from https://pypi.org/simple/httpx/), version: 0.27.2
+2026-09-09T07:42:29.3247750Z Collecting httpx==0.27.2
+2026-09-09T07:42:29.3722650Z   Downloading httpx-0.27.2-py3-none-any.whl (1077 kB)
+2026-09-09T07:42:29.4148690Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.9 MB 21.9 MB/s eta 0:00:00
+2026-09-09T07:42:29.5107350Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:29.5695220Z   Fetching project page and analyzing links: https://pypi.org/simple/sqlalchemy/
+2026-09-09T07:42:29.6070620Z   Getting page https://pypi.org/simple/sqlalchemy/
+2026-09-09T07:42:29.6850170Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/sqlalchemy/)
+2026-09-09T07:42:29.7049390Z   Looking up "https://pypi.org/simple/sqlalchemy/" in the cache
+2026-09-09T07:42:29.7325540Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:29.8710830Z   No cache entry available
+2026-09-09T07:42:29.9110020Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:29.9708210Z   https://pypi.org:443 "GET /simple/sqlalchemy/ HTTP/1.1" 200 40718
+2026-09-09T07:42:30.0772710Z   Updating cache with response from "https://pypi.org/simple/sqlalchemy/"
+2026-09-09T07:42:30.1970620Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:30.3268720Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:30.3630500Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:30.4621300Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:30.5979490Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:30.6202050Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:30.7197300Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:30.8404080Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:30.8981970Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.5-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:30.9445330Z   Skipping link: none of the wheel's tags (sqlalchemy-2.0.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:31.0341320Z   Found link https://files.pythonhosted.org/packages/c212/45702d6e1420b7a6ccc60ba1267523f4/sqlalchemy-2.0.35-py3-none-any.whl (from https://pypi.org/simple/sqlalchemy/), version: 2.0.35
+2026-09-09T07:42:31.1044210Z Collecting sqlalchemy==2.0.35
+2026-09-09T07:42:31.1412730Z   Downloading sqlalchemy-2.0.35-py3-none-any.whl (1939 kB)
+2026-09-09T07:42:31.2152260Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/0.0 MB 51.6 MB/s eta 0:00:00
+2026-09-09T07:42:31.2814640Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:31.3676030Z   Fetching project page and analyzing links: https://pypi.org/simple/alembic/
+2026-09-09T07:42:31.4461780Z   Getting page https://pypi.org/simple/alembic/
+2026-09-09T07:42:31.5001090Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/alembic/)
+2026-09-09T07:42:31.5597530Z   Looking up "https://pypi.org/simple/alembic/" in the cache
+2026-09-09T07:42:31.6794610Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:31.7258280Z   No cache entry available
+2026-09-09T07:42:31.8109030Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:31.8274580Z   https://pypi.org:443 "GET /simple/alembic/ HTTP/1.1" 200 9663
+2026-09-09T07:42:31.9351550Z   Updating cache with response from "https://pypi.org/simple/alembic/"
+2026-09-09T07:42:31.9921450Z   Skipping link: none of the wheel's tags (alembic-1.12.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:32.0128570Z   Skipping link: none of the wheel's tags (alembic-1.11.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:32.0629670Z   Skipping link: none of the wheel's tags (alembic-1.10.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:32.1079830Z   Skipping link: none of the wheel's tags (alembic-1.9.4-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:32.2421240Z   Skipping link: none of the wheel's tags (alembic-1.8.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:32.3011520Z   Skipping link: none of the wheel's tags (alembic-1.7.6-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:32.3521370Z   Skipping link: none of the wheel's tags (alembic-1.6.4-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:32.4120370Z   Found link https://files.pythonhosted.org/packages/dde2/94b58cc23ab09ccdb95bc059d0a0fb33/alembic-1.13.3-py3-none-any.whl (from https://pypi.org/simple/alembic/), version: 1.13.3
+2026-09-09T07:42:32.5454000Z Collecting alembic==1.13.3
+2026-09-09T07:42:32.6396180Z   Downloading alembic-1.13.3-py3-none-any.whl (1575 kB)
+2026-09-09T07:42:32.7322530Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.2/0.6 MB 50.9 MB/s eta 0:00:00
+2026-09-09T07:42:32.8367050Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:32.9002070Z   Fetching project page and analyzing links: https://pypi.org/simple/pytest/
+2026-09-09T07:42:32.9670090Z   Getting page https://pypi.org/simple/pytest/
+2026-09-09T07:42:33.0633630Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/pytest/)
+2026-09-09T07:42:33.0785540Z   Looking up "https://pypi.org/simple/pytest/" in the cache
+2026-09-09T07:42:33.1175930Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:33.1743930Z   No cache entry available
+2026-09-09T07:42:33.2193200Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:33.3139950Z   https://pypi.org:443 "GET /simple/pytest/ HTTP/1.1" 200 35150
+2026-09-09T07:42:33.3763260Z   Updating cache with response from "https://pypi.org/simple/pytest/"
+2026-09-09T07:42:33.5007540Z   Skipping link: none of the wheel's tags (pytest-8.2.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:33.5867730Z   Skipping link: none of the wheel's tags (pytest-8.1.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:33.6535740Z   Skipping link: none of the wheel's tags (pytest-8.0.0-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:33.7188570Z   Skipping link: none of the wheel's tags (pytest-8.0.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:33.8215860Z   Skipping link: none of the wheel's tags (pytest-8.0.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:33.8888640Z   Skipping link: none of the wheel's tags (pytest-8.0.0-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:33.9866380Z   Skipping link: none of the wheel's tags (pytest-8.0.5-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:34.0074850Z   Skipping link: none of the wheel's tags (pytest-8.0.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:34.0781540Z   Skipping link: none of the wheel's tags (pytest-8.0.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:34.1255570Z   Skipping link: none of the wheel's tags (pytest-8.0.5-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:34.1602680Z   Skipping link: none of the wheel's tags (pytest-8.0.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:34.2412150Z   Found link https://files.pythonhosted.org/packages/9a4b/ee39603119961b2a582493c966ac1caf/pytest-8.3.3-py3-none-any.whl (from https://pypi.org/simple/pytest/), version: 8.3.3
+2026-09-09T07:42:34.3171230Z Collecting pytest==8.3.3
+2026-09-09T07:42:34.4022990Z   Downloading pytest-8.3.3-py3-none-any.whl (2314 kB)
+2026-09-09T07:42:34.5117350Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.5/1.0 MB 15.1 MB/s eta 0:00:00
+2026-09-09T07:42:34.6372190Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:34.7140420Z   Fetching project page and analyzing links: https://pypi.org/simple/pytest-asyncio/
+2026-09-09T07:42:34.7680490Z   Getting page https://pypi.org/simple/pytest-asyncio/
+2026-09-09T07:42:34.8414110Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/pytest-asyncio/)
+2026-09-09T07:42:34.9575420Z   Looking up "https://pypi.org/simple/pytest-asyncio/" in the cache
+2026-09-09T07:42:35.0819190Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:35.1984710Z   No cache entry available
+2026-09-09T07:42:35.2369710Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:35.3768990Z   https://pypi.org:443 "GET /simple/pytest-asyncio/ HTTP/1.1" 200 60248
+2026-09-09T07:42:35.4710350Z   Updating cache with response from "https://pypi.org/simple/pytest-asyncio/"
+2026-09-09T07:42:35.4964680Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.23.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:35.6021620Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.22.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:35.7405150Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.21.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:35.8057420Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.20.0-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:35.9055560Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.19.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:35.9600780Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.18.5-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:36.0017690Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.17.1-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:36.1064350Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.16.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:36.1217300Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.15.0-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:36.2395710Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.14.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:36.3206140Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.13.4-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:36.3478370Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.12.1-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:36.3777000Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.11.6-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:36.4738580Z   Skipping link: none of the wheel's tags (pytest_asyncio-0.10.4-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:36.5980650Z   Found link https://files.pythonhosted.org/packages/1fe8/fb88d9447095a690aff5e598222ff2b2/pytest_asyncio-0.24.0-py3-none-any.whl (from https://pypi.org/simple/pytest-asyncio/), version: 0.24.0
+2026-09-09T07:42:36.6480630Z Collecting pytest-asyncio==0.24.0
+2026-09-09T07:42:36.7853770Z   Downloading pytest_asyncio-0.24.0-py3-none-any.whl (357 kB)
+2026-09-09T07:42:36.8129000Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/2.2 MB 28.0 MB/s eta 0:00:00
+2026-09-09T07:42:36.9346420Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:36.9992290Z   Fetching project page and analyzing links: https://pypi.org/simple/pytest-cov/
+2026-09-09T07:42:37.0243970Z   Getting page https://pypi.org/simple/pytest-cov/
+2026-09-09T07:42:37.0737360Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/pytest-cov/)
+2026-09-09T07:42:37.1453580Z   Looking up "https://pypi.org/simple/pytest-cov/" in the cache
+2026-09-09T07:42:37.2594010Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:37.3820710Z   No cache entry available
+2026-09-09T07:42:37.4137490Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:37.4938570Z   https://pypi.org:443 "GET /simple/pytest-cov/ HTTP/1.1" 200 4749
+2026-09-09T07:42:37.5902050Z   Updating cache with response from "https://pypi.org/simple/pytest-cov/"
+2026-09-09T07:42:37.6485870Z   Skipping link: none of the wheel's tags (pytest_cov-5.0.5-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:37.7725700Z   Skipping link: none of the wheel's tags (pytest_cov-5.0.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:37.8223710Z   Skipping link: none of the wheel's tags (pytest_cov-5.0.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:37.8396930Z   Skipping link: none of the wheel's tags (pytest_cov-5.0.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:37.8597760Z   Skipping link: none of the wheel's tags (pytest_cov-5.0.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:37.9599010Z   Skipping link: none of the wheel's tags (pytest_cov-5.0.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:38.0446950Z   Skipping link: none of the wheel's tags (pytest_cov-5.0.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:38.1780080Z   Skipping link: none of the wheel's tags (pytest_cov-5.0.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:38.3103130Z   Skipping link: none of the wheel's tags (pytest_cov-5.0.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:38.4390440Z   Found link https://files.pythonhosted.org/packages/eb4b/7db77eccfa18200873874c601b395a80/pytest_cov-5.0.0-py3-none-any.whl (from https://pypi.org/simple/pytest-cov/), version: 5.0.0
+2026-09-09T07:42:38.4592950Z Collecting pytest-cov==5.0.0
+2026-09-09T07:42:38.5679370Z   Downloading pytest_cov-5.0.0-py3-none-any.whl (683 kB)
+2026-09-09T07:42:38.6706030Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.6/1.1 MB 32.3 MB/s eta 0:00:00
+2026-09-09T07:42:38.7675230Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:38.8715680Z   Fetching project page and analyzing links: https://pypi.org/simple/coverage/
+2026-09-09T07:42:38.9994070Z   Getting page https://pypi.org/simple/coverage/
+2026-09-09T07:42:39.0944250Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/coverage/)
+2026-09-09T07:42:39.1559810Z   Looking up "https://pypi.org/simple/coverage/" in the cache
+2026-09-09T07:42:39.2382220Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:39.2792030Z   No cache entry available
+2026-09-09T07:42:39.3675940Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:39.3837060Z   https://pypi.org:443 "GET /simple/coverage/ HTTP/1.1" 200 37888
+2026-09-09T07:42:39.4175840Z   Updating cache with response from "https://pypi.org/simple/coverage/"
+2026-09-09T07:42:39.4742600Z   Skipping link: none of the wheel's tags (coverage-7.5.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:39.5879630Z   Skipping link: none of the wheel's tags (coverage-7.4.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:39.6927750Z   Skipping link: none of the wheel's tags (coverage-7.3.5-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:39.7500570Z   Skipping link: none of the wheel's tags (coverage-7.2.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:39.8426240Z   Skipping link: none of the wheel's tags (coverage-7.1.9-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:39.8627740Z   Skipping link: none of the wheel's tags (coverage-7.0.4-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:39.8982570Z   Skipping link: none of the wheel's tags (coverage-7.0.6-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:40.0359960Z   Skipping link: none of the wheel's tags (coverage-7.0.3-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:40.0871870Z   Skipping link: none of the wheel's tags (coverage-7.0.5-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:40.1515360Z   Skipping link: none of the wheel's tags (coverage-7.0.6-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:40.2350970Z   Found link https://files.pythonhosted.org/packages/c109/19962251bf60cb655f93ee751ab53516/coverage-7.6.1-py3-none-any.whl (from https://pypi.org/simple/coverage/), version: 7.6.1
+2026-09-09T07:42:40.2867730Z Collecting coverage==7.6.1
+2026-09-09T07:42:40.3615310Z   Downloading coverage-7.6.1-py3-none-any.whl (320 kB)
+2026-09-09T07:42:40.4064940Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.2/0.1 MB 46.4 MB/s eta 0:00:00
+2026-09-09T07:42:40.4275260Z   Found index url https://pypi.org/simple/
+2026-09-09T07:42:40.4649740Z   Fetching project page and analyzing links: https://pypi.org/simple/ruff/
+2026-09-09T07:42:40.5453550Z   Getting page https://pypi.org/simple/ruff/
+2026-09-09T07:42:40.5692130Z   Found index url https://pypi.org/simple/ (from https://pypi.org/simple/ruff/)
+2026-09-09T07:42:40.6346090Z   Looking up "https://pypi.org/simple/ruff/" in the cache
+2026-09-09T07:42:40.6906740Z   Request header has "max_age" as 0, cache bypassed
+2026-09-09T07:42:40.7575140Z   No cache entry available
+2026-09-09T07:42:40.7849390Z   Starting new HTTPS connection (1): pypi.org:443
+2026-09-09T07:42:40.9135210Z   https://pypi.org:443 "GET /simple/ruff/ HTTP/1.1" 200 28959
+2026-09-09T07:42:40.9877720Z   Updating cache with response from "https://pypi.org/simple/ruff/"
+2026-09-09T07:42:41.1078780Z   Skipping link: none of the wheel's tags (ruff-0.5.7-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:41.2449070Z   Skipping link: none of the wheel's tags (ruff-0.4.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:41.3028630Z   Skipping link: none of the wheel's tags (ruff-0.3.6-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:41.3777490Z   Skipping link: none of the wheel's tags (ruff-0.2.5-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:41.4801980Z   Skipping link: none of the wheel's tags (ruff-0.1.0-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:41.5485150Z   Skipping link: none of the wheel's tags (ruff-0.0.4-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:41.6012530Z   Skipping link: none of the wheel's tags (ruff-0.0.8-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:41.7080970Z   Skipping link: none of the wheel's tags (ruff-0.0.6-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:41.8348970Z   Skipping link: none of the wheel's tags (ruff-0.0.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:41.9648580Z   Skipping link: none of the wheel's tags (ruff-0.0.2-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:42.0582010Z   Skipping link: none of the wheel's tags (ruff-0.0.0-cp311-cp311-manylinux_2_17_x86_64) are compatible (run pip debug --verbose to show compatible tags)
+2026-09-09T07:42:42.1201470Z   Found link https://files.pythonhosted.org/packages/a71c/93d1595e4527d1d2db88002800dee037/ruff-0.6.8-py3-none-any.whl (from https://pypi.org/simple/ruff/), version: 0.6.8
+2026-09-09T07:42:42.2569670Z Collecting ruff==0.6.8
+2026-09-09T07:42:42.3518270Z   Downloading ruff-0.6.8-py3-none-any.whl (1301 kB)
+2026-09-09T07:42:42.3750560Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.6 MB 23.0 MB/s eta 0:00:00
+2026-09-09T07:42:42.4006400Z Collecting mypy==1.11.2
+2026-09-09T07:42:57.4006400Z   WARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=15)")': /simple/mypy/
+2026-09-09T07:43:12.4006400Z   WARNING: Retrying (Retry(total=3, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=15)")': /simple/mypy/
+2026-09-09T07:43:27.4006400Z   WARNING: Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=15)")': /simple/mypy/
+2026-09-09T07:43:42.4006400Z   WARNING: Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=15)")': /simple/mypy/
+2026-09-09T07:43:57.4006400Z   WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=15)")': /simple/mypy/
+2026-09-09T07:44:12.4006400Z [31mERROR: Could not find a version that satisfies the requirement mypy==1.11.2 (from versions: none)[0m
+2026-09-09T07:44:12.5093740Z [31mERROR: No matching distribution found for mypy==1.11.2[0m
+2026-09-09T07:44:12.5320190Z [31mERROR: Exception: ReadTimeoutError: HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=15)[0m
+2026-09-09T07:44:12.5480000Z [31m##[error]Process completed with exit code 1.[0m
+2026-09-09T07:44:12.6122260Z [33mWarning: step 'Install dependencies' failed but continue-on-error is set[0m
+2026-09-09T07:44:12.6921010Z [36m##[group]Run ruff check . && mypy src[0m
+2026-09-09T07:44:12.7631690Z shell: /usr/bin/bash -e {0}
+2026-09-09T07:44:12.8392460Z [36m##[endgroup][0m
+2026-09-09T07:44:12.9273570Z /usr/bin/bash: line 1: ruff: command not found
+2026-09-09T07:44:13.0272700Z [31m##[error]Process completed with exit code 127.[0m
+2026-09-09T07:44:13.0951500Z [33mWarning: step 'Run lint' failed but continue-on-error is set[0m
+2026-09-09T07:44:13.1561910Z [36m##[group]Run pytest -v --cov=src --cov-report=term-missing -p no:cacheprovider[0m
+2026-09-09T07:44:13.2947480Z shell: /usr/bin/bash -e {0}
+2026-09-09T07:44:13.3423630Z [36m##[endgroup][0m
+2026-09-09T07:44:13.4545010Z ============================= test session starts ==============================
+2026-09-09T07:44:13.5234040Z platform linux -- Python 3.12.6, pytest-8.3.3, pluggy-1.5.0 -- /opt/hostedtoolcache/Python/3.12.6/x64/bin/python
+2026-09-09T07:44:13.5832190Z cachedir: .pytest_cache
+2026-09-09T07:44:13.6062010Z rootdir: /home/runner/work/harness-demo-repo/harness-demo-repo
+2026-09-09T07:44:13.7291480Z configfile: pyproject.toml
+2026-09-09T07:44:13.8318990Z collected 0 items / 15 errors
+2026-09-09T07:44:13.9597750Z 
+2026-09-09T07:44:14.0312260Z ==================================== ERRORS ====================================
+2026-09-09T07:44:14.1308410Z [31m[1m_______________ ERROR collecting tests/test_pricing.py _______________[0m
+2026-09-09T07:44:14.1607050Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_pricing.py'.
+2026-09-09T07:44:14.2254490Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:14.2663530Z Traceback:
+2026-09-09T07:44:14.2866160Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:14.4201110Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:14.4620980Z tests/test_pricing.py:2: in <module>
+2026-09-09T07:44:14.4953920Z     from pydantic import BaseModel
+2026-09-09T07:44:14.5351380Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:14.5973920Z [31m[1m_______________ ERROR collecting tests/test_checkout.py _______________[0m
+2026-09-09T07:44:14.6806910Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_checkout.py'.
+2026-09-09T07:44:14.7146080Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:14.8531940Z Traceback:
+2026-09-09T07:44:14.9910680Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:15.0246180Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:15.0903560Z tests/test_checkout.py:5: in <module>
+2026-09-09T07:44:15.1903470Z     from pydantic import BaseModel
+2026-09-09T07:44:15.3150540Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:15.3919800Z [31m[1m_______________ ERROR collecting tests/test_cart.py _______________[0m
+2026-09-09T07:44:15.5216110Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_cart.py'.
+2026-09-09T07:44:15.5769190Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:15.6542240Z Traceback:
+2026-09-09T07:44:15.7315550Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:15.8303140Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:15.8705630Z tests/test_cart.py:6: in <module>
+2026-09-09T07:44:15.9617840Z     from pydantic import BaseModel
+2026-09-09T07:44:16.0041310Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:16.0616590Z [31m[1m_______________ ERROR collecting tests/test_inventory.py _______________[0m
+2026-09-09T07:44:16.1969800Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_inventory.py'.
+2026-09-09T07:44:16.3243560Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:16.4416210Z Traceback:
+2026-09-09T07:44:16.4610550Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:16.4946010Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:16.5417110Z tests/test_inventory.py:2: in <module>
+2026-09-09T07:44:16.6547320Z     from fastapi import FastAPI
+2026-09-09T07:44:16.7750240Z E   ModuleNotFoundError: No module named 'fastapi'
+2026-09-09T07:44:16.8628930Z [31m[1m_______________ ERROR collecting tests/test_scheduler.py _______________[0m
+2026-09-09T07:44:16.9676590Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_scheduler.py'.
+2026-09-09T07:44:17.0835410Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:17.1068360Z Traceback:
+2026-09-09T07:44:17.1324160Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:17.2560280Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:17.2759550Z tests/test_scheduler.py:4: in <module>
+2026-09-09T07:44:17.3190910Z     from pydantic import BaseModel
+2026-09-09T07:44:17.3391700Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:17.3560810Z [31m[1m_______________ ERROR collecting tests/test_reports.py _______________[0m
+2026-09-09T07:44:17.4765750Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_reports.py'.
+2026-09-09T07:44:17.5328990Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:17.5679850Z Traceback:
+2026-09-09T07:44:17.6015870Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:17.6985970Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:17.8346720Z tests/test_reports.py:2: in <module>
+2026-09-09T07:44:17.9127970Z     from pydantic import BaseModel
+2026-09-09T07:44:18.0404330Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:18.1182370Z [31m[1m_______________ ERROR collecting tests/test_api_orders.py _______________[0m
+2026-09-09T07:44:18.2049710Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_api_orders.py'.
+2026-09-09T07:44:18.3047920Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:18.4204310Z Traceback:
+2026-09-09T07:44:18.5301620Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:18.6689790Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:18.7773500Z tests/test_api_orders.py:6: in <module>
+2026-09-09T07:44:18.9055730Z     from pydantic import BaseModel
+2026-09-09T07:44:18.9463360Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:19.0282630Z [31m[1m_______________ ERROR collecting tests/test_api_customers.py _______________[0m
+2026-09-09T07:44:19.1180900Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_api_customers.py'.
+2026-09-09T07:44:19.2363020Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:19.3115790Z Traceback:
+2026-09-09T07:44:19.4254590Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:19.4890300Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:19.5773290Z tests/test_api_customers.py:2: in <module>
+2026-09-09T07:44:19.6987440Z     from fastapi import FastAPI
+2026-09-09T07:44:19.8135010Z E   ModuleNotFoundError: No module named 'fastapi'
+2026-09-09T07:44:19.9106240Z [31m[1m_______________ ERROR collecting tests/test_auth.py _______________[0m
+2026-09-09T07:44:19.9256540Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_auth.py'.
+2026-09-09T07:44:19.9634000Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:20.0417570Z Traceback:
+2026-09-09T07:44:20.0885640Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:20.1117670Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:20.2342520Z tests/test_auth.py:3: in <module>
+2026-09-09T07:44:20.3671200Z     from fastapi import FastAPI
+2026-09-09T07:44:20.4199710Z E   ModuleNotFoundError: No module named 'fastapi'
+2026-09-09T07:44:20.4859800Z [31m[1m_______________ ERROR collecting tests/test_webhooks.py _______________[0m
+2026-09-09T07:44:20.6022350Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_webhooks.py'.
+2026-09-09T07:44:20.6250170Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:20.7201400Z Traceback:
+2026-09-09T07:44:20.7510550Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:20.8019410Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:20.9206840Z tests/test_webhooks.py:4: in <module>
+2026-09-09T07:44:20.9426250Z     from pydantic import BaseModel
+2026-09-09T07:44:20.9621170Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:21.0293500Z [31m[1m_______________ ERROR collecting tests/test_currency.py _______________[0m
+2026-09-09T07:44:21.1058290Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_currency.py'.
+2026-09-09T07:44:21.2287450Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:21.3333940Z Traceback:
+2026-09-09T07:44:21.4325870Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:21.4665090Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:21.6048470Z tests/test_currency.py:4: in <module>
+2026-09-09T07:44:21.6712400Z     from pydantic import BaseModel
+2026-09-09T07:44:21.7627110Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:21.8260460Z [31m[1m_______________ ERROR collecting tests/test_tax.py _______________[0m
+2026-09-09T07:44:21.8469250Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_tax.py'.
+2026-09-09T07:44:21.9207860Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:21.9547070Z Traceback:
+2026-09-09T07:44:21.9737650Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:22.0659400Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:22.1596860Z tests/test_tax.py:3: in <module>
+2026-09-09T07:44:22.1878480Z     from fastapi import FastAPI
+2026-09-09T07:44:22.2714910Z E   ModuleNotFoundError: No module named 'fastapi'
+2026-09-09T07:44:22.3298240Z [31m[1m_______________ ERROR collecting tests/test_shipping.py _______________[0m
+2026-09-09T07:44:22.3927510Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_shipping.py'.
+2026-09-09T07:44:22.5048030Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:22.5810930Z Traceback:
+2026-09-09T07:44:22.7062530Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:22.7975180Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:22.8709170Z tests/test_shipping.py:3: in <module>
+2026-09-09T07:44:22.9649560Z     from pydantic import BaseModel
+2026-09-09T07:44:23.0221890Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:23.0527290Z [31m[1m_______________ ERROR collecting tests/test_notifications.py _______________[0m
+2026-09-09T07:44:23.1530450Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_notifications.py'.
+2026-09-09T07:44:23.2458000Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:23.3593710Z Traceback:
+2026-09-09T07:44:23.3902600Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:23.5192330Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:23.6341510Z tests/test_notifications.py:3: in <module>
+2026-09-09T07:44:23.7637620Z     from fastapi import FastAPI
+2026-09-09T07:44:23.8878290Z E   ModuleNotFoundError: No module named 'fastapi'
+2026-09-09T07:44:23.9879550Z [31m[1m_______________ ERROR collecting tests/test_search.py _______________[0m
+2026-09-09T07:44:24.1042360Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_search.py'.
+2026-09-09T07:44:24.1841120Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-09T07:44:24.2972980Z Traceback:
+2026-09-09T07:44:24.3359390Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-09T07:44:24.4487030Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-09T07:44:24.5192750Z tests/test_search.py:5: in <module>
+2026-09-09T07:44:24.6288520Z     from pydantic import BaseModel
+2026-09-09T07:44:24.7007860Z E   ModuleNotFoundError: No module named 'pydantic'
+2026-09-09T07:44:24.8144810Z =========================== short test summary info ============================
+2026-09-09T07:44:24.8388980Z [31mERROR tests/test_pricing.py[0m
+2026-09-09T07:44:24.8594780Z [31mERROR tests/test_checkout.py[0m
+2026-09-09T07:44:24.9912640Z [31mERROR tests/test_cart.py[0m
+2026-09-09T07:44:25.0670350Z [31mERROR tests/test_inventory.py[0m
+2026-09-09T07:44:25.1946690Z [31mERROR tests/test_scheduler.py[0m
+2026-09-09T07:44:25.3277670Z [31mERROR tests/test_reports.py[0m
+2026-09-09T07:44:25.4260810Z [31mERROR tests/test_api_orders.py[0m
+2026-09-09T07:44:25.5125560Z [31mERROR tests/test_api_customers.py[0m
+2026-09-09T07:44:25.5545530Z [31mERROR tests/test_auth.py[0m
+2026-09-09T07:44:25.5812380Z [31mERROR tests/test_webhooks.py[0m
+2026-09-09T07:44:25.6986620Z [31mERROR tests/test_currency.py[0m
+2026-09-09T07:44:25.8247590Z [31mERROR tests/test_tax.py[0m
+2026-09-09T07:44:25.9371830Z [31mERROR tests/test_shipping.py[0m
+2026-09-09T07:44:26.0394960Z [31mERROR tests/test_notifications.py[0m
+2026-09-09T07:44:26.1070100Z [31mERROR tests/test_search.py[0m
+2026-09-09T07:44:26.1601740Z [31m!!!!!!!!!!!!!!!!!!! Interrupted: 15 errors during collection !!!!!!!!!!!!!!!!!!![0m
+2026-09-09T07:44:26.1893550Z [31m[1m=========================== 15 errors in 3.91s ===========================[0m
+2026-09-09T07:44:26.2576010Z [36m##[group]Post Run actions/cache@v4[0m
+2026-09-09T07:44:26.3433530Z Post job cleanup.
+2026-09-09T07:44:26.4737130Z Cache hit occurred on the primary key, not saving cache.
+2026-09-09T07:44:26.6056820Z [36m##[endgroup][0m
+2026-09-09T07:44:26.6726370Z [36m##[group]Post Run actions/setup-python@v5[0m
+2026-09-09T07:44:26.7000380Z Post job cleanup.
+2026-09-09T07:44:26.8117650Z [36m##[endgroup][0m
+2026-09-09T07:44:26.9185500Z [36m##[group]Post Run actions/checkout@v4[0m
+2026-09-09T07:44:26.9373880Z Post job cleanup.
+2026-09-09T07:44:27.0082280Z /usr/bin/git version
+2026-09-09T07:44:27.1090300Z git version 2.46.0
+2026-09-09T07:44:27.1277970Z Temporarily overriding HOME='/home/runner/work/_temp/...' before making global config changes
+2026-09-09T07:44:27.2577070Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-09T07:44:27.3929870Z /usr/bin/git config --global --add safe.directory /home/runner/work/harness-demo-repo/harness-demo-repo
+2026-09-09T07:44:27.4983050Z /usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-09T07:44:27.5231220Z /usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-09T07:44:27.5469130Z [36m##[endgroup][0m
+2026-09-09T07:44:27.6068200Z [31m##[error]Process completed with exit code 1.[0m
+2026-09-09T07:44:27.6254920Z [36m##[group]Complete job[0m
+2026-09-09T07:44:27.6839770Z Cleaning up orphan processes
+2026-09-09T07:44:27.7002230Z Uploading runner diagnostic logs
+2026-09-09T07:44:27.8370130Z Job completed with conclusion 'failure'
+2026-09-09T07:44:27.9543890Z [36m##[endgroup][0m

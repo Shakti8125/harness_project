@@ -25,7 +25,9 @@ FIXED_DISCOUNT_PY = (
 )
 
 
-def remediation_plan(action: str = "open_fix_pr", *, with_calls: bool = True) -> dict[str, Any]:
+def remediation_plan(
+    action: str = "open_fix_pr", *, with_calls: bool = True, run_id: int = RUN_ID
+) -> dict[str, Any]:
     """A well-formed `RemediationPlan` for `action`, as the model would return it.
 
     `with_calls=False` leaves `tool_calls` empty so a test can exercise the harness's
@@ -36,7 +38,7 @@ def remediation_plan(action: str = "open_fix_pr", *, with_calls: bool = True) ->
             {
                 "call_id": "tc_model000001",
                 "tool": "rerun_failed_jobs",
-                "args": {"run_id": RUN_ID, "attempt": 1},
+                "args": {"run_id": run_id, "attempt": 1},
                 "idempotency_key": None,
             }
         ]
@@ -150,3 +152,153 @@ def remediation_plan(action: str = "open_fix_pr", *, with_calls: bool = True) ->
         "pr_draft": pr_draft,
         "ticket_draft": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Scenario-aware stub model
+# ---------------------------------------------------------------------------
+
+#: `run_id` as rendered by `render_job` -- the one token that tells the scenarios apart
+#: inside every agent's prompt.
+SCENARIO_RUN_IDS = {
+    "real_regression": "501234567",
+    "flaky_test": "501234890",
+    "infra_timeout": "501235102",
+}
+
+
+def scenario_of(prompt: str) -> str:
+    for name, run_id in SCENARIO_RUN_IDS.items():
+        if f"run: {run_id} " in prompt:
+            return name
+    raise AssertionError("prompt names no known scenario")
+
+
+def notes_for(scenario: str) -> dict[str, Any]:
+    observations = {
+        "real_regression": [
+            "tests/test_pricing.py::test_discount_applies fails with assert 91 == 90",
+            "The diff touches exactly one file, src/pricing/discount.py",
+        ],
+        "flaky_test": [
+            "tests/test_scheduler.py::test_job_runs_within_deadline fails with "
+            "AssertionError: job took 1.207s, expected < 1.0s",
+            "The diff touches README.md and src/pricing/format.py only",
+        ],
+        "infra_timeout": [
+            "pip install fails: ReadTimeoutError: HTTPSConnectionPool(host='pypi.org', "
+            "port=443): Read timed out",
+            "The diff contains no files",
+        ],
+    }[scenario]
+    return {
+        "observations": observations,
+        "additional_tool_calls": [],
+        "narrative": "; ".join(observations),
+    }
+
+
+def diagnosis_for(scenario: str, self_confidence: float = 0.92) -> dict[str, Any]:
+    if scenario == "real_regression":
+        return {
+            "reasoning": "The log shows assert 91 == 90 and the diff changes only discount().",
+            "category": "real_regression",
+            "summary": "An off-by-one in discount() returns 91 instead of 90.",
+            "self_confidence": self_confidence,
+            "citations": [
+                {"claim_kind": "quote_exists", "locator": "log:job/601234567",
+                 "quote": "assert 91 == 90", "note": "the failing assertion"},
+            ],
+            "suspected_commit_sha": HEAD_SHA,
+            "suspected_test_ids": ["tests/test_pricing.py::test_discount_applies"],
+            "suspected_package": None,
+            "suggested_action": "open_fix_pr",
+        }
+    if scenario == "flaky_test":
+        return {
+            "reasoning": "A wall-clock deadline slipped by 0.2s on a shared runner; the diff "
+                         "touches only formatting code the scheduler does not import.",
+            "category": "flaky_test",
+            "summary": "test_job_runs_within_deadline is timing-dependent; the diff is unrelated.",
+            "self_confidence": self_confidence,
+            "citations": [
+                {"claim_kind": "test_in_log", "locator": "log:job/601234890",
+                 "quote": "AssertionError: job took 1.207s, expected < 1.0s", "note": ""},
+            ],
+            "suspected_commit_sha": None,
+            "suspected_test_ids": ["tests/test_scheduler.py::test_job_runs_within_deadline"],
+            "suspected_package": None,
+            "suggested_action": "retry",
+        }
+    if scenario == "infra_timeout":
+        return {
+            "reasoning": "pip could not reach pypi.org; everything after is a consequence. "
+                         "The diff is empty.",
+            "category": "infra_transient",
+            "summary": "Package registry timeout during install; no code changed.",
+            "self_confidence": self_confidence,
+            "citations": [
+                {"claim_kind": "quote_exists", "locator": "log:job/601235102",
+                 "quote": "Read timed out. (read timeout=15)", "note": ""},
+            ],
+            "suspected_commit_sha": None,
+            "suspected_test_ids": [],
+            "suspected_package": None,
+            "suggested_action": "retry",
+        }
+    raise AssertionError(scenario)
+
+
+PLAN_ACTION_FOR_SCENARIO = {
+    "real_regression": "open_fix_pr",
+    "flaky_test": "retry_job",
+    "infra_timeout": "retry_job",
+}
+
+
+class ScenarioStubLlm:
+    """Answers all three agents for any of the three scenarios, dispatching on the prompt.
+
+    `plan_action` overrides the Remediator's action for every scenario (a hallucinated
+    `forbidden` plan, `no_action`, ...); `self_confidence` sets the Diagnostician's.
+    """
+
+    def __init__(
+        self,
+        *,
+        self_confidence: float = 0.92,
+        plan_action: str | None = None,
+        plan_with_calls: bool = True,
+    ) -> None:
+        self.self_confidence = self_confidence
+        self.plan_action = plan_action
+        self.plan_with_calls = plan_with_calls
+        self.prompts: list[str] = []
+
+    async def generate(self, req: Any) -> Any:
+        from src.harness.contracts import TokenUsage
+        from src.harness.llm import RawLlmResponse
+
+        self.prompts.append(req.prompt)
+        scenario = scenario_of(req.prompt)
+        if "You are the Investigator" in req.prompt:
+            payload: Any = notes_for(scenario)
+        elif "You are the Diagnostician" in req.prompt:
+            payload = diagnosis_for(scenario, self.self_confidence)
+        elif "You are the Remediator" in req.prompt:
+            payload = remediation_plan(
+                self.plan_action or PLAN_ACTION_FOR_SCENARIO[scenario],
+                with_calls=self.plan_with_calls,
+                run_id=int(SCENARIO_RUN_IDS[scenario]),
+            )
+        else:  # pragma: no cover
+            raise AssertionError("unrecognised prompt reached the stub model")
+        import json
+
+        return RawLlmResponse(
+            text=json.dumps(payload),
+            tokens=TokenUsage(prompt=1200, completion=300, total=1500),
+            finish_reason="STOP",
+            model=req.model,
+            latency_ms=12,
+        )

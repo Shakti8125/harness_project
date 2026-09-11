@@ -1,0 +1,88 @@
+{
+  "url": "https://api.github.com/repos/octo-org/harness-demo-repo/compare/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678...4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e",
+  "html_url": "https://github.com/octo-org/harness-demo-repo/compare/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678...4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e",
+  "permalink_url": "https://github.com/octo-org/harness-demo-repo/compare/octo-org:a1b2c3d...octo-org:4f1e2d3",
+  "diff_url": "https://github.com/octo-org/harness-demo-repo/compare/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678...4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e.diff",
+  "patch_url": "https://github.com/octo-org/harness-demo-repo/compare/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678...4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e.patch",
+  "base_commit": {
+    "sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    "commit": {
+      "message": "Tidy scheduler docstrings",
+      "author": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-08T08:02:41Z"
+      },
+      "committer": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-08T08:02:41Z"
+      }
+    }
+  },
+  "merge_base_commit": {
+    "sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    "commit": {
+      "message": "Tidy scheduler docstrings",
+      "author": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-08T08:02:41Z"
+      },
+      "committer": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-08T08:02:41Z"
+      }
+    }
+  },
+  "status": "ahead",
+  "ahead_by": 1,
+  "behind_by": 0,
+  "total_commits": 1,
+  "commits": [
+    {
+      "sha": "4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e",
+      "commit": {
+        "message": "Format currency with thin-space thousands separators\n\nDocs updated to match.",
+        "author": {
+          "name": "Priya Natarajan",
+          "email": "priya-n@harness-demo-repo.example",
+          "date": "2026-09-08T10:14:55Z"
+        },
+        "committer": {
+          "name": "Priya Natarajan",
+          "email": "priya-n@harness-demo-repo.example",
+          "date": "2026-09-08T10:14:55Z"
+        }
+      },
+      "html_url": "https://github.com/octo-org/harness-demo-repo/commit/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    }
+  ],
+  "files": [
+    {
+      "sha": "b7e23ec29af22b0b4e41da31e868d57226121c84",
+      "filename": "README.md",
+      "status": "modified",
+      "additions": 3,
+      "deletions": 1,
+      "changes": 4,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/README.md",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/README.md",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/README.md?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e",
+      "patch": "@@ -41,7 +41,9 @@ Prices are integers in minor units (cents).\n \n ## Formatting\n \n-`format_price(1234567)` renders `12,345.67`.\n+`format_price(1234567)` renders `12\u2009345.67` -- a thin space separates thousands so\n+that rendered totals cannot be mistaken for a comma-delimited list in exports.\n+Set `PRICING_SEPARATOR=,` to keep the old behaviour.\n \n ## Discounts\n"
+    },
+    {
+      "sha": "9a1f0c4e2d7b6a5c3e8f1d2b4a6c8e0f2d4b6a8c",
+      "filename": "src/pricing/format.py",
+      "status": "modified",
+      "additions": 4,
+      "deletions": 2,
+      "changes": 6,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/pricing/format.py",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/pricing/format.py",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/src/pricing/format.py?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e",
+      "patch": "@@ -1,9 +1,11 @@\n+import os\n+\n+SEPARATOR = os.environ.get(\"PRICING_SEPARATOR\", \"\\u2009\")\n+\n \n def format_price(minor_units: int) -> str:\n     \"\"\"Render an integer number of cents as a human-readable price.\"\"\"\n     whole, cents = divmod(minor_units, 100)\n-    grouped = f\"{whole:,}\"\n-    return f\"{grouped}.{cents:02d}\"\n+    return f\"{whole:,}.{cents:02d}\".replace(\",\", SEPARATOR)\n"
+    }
+  ]
+}

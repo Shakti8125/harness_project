@@ -1,0 +1,63 @@
+{
+  "url": "https://api.github.com/repos/octo-org/harness-demo-repo/compare/9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0b...7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c",
+  "html_url": "https://github.com/octo-org/harness-demo-repo/compare/9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0b...7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c",
+  "permalink_url": "https://github.com/octo-org/harness-demo-repo/compare/octo-org:9d8c7b6...octo-org:7c2b9e1",
+  "diff_url": "https://github.com/octo-org/harness-demo-repo/compare/9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0b...7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c.diff",
+  "patch_url": "https://github.com/octo-org/harness-demo-repo/compare/9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0b...7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c.patch",
+  "base_commit": {
+    "sha": "9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0b",
+    "commit": {
+      "message": "Add shipping zone lookup",
+      "author": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-09T06:58:12Z"
+      },
+      "committer": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-09T06:58:12Z"
+      }
+    }
+  },
+  "merge_base_commit": {
+    "sha": "9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0b",
+    "commit": {
+      "message": "Add shipping zone lookup",
+      "author": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-09T06:58:12Z"
+      },
+      "committer": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-09T06:58:12Z"
+      }
+    }
+  },
+  "status": "ahead",
+  "ahead_by": 1,
+  "behind_by": 0,
+  "total_commits": 1,
+  "commits": [
+    {
+      "sha": "7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c",
+      "commit": {
+        "message": "chore: empty commit to re-trigger CI after the registry outage",
+        "author": {
+          "name": "Jordan Lee",
+          "email": "jordan-lee@harness-demo-repo.example",
+          "date": "2026-09-09T07:41:50Z"
+        },
+        "committer": {
+          "name": "Jordan Lee",
+          "email": "jordan-lee@harness-demo-repo.example",
+          "date": "2026-09-09T07:41:50Z"
+        }
+      },
+      "html_url": "https://github.com/octo-org/harness-demo-repo/commit/7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c"
+    }
+  ],
+  "files": []
+}

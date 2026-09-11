@@ -1,0 +1,175 @@
+# ruff: noqa: E501
+"""Run one scenario -- recorded or live -- from the command line and print what happened.
+
+    uv run python scripts/replay.py real_regression
+    uv run python scripts/replay.py --live --repo <owner>/<name> --run-id <workflow_run_id>
+
+Replay mode drives the same pipeline the API's `POST /v1/replay/{scenario}` drives, minus
+HTTP. Live mode (PLAN.md Phase 2, Verify step 5) fetches the named workflow run from the
+GitHub API to build the subject, then runs the pipeline over `GitHubToolGateway`. Both
+honour every setting the service does -- in particular `HARNESS_DRY_RUN`, which defaults
+to true, so a live run reads everything and writes nothing unless you say otherwise --
+and both spend real model calls (two or three per run on the free tier's 20/day).
+
+Prints the diagnosis, the remediation decision, and a summary of every gateway span in the
+trace, which is what step 5 asks to be checked: in a dry run every gateway span with a
+write tool reports `dry_run=True`, and nothing destructive appears at all.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from src.api.deps import FIXTURES_ROOT, get_app_context  # noqa: E402
+from src.api.main import idempotency_key_for  # noqa: E402
+from src.harness.contracts import RunOutcome, RunRequest  # noqa: E402
+from src.integrations.cicd.agents.investigator import parse_subject  # noqa: E402
+from src.integrations.cicd.wiring import INTEGRATION  # noqa: E402
+
+
+async def fetch_workflow_run(repo: str, run_id: int, token: str, api_base: str) -> dict[str, Any]:
+    """The `workflow_run` object, in the shape the webhook would have delivered it."""
+    async with httpx.AsyncClient(
+        base_url=api_base.rstrip("/"),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=30.0,
+    ) as client:
+        response = await client.get(f"/repos/{repo}/actions/runs/{run_id}")
+        response.raise_for_status()
+        run = response.json()
+    return {
+        "action": "completed",
+        "workflow_run": run,
+        "repository": run.get("repository") or {"full_name": repo},
+    }
+
+
+def print_outcome(outcome: RunOutcome) -> None:
+    diagnosis = outcome.final.get("diagnosis")
+    remediation = outcome.final.get("remediation")
+    print(f"run_id:      {outcome.run_id}")
+    print(f"status:      {outcome.status}")
+    if outcome.escalation is not None:
+        print(f"escalation:  {outcome.escalation.reason}: {outcome.escalation.message}")
+    if isinstance(diagnosis, dict):
+        print(
+            f"diagnosis:   {diagnosis.get('category')} "
+            f"(final_confidence {diagnosis.get('final_confidence'):.2f}, "
+            f"{len(diagnosis.get('citations', []))} citations, "
+            f"suggested {diagnosis.get('suggested_action')})"
+        )
+        print(f"             {diagnosis.get('summary')}")
+    if isinstance(remediation, dict):
+        decisions = remediation.get("decisions", [])
+        first = decisions[0] if decisions else None
+        print(
+            f"remediation: action={remediation.get('plan', {}).get('action')} "
+            f"status={remediation.get('status')}"
+            + (f" rule={first.get('rule_id')} effect={first.get('effect')}" if first else "")
+        )
+        for executed in remediation.get("executed", []):
+            print(
+                f"  executed {executed.get('tool')}: ok={executed.get('ok')} "
+                f"dry_run={executed.get('dry_run')}"
+            )
+        pending = remediation.get("pending_approval")
+        if pending:
+            print(f"  pending approval {pending.get('approval_id')} (expires {pending.get('expires_at')})")
+    print(f"trace:       {outcome.trace_url}")
+
+
+async def print_gateway_spans(run_id: str) -> None:
+    trace = await get_app_context().recorder.read_trace(run_id)
+    if trace is None:
+        print("gateway spans: (no trace recorded)")
+        return
+    spans = [s for s in trace.spans if s.component == "gateway"]
+    print(f"gateway spans: {len(spans)}")
+    for span in spans:
+        attrs = span.attributes
+        print(
+            f"  {span.name:22} tool={attrs.get('tool')!s:26} side_effect={attrs.get('side_effect')!s:6}"
+            f" ok={attrs.get('ok')!s:5} dry_run={attrs.get('dry_run')!s:5} rule={attrs.get('rule_id')}"
+        )
+    writes = [s for s in spans if s.attributes.get("side_effect") != "read"]
+    if not writes:
+        print("  every gateway span is a read")
+
+
+async def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("scenario", nargs="?", help="a directory under fixtures/scenarios/")
+    parser.add_argument("--live", action="store_true", help="run against the GitHub API")
+    parser.add_argument("--repo", help="owner/name (live mode)")
+    parser.add_argument("--run-id", type=int, help="the failing workflow_run id (live mode)")
+    parser.add_argument("--json", action="store_true", help="print the full RunOutcome as JSON")
+    args = parser.parse_args()
+
+    context = get_app_context()
+    await context.recorder.initialize()
+    settings = context.settings
+
+    if args.live:
+        if not args.repo or not args.run_id:
+            parser.error("--live requires --repo and --run-id")
+        if settings.gateway != "github":
+            parser.error("live mode requires HARNESS_GATEWAY=github")
+        if args.repo not in settings.allowed_repos:
+            parser.error(f"{args.repo!r} is not in HARNESS_ALLOWED_REPOS")
+        subject = await fetch_workflow_run(
+            args.repo, args.run_id, settings.github_token.get_secret_value(),
+            str(settings.github_api_base),
+        )
+        gateway = context.build_live_gateway(args.repo)
+        mode = "live"
+        fixture = None
+        print(f"live run against {args.repo} run {args.run_id} (dry_run={settings.dry_run})")
+    else:
+        if not args.scenario:
+            parser.error("name a scenario, or pass --live")
+        scenario_dir = FIXTURES_ROOT / args.scenario
+        if not (scenario_dir / "webhook.json").is_file():
+            parser.error(f"no scenario named {args.scenario!r} under {FIXTURES_ROOT}")
+        subject = json.loads((scenario_dir / "webhook.json").read_text(encoding="utf-8"))
+        gateway = context.build_replay_gateway(scenario_dir, parse_subject(subject)["repo"])
+        mode = "replay"
+        fixture = args.scenario
+        print(f"replaying {args.scenario} (dry_run={settings.dry_run})")
+
+    request = RunRequest(
+        integration=INTEGRATION,
+        subject=subject,
+        idempotency_key=idempotency_key_for(subject),
+        mode=mode,  # type: ignore[arg-type]
+        replay_fixture=fixture,
+        requested_by="scripts/replay.py",
+    )
+    try:
+        outcome = await context.build_orchestrator_for(gateway).run(request)
+    finally:
+        await gateway.aclose()
+
+    if args.json:
+        print(json.dumps(outcome.model_dump(mode="json"), indent=2))
+    else:
+        print_outcome(outcome)
+    await print_gateway_spans(outcome.run_id)
+    return 0 if outcome.status in ("completed", "awaiting_approval", "escalated") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))

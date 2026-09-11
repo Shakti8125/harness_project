@@ -1,0 +1,26 @@
+name: infra_timeout
+description: >
+  pip cannot reach pypi.org -- five ReadTimeoutError retries, then "No matching
+  distribution found for mypy==1.11.2" -- and every later step fails as a consequence
+  (ruff not found; pytest collects 0 items with ModuleNotFoundError on each module). The
+  head commit is an EMPTY commit made to re-trigger CI, so the diff against the last green
+  run contains no files at all. Nothing in the repository changed; the network did.
+expected:
+  category: infra_transient
+  min_confidence: 0.75
+  # null, not omitted: an empty commit cannot be blamed for anything.
+  commit: null
+  cites_any_of:
+    - "Read timed out"
+    - "pypi.org"
+    - "ReadTimeoutError"
+    - "No matching distribution found"
+  action: retry
+  # Phase 2 label -- same reason as flaky_test: the retry cap fails closed until memory
+  # is real, so the policy denies and the run escalates as policy_denied. Phase 3: allow.
+  effect: deny
+  baseline_kind: branch_green
+  cold_start: false
+  # The empty diff is DELIBERATE and must never be "fixed" by adding files: this is the
+  # only scenario that exercises the empty_diff_contradiction adjustment (which fires
+  # only if a model wrongly says real_regression here) -- fixtures/README.md.

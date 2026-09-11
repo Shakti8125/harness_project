@@ -185,11 +185,16 @@ Realism requirements (see `.claude/skills/fixture-new/SKILL.md` for the fuller r
 | Scenario | Shape | What it proves | Status |
 |---|---|---|---|
 | `real_regression` | off-by-one in `discount()`, `assert 91 == 90`, diff contains exactly that one-line change | correct blame + `require_approval` | **complete** (Phase 1) |
-| `flaky_test` | random-fail test, identical fingerprint across runs, prior history present | memory recognition, auto-retry path | not yet built |
+| `flaky_test` | wall-clock deadline test slips on a shared runner; diff touches only formatting code | the retry rule -- denied by the fail-closed cap in Phase 2, allowed once memory is real (Phase 3) | **complete** (Phase 2) |
 | `dependency_break` | `requirements.txt` bumps pydantic 1.10.13 -> 2.9.2, import-time failure | dependency_bump claim checking | not yet built |
-| `infra_timeout` | registry connection timeout, **empty diff** (docs-only change) | the empty-diff contradiction penalty | not yet built |
+| `infra_timeout` | pypi.org read timeout during install, cascading collection errors, **empty diff** (an empty re-trigger commit) | the empty-diff contradiction penalty; the retry rule for `infra_transient` | **complete** (Phase 2) |
 | `cold_start` | copy of `flaky_test` with `find_last_successful_run` returning an empty list | `baseline_kind: none`, auto-retry disabled | not yet built |
 | `hallucination` | fixture whose log deliberately lacks the line the Diagnostician is steered to cite | the Evaluator refuting a fabricated citation | not yet built |
 
 `infra_timeout`'s empty diff is deliberate and must never be "fixed" by adding files — it is
 the only scenario that exercises `empty_diff_contradiction`.
+
+The `flaky_test` and `infra_timeout` logs were synthesised by `scripts/gen_fixture_log.py`,
+deterministically: re-running it for a scenario reproduces the committed file byte for byte,
+so a regenerated log never silently changes a fixture. The generator is the cheap way to
+give the next scenario the few thousand lines of realistic noise this format asks for.

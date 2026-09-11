@@ -1,0 +1,124 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 501235102,
+    "name": "CI",
+    "node_id": "WFR_kwDOExampleInfraTimeoutRun==",
+    "head_branch": "main",
+    "head_sha": "7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c",
+    "path": ".github/workflows/ci.yml",
+    "display_title": "chore: empty commit to re-trigger CI after the registry outage",
+    "run_number": 163,
+    "event": "push",
+    "status": "completed",
+    "conclusion": "failure",
+    "workflow_id": 9001,
+    "check_suite_id": 7001234567,
+    "check_suite_node_id": "CS_kwDOExampleCheckSuite==",
+    "url": "https://api.github.com/repos/octo-org/harness-demo-repo/actions/runs/501235102",
+    "html_url": "https://github.com/octo-org/harness-demo-repo/actions/runs/501235102",
+    "pull_requests": [],
+    "created_at": "2026-09-09T07:41:50Z",
+    "updated_at": "2026-09-09T07:44:31Z",
+    "actor": {
+      "login": "jordan-lee",
+      "id": 88234501,
+      "type": "User",
+      "html_url": "https://github.com/jordan-lee"
+    },
+    "run_attempt": 1,
+    "referenced_workflows": [],
+    "run_started_at": "2026-09-09T07:42:18Z",
+    "triggering_actor": {
+      "login": "jordan-lee",
+      "id": 88234501,
+      "type": "User",
+      "html_url": "https://github.com/jordan-lee"
+    },
+    "jobs_url": "https://api.github.com/repos/octo-org/harness-demo-repo/actions/runs/501235102/jobs",
+    "logs_url": "https://api.github.com/repos/octo-org/harness-demo-repo/actions/runs/501235102/logs",
+    "check_suite_url": "https://api.github.com/repos/octo-org/harness-demo-repo/check-suites/7001234567",
+    "artifacts_url": "https://api.github.com/repos/octo-org/harness-demo-repo/actions/runs/501235102/artifacts",
+    "cancel_url": "https://api.github.com/repos/octo-org/harness-demo-repo/actions/runs/501235102/cancel",
+    "rerun_url": "https://api.github.com/repos/octo-org/harness-demo-repo/actions/runs/501235102/rerun",
+    "previous_attempt_url": null,
+    "workflow_url": "https://api.github.com/repos/octo-org/harness-demo-repo/actions/workflows/9001",
+    "head_commit": {
+      "id": "7c2b9e1a5d4f3e2c1b0a9f8e7d6c5b4a3f2e1d0c",
+      "tree_id": "c0d1e2f3a4b5c6d7e8f9a0b1c2e3f4d5a1e9b2c7",
+      "message": "chore: empty commit to re-trigger CI after the registry outage",
+      "timestamp": "2026-09-09T07:41:50Z",
+      "author": {
+        "name": "Jordan Lee",
+        "email": "jordan-lee@harness-demo-repo.example"
+      },
+      "committer": {
+        "name": "Jordan Lee",
+        "email": "jordan-lee@harness-demo-repo.example"
+      }
+    },
+    "repository": {
+      "id": 900100200,
+      "node_id": "R_kgDOExampleRegressionRepo",
+      "name": "harness-demo-repo",
+      "full_name": "octo-org/harness-demo-repo",
+      "private": false,
+      "owner": {
+        "login": "octo-org",
+        "id": 77345001,
+        "type": "Organization"
+      },
+      "html_url": "https://github.com/octo-org/harness-demo-repo",
+      "default_branch": "main"
+    },
+    "head_repository": {
+      "id": 900100200,
+      "node_id": "R_kgDOExampleRegressionRepo",
+      "name": "harness-demo-repo",
+      "full_name": "octo-org/harness-demo-repo",
+      "private": false,
+      "owner": {
+        "login": "octo-org",
+        "id": 77345001,
+        "type": "Organization"
+      },
+      "html_url": "https://github.com/octo-org/harness-demo-repo",
+      "default_branch": "main"
+    }
+  },
+  "workflow": {
+    "id": 9001,
+    "node_id": "W_kgDOExampleCIWorkflow",
+    "name": "CI",
+    "path": ".github/workflows/ci.yml",
+    "state": "active",
+    "created_at": "2026-01-14T10:00:00Z",
+    "updated_at": "2026-01-14T10:00:00Z",
+    "url": "https://api.github.com/repos/octo-org/harness-demo-repo/actions/workflows/9001",
+    "html_url": "https://github.com/octo-org/harness-demo-repo/blob/main/.github/workflows/ci.yml",
+    "badge_url": "https://github.com/octo-org/harness-demo-repo/workflows/CI/badge.svg"
+  },
+  "repository": {
+    "id": 900100200,
+    "node_id": "R_kgDOExampleRegressionRepo",
+    "name": "harness-demo-repo",
+    "full_name": "octo-org/harness-demo-repo",
+    "private": false,
+    "owner": {
+      "login": "octo-org",
+      "id": 77345001,
+      "type": "Organization",
+      "html_url": "https://github.com/octo-org"
+    },
+    "html_url": "https://github.com/octo-org/harness-demo-repo",
+    "description": "Demo repository seeded with canned CI failure scenarios for the agent harness.",
+    "fork": false,
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "jordan-lee",
+    "id": 88234501,
+    "type": "User",
+    "html_url": "https://github.com/jordan-lee"
+  }
+}
