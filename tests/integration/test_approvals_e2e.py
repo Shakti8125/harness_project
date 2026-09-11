@@ -84,6 +84,17 @@ def test_regression_is_blocked_pending_approval(client: TestClient) -> None:
     pending_again = again["final"]["remediation"]["pending_approval"]
     assert pending_again["approval_id"] == approval["approval_id"]
 
+    # The drafted file rides in `create_or_update_file.args.content_b64` -- base64, which
+    # the Redactor's patterns cannot see through -- so at the HTTP boundary it is served as
+    # length + digest, in both places the plan appears, like `patch` and `excerpt`.
+    for plan in (remediation["plan"], approval["plan"]):
+        file_call = next(c for c in plan["tool_calls"] if c["tool"] == "create_or_update_file")
+        assert "content_b64" not in file_call["args"]
+        assert file_call["args"]["content_b64_length"] > 0
+        assert len(file_call["args"]["content_b64_sha256"]) == 64
+    # The plaintext twin is model-authored prose, scrubbed by the whole-body pass and served.
+    assert "discount" in remediation["plan"]["pr_draft"]["files"][0]["new_content"]
+
 
 # ---------------------------------------------------------------------------
 # Verify step 4: the approval round-trip
@@ -138,11 +149,21 @@ def test_approve_re_evaluates_and_executes_through_the_gateway(client: TestClien
     assert executed["error"]["kind"] == "unknown"
     assert "not implemented" in executed["error"]["message"]
 
+    # Appendix B.2: a write that failed is a run failure. The approval was recorded, the
+    # plan was executed as far as it could be, and the run says so rather than "completed".
     run = client.get(f"/v1/runs/{body['run_id']}").json()
-    assert run["status"] == "completed"
+    assert run["status"] == "escalated"
+    assert run["escalation"]["reason"] == "tool_failure"
+    assert run["escalation"]["payload"]["approval_id"] == apr
+    assert "create_branch" in run["escalation"]["message"]
     assert run["final"]["remediation"]["status"] == "executed"
     assert run["final"]["remediation"]["pending_approval"]["state"] == "approved"
     assert len(run["final"]["remediation"]["executed"]) == 1
+
+    listed = client.get("/v1/escalations").json()
+    assert any(
+        item["run_id"] == body["run_id"] and item["reason"] == "tool_failure" for item in listed
+    )
 
     # The trace records the execution attempt against the run it belongs to.
     trace = client.get(f"/v1/runs/{body['run_id']}/trace").json()

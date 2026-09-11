@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import re
+import secrets
 import sqlite3
 from collections.abc import AsyncIterator, Coroutine, Mapping
 from contextlib import asynccontextmanager
@@ -35,7 +36,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from src.api.approval_registry import ApprovalEntry, ApprovalRegistry, RunContext
 from src.api.deps import AppContext, get_app_context, mint_run_id
 from src.api.run_registry import RunRegistry
-from src.harness.contracts import RunId, RunOutcome, RunRequest
+from src.harness.contracts import EscalationRecord, RunId, RunOutcome, RunRequest
 from src.harness.gateway import ToolGateway
 from src.harness.observability import REDACTION_PLACEHOLDER
 from src.integrations.cicd.agents.investigator import parse_subject
@@ -43,6 +44,8 @@ from src.integrations.cicd.remediation import (
     build_facts,
     decide_plan,
     execute_plan,
+    failed_execution,
+    failure_summary,
     plan_verdict,
 )
 from src.integrations.cicd.rendering import validate_prompt_templates
@@ -108,6 +111,17 @@ def _digest_str_field(container: dict[str, Any], field: str) -> None:
     del container[field]
     container[f"{field}_length"] = len(value)
     container[f"{field}_sha256"] = hashlib.sha256(value.encode()).hexdigest()
+
+
+def _digest_content_b64(node: Any) -> None:
+    """Replace every `content_b64` string anywhere under `node` with its length + digest."""
+    if isinstance(node, dict):
+        _digest_str_field(node, "content_b64")
+        for value in node.values():
+            _digest_content_b64(value)
+    elif isinstance(node, list):
+        for value in node:
+            _digest_content_b64(value)
 
 
 def _serialize_run_outcome(outcome: RunOutcome) -> dict[str, Any]:
@@ -188,6 +202,15 @@ def _serialize_run_outcome(outcome: RunOutcome) -> dict[str, Any]:
             for file_entry in files:
                 if isinstance(file_entry, dict):
                     _digest_str_field(file_entry, "patch")
+    # Phase 2: a `create_or_update_file` call carries the whole drafted file as
+    # `args.content_b64`, wherever the plan appears (`final.remediation.plan`, and again
+    # inside `pending_approval.plan`). Base64 is exactly the encoding the `Redactor`'s
+    # patterns cannot see through -- a credential the model reproduced from the diff into
+    # the draft would ride out in a form no regex matches -- so it is digested here like
+    # `patch`, by key name, anywhere in the body. The plaintext twin
+    # (`pr_draft.files[].new_content`) is model-authored like a citation and is left to
+    # the whole-body scrub below, which does see it.
+    _digest_content_b64(body)
     scrubbed = get_app_context().recorder.redactor.scrub(body)
     assert isinstance(scrubbed, dict)  # body was a dict; Redactor preserves the JSON shape
     return scrubbed
@@ -878,23 +901,43 @@ class ApprovalDecision(BaseModel):
     note: str | None = Field(None, max_length=1000)
 
 
-async def _settle_run(
-    run_id: RunId,
-    remediation: RemediationResult,
-    *,
-    run_status: Literal["completed", "escalated"] = "completed",
-) -> None:
+async def _settle_run(run_id: RunId, remediation: RemediationResult) -> None:
     """Write the decided remediation back into the stored `RunOutcome`.
 
     Without this, `GET /v1/runs/{id}` would say `awaiting_approval` forever after the
-    approval was decided -- the response to the `POST` would be the only record.
+    approval was decided -- the response to the `POST` would be the only record. The run's
+    status follows the same rule the orchestrator's suspend hook applies in-run: an
+    execution that failed escalates as `tool_failure` (Appendix B.2), anything else
+    completes.
     """
     outcome = await registry.get(run_id)
     if outcome is None:
         return
     final = dict(outcome.final)
     final[REMEDIATION_KEY] = remediation.model_dump(mode="json")
-    await registry.save(outcome.model_copy(update={"status": run_status, "final": final}))
+    update: dict[str, Any] = {"status": "completed", "final": final}
+    failed = failed_execution(remediation)
+    if failed is not None:
+        update["status"] = "escalated"
+        update["escalation"] = EscalationRecord(
+            escalation_id="esc_" + secrets.token_hex(8),
+            reason="tool_failure",
+            message=failure_summary(failed),
+            payload={
+                "stage": "approval",
+                "approval_id": remediation.pending_approval.approval_id
+                if remediation.pending_approval is not None else None,
+                "tool": failed.tool,
+                "error_kind": failed.error.kind if failed.error is not None else None,
+            },
+            channels=["log"],
+            delivered_at=datetime.now(UTC),
+        )
+        logger.warning(
+            "run %s escalated (tool_failure) after approval: %s",
+            run_id, update["escalation"].message,
+        )
+    await registry.save(outcome.model_copy(update=update))
 
 
 async def _execute_approved(

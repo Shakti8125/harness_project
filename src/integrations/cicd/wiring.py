@@ -37,7 +37,11 @@ from src.integrations.cicd.agents.diagnostician import (
 )
 from src.integrations.cicd.agents.investigator import Investigator
 from src.integrations.cicd.agents.remediator import DEFAULT_APPROVAL_TTL_H, Remediator
-from src.integrations.cicd.remediation import denial_summary
+from src.integrations.cicd.remediation import (
+    denial_summary,
+    failed_execution,
+    failure_summary,
+)
 from src.integrations.cicd.schemas import Diagnosis, FailureBundle, RemediationResult
 
 INTEGRATION: Final[str] = "cicd"
@@ -93,7 +97,8 @@ def remediation_suspend(state: RunState) -> Suspension | None:
 
     A `RemediationResult` that awaits approval suspends the run with that status; one the
     policy denied escalates it as `policy_denied` with the first denying decision quoted,
-    so `GET /v1/escalations` reads as a sentence. Anything else lets the run complete.
+    so `GET /v1/escalations` reads as a sentence; one whose execution failed escalates as
+    `tool_failure` naming the call (Appendix B.2). Anything else lets the run complete.
     """
     result = state.artifacts.get(REMEDIATION_KEY)
     if not isinstance(result, RemediationResult):
@@ -117,6 +122,19 @@ def remediation_suspend(state: RunState) -> Suspension | None:
                     {"tool": d.tool, "rule_id": d.rule_id, "effect": d.effect}
                     for d in result.decisions
                 ],
+            },
+        )
+    failed = failed_execution(result)
+    if failed is not None:
+        return Suspension(
+            status="escalated",
+            reason=failure_summary(failed),
+            escalate_as="tool_failure",
+            payload={
+                "action": result.plan.action,
+                "tool": failed.tool,
+                "error_kind": failed.error.kind if failed.error is not None else None,
+                "executed": len(result.executed),
             },
         )
     return None

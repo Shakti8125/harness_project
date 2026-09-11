@@ -408,3 +408,48 @@ async def test_an_unreachable_model_at_the_remediator_escalates_and_keeps_the_di
     assert "remediation" not in outcome.final
     assert outcome.stages[-1].stage == "remediate"
     assert outcome.stages[-1].status == "escalate"
+
+
+# ---------------------------------------------------------------------------
+# An executed plan whose call failed escalates as tool_failure (Appendix B.2)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_failed_execution_escalates_as_tool_failure(
+    repo_root: Path, tmp_db_path: Path
+) -> None:
+    from src.harness.gateway import ToolError
+    from src.integrations.cicd.wiring import remediation_suspend
+
+    class BrokenGateway(SpyGateway):
+        async def invoke(self, call: ToolCall, decision: PolicyDecision) -> ToolResult:
+            self.calls.append((call, decision))
+            return ToolResult(
+                call_id=call.call_id, tool=call.tool, ok=False, latency_ms=1,
+                error=ToolError(kind="not_found", message="run 501234890 is gone",
+                                retryable=False, http_status=404),
+            )
+
+    gateway = BrokenGateway(
+        ReplayToolGateway(
+            scenario_dir=scenario_dir(repo_root, "flaky_test"), repo=REPO,
+            forbidden=load_forbidden(),
+        )
+    )
+    agent = remediator(
+        repo_root, tmp_db_path,
+        PlanStubLlm(remediation_plan("retry_job", run_id=501234890)), gateway,
+    )
+    state = state_with(diagnosis_for("flaky_test"), retries=0, unavailable=False)
+    result = await agent.run(state)
+    assert result.output is not None
+    assert result.output.status == "executed"
+    assert result.output.executed[0].ok is False
+
+    state.artifacts["remediation"] = result.output
+    suspension = remediation_suspend(state)
+    assert suspension is not None
+    assert suspension.status == "escalated"
+    assert suspension.escalate_as == "tool_failure"
+    assert "rerun_failed_jobs" in suspension.reason and "not_found" in suspension.reason
+    assert suspension.payload["tool"] == "rerun_failed_jobs"

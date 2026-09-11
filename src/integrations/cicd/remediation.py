@@ -352,6 +352,25 @@ def result_for(
     )
 
 
+def failed_execution(result: RemediationResult) -> ToolResult | None:
+    """The first executed call that failed, if the plan was executed and one did.
+
+    Appendix B.2: a write that fails (a 404 on a write tool, a 5xx that outlasted its
+    retries, a tool nobody has implemented yet) is a run failure, escalated as
+    `tool_failure` -- not a completed run with a red entry buried in `executed`.
+    """
+    if result.status != "executed":
+        return None
+    return next((r for r in result.executed if not r.ok), None)
+
+
+def failure_summary(result: ToolResult) -> str:
+    error = result.error
+    if error is None:
+        return f"{result.tool!r} failed with no error recorded"
+    return f"{result.tool!r} failed ({error.kind}): {error.message}"
+
+
 def denial_summary(decisions: list[PolicyDecision]) -> str:
     """One line naming the denied tool(s) and why, for the escalation message."""
     denied = [d for d in decisions if d.effect == "deny"]
