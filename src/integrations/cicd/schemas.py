@@ -323,7 +323,10 @@ class RemediationResult(BaseModel):  # the remediate stage output
     decisions: list[PolicyDecision]
     executed: list[ToolResult] = []
     pending_approval: ApprovalRequest | None = None
-    status: Literal["executed", "awaiting_approval", "denied", "no_action"]
+    # `rejected` added in Phase 2 (A.11 amended): a person refusing a plan is not the
+    # policy denying it, and `pending_approval.state` alone should not be what tells the
+    # two apart.
+    status: Literal["executed", "awaiting_approval", "denied", "rejected", "no_action"]
 
 
 __all__ = [

@@ -69,6 +69,19 @@ EVALUATION_SKIPPED: Final[str] = "skipped"
 
 PlanVerdict = Literal["execute", "await_approval", "deny", "no_action"]
 
+#: The tools each action may legitimately involve. A model-proposed call outside its
+#: action's set is dropped before it is judged -- it is a call the stated action never
+#: asked for (review finding 2: `no_action` with a `rerun_failed_jobs` attached would
+#: otherwise be judged, and executed under a readable history). Dropped calls are
+#: returned by `normalize_plan` so the trace can show what the model proposed.
+TOOLS_FOR_ACTION: Final[dict[str, frozenset[str]]] = {
+    "retry_job": frozenset({"rerun_failed_jobs"}),
+    "open_fix_pr": frozenset({"create_branch", "create_or_update_file", "open_pull_request"}),
+    "open_revert_pr": frozenset({"create_branch", "create_or_update_file", "open_pull_request"}),
+    "file_ticket": frozenset({"create_issue"}),
+    "no_action": frozenset(),
+}
+
 
 # ---------------------------------------------------------------------------
 # Facts
@@ -79,8 +92,8 @@ def build_facts(
     diagnosis: Diagnosis,
     bundle: FailureBundle,
     *,
-    evaluation_verdict: str = EVALUATION_SKIPPED,
-    side_effecting_actions_so_far: int = 0,
+    evaluation_verdict: str,
+    side_effecting_actions_so_far: int,
 ) -> dict[str, JsonValue]:
     """The flat dotted namespace `policy.yaml` conditions read.
 
@@ -88,6 +101,11 @@ def build_facts(
     is absent can never match (`PolicyEngine` fails closed on a missing fact), so an
     omission here would silently turn an `allow` rule into a deny. Keys the policy does
     not (yet) read are included where they cost nothing and make the trace more legible.
+
+    `evaluation_verdict` has no default on purpose: two callers build facts (the
+    Remediator in-run, the approval route later), and when Phase 4 gives a run a real
+    verdict both must pass it -- a default here would let one of them keep re-evaluating
+    against a verdict the run never had (review note).
     """
     return {
         "diagnosis.category": diagnosis.category,
@@ -192,28 +210,65 @@ def canonical_tool_calls(plan: RemediationPlan, job: JobRef) -> list[ToolCall]:
     return []
 
 
+class NormalizedPlan:
+    """What `normalize_plan` hands back, beside the plan itself.
+
+    `derived` says the calls came from the drafts rather than the model's list; `dropped`
+    names every model-proposed tool that was not carried into the plan -- replaced by
+    derivation, or outside the action's set -- so the trace can show what the model asked
+    for even when nothing of it survived (review finding 5).
+    """
+
+    __slots__ = ("derived", "dropped", "plan")
+
+    def __init__(self, plan: RemediationPlan, *, derived: bool, dropped: list[str]) -> None:
+        self.plan = plan
+        self.derived = derived
+        self.dropped = dropped
+
+
 def normalize_plan(
-    plan: RemediationPlan, *, run_id: RunId, job: JobRef
-) -> tuple[RemediationPlan, bool]:
+    plan: RemediationPlan,
+    *,
+    run_id: RunId,
+    job: JobRef,
+    forbidden: frozenset[str] = frozenset(),
+) -> NormalizedPlan:
     """The plan as the harness will evaluate and store it.
 
-    Returns the normalised plan and whether its calls were *derived*. Whenever the action
-    and the drafts determine the calls -- always for `retry_job`, and for `file_ticket`
-    and the PR actions when their draft is present -- the canonical calls replace whatever
-    the model proposed: the model's calls are a redundant, error-prone transcription of
-    content it already gave in the draft (the first live run proposed `create_branch` with
-    empty args and no PR after it). The model's own calls are used only when nothing can
-    be derived, so a plan is never silently emptied. Every call gets a fresh harness-minted
-    `call_id`; every side-effecting call gets Appendix C's `idempotency_key`. Read calls
-    keep no key -- nothing to protect.
+    Whenever the action and the drafts determine the calls -- always for `retry_job`, and
+    for `file_ticket` and the PR actions when their draft is present -- the canonical calls
+    replace whatever the model proposed: the model's calls are a redundant, error-prone
+    transcription of content it already gave in the draft (the first live run proposed
+    `create_branch` with empty args and no PR after it). When nothing can be derived, the
+    model's own calls are kept **only where they belong to the stated action's tool set**
+    (`TOOLS_FOR_ACTION`); `no_action` keeps none.
+
+    One exception runs the other way: a proposed call naming a tool in `forbidden` is
+    **always** carried into the judged plan, derivation or not, so that the engine denies
+    it by name and the run escalates `policy_denied` -- a model asking to merge is the
+    single most important thing this stage can surface, and dropping it into a span
+    attribute would make it the quietest. It can never execute: a forbidden decision
+    denies the whole plan.
+
+    Every surviving call gets a fresh harness-minted `call_id`; every side-effecting call
+    gets Appendix C's `idempotency_key`. Read calls keep no key -- nothing to protect.
     """
+    proposed = [call.tool for call in plan.tool_calls]
     derived = False
-    calls = list(plan.tool_calls)
-    if plan.action != "no_action":
-        canonical = canonical_tool_calls(plan, job)
-        if canonical:
-            derived = True
-            calls = canonical
+    canonical = canonical_tool_calls(plan, job) if plan.action != "no_action" else []
+    if canonical:
+        derived = True
+        calls = canonical
+    else:
+        allowed = TOOLS_FOR_ACTION.get(plan.action, frozenset())
+        calls = [call for call in plan.tool_calls if call.tool in allowed]
+    kept = {call.tool for call in calls}
+    for call in plan.tool_calls:
+        if call.tool in forbidden and call.tool not in kept:
+            calls.append(call)
+            kept.add(call.tool)
+    dropped = [tool for tool in proposed if tool not in kept]
 
     normalized: list[ToolCall] = []
     for call in calls:
@@ -224,7 +279,9 @@ def normalize_plan(
             )
         normalized.append(fresh)
 
-    return plan.model_copy(update={"tool_calls": normalized}), derived
+    return NormalizedPlan(
+        plan.model_copy(update={"tool_calls": normalized}), derived=derived, dropped=dropped
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +393,9 @@ def result_for(
     """Assemble the stage output from what actually happened."""
     verdict = plan_verdict(plan, decisions)
     if verdict == "no_action":
-        status: Literal["executed", "awaiting_approval", "denied", "no_action"] = "no_action"
+        status: Literal[
+            "executed", "awaiting_approval", "denied", "rejected", "no_action"
+        ] = "no_action"
     elif verdict == "deny":
         status = "denied"
     elif approval is not None:

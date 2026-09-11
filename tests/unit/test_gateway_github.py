@@ -407,3 +407,57 @@ async def test_missing_argument_is_invalid_args(gateway: GitHubToolGateway, resp
     result = await gateway.invoke(call("get_commit"), allow("get_commit"))
     assert not result.ok and result.error is not None and result.error.kind == "invalid_args"
     assert len(respx_mock.calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Review findings 1 and 4 (Phase 2 audit)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_a_transport_error_on_the_log_blob_host_is_returned_not_raised(
+    gateway: GitHubToolGateway, respx_mock: respx.MockRouter
+) -> None:
+    """Finding 1: `invoke` never raises for a remote failure -- the blob host included."""
+    respx_mock.get(f"{API}/actions/jobs/77/logs").mock(
+        return_value=httpx.Response(302, headers={"location": "https://blob.example/logs/77"})
+    )
+    respx_mock.get("https://blob.example/logs/77").mock(side_effect=httpx.ConnectError("reset"))
+    result = await gateway.invoke(call("get_job_logs", job_id=77), allow("get_job_logs"))
+    assert not result.ok and result.error is not None
+    assert result.error.kind == "unknown"
+    assert result.error.retryable is True
+    assert "ConnectError" in result.error.message
+
+
+@respx.mock
+async def test_a_malformed_rate_limit_reset_is_still_a_rate_limit(
+    gateway: GitHubToolGateway, respx_mock: respx.MockRouter, sleeps: Sleeps
+) -> None:
+    """Finding 4: a non-numeric `x-ratelimit-reset` was classified `invalid_args`."""
+    route = respx_mock.get(f"{API}/commits/abc").mock(
+        side_effect=[
+            httpx.Response(403, headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "soon"}, json={}),
+            httpx.Response(200, json={"sha": "abc"}),
+        ]
+    )
+    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
+    assert result.ok
+    assert route.call_count == 2
+    assert sleeps.durations == [60.0]
+
+
+@respx.mock
+async def test_rerun_already_running_phrasings_all_count_as_success(
+    live_gateway: GitHubToolGateway, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get(f"{API}/actions/runs/501").mock(
+        return_value=httpx.Response(200, json={"id": 501, "run_attempt": 1})
+    )
+    respx_mock.post(f"{API}/actions/runs/501/rerun-failed-jobs").mock(
+        return_value=httpx.Response(403, json={"message": "This workflow is already running"})
+    )
+    result = await live_gateway.invoke(
+        call("rerun_failed_jobs", run_id=501, attempt=1), allow("rerun_failed_jobs")
+    )
+    assert result.ok and result.cached is True

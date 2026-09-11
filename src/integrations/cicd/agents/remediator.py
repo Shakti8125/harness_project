@@ -243,7 +243,13 @@ class Remediator(LLMAgent[RemediationPlan]):
         diagnosis = self._diagnosis(state)
         bundle = self._bundle(state)
 
-        plan, derived = normalize_plan(plan_result.output, run_id=state.run_id, job=bundle.job)
+        normalized = normalize_plan(
+            plan_result.output,
+            run_id=state.run_id,
+            job=bundle.job,
+            forbidden=self.engine.forbidden,
+        )
+        plan = normalized.plan
         facts = build_facts(
             diagnosis,
             bundle,
@@ -259,7 +265,12 @@ class Remediator(LLMAgent[RemediationPlan]):
             agent=self.key,
             action=plan.action,
             tool_calls=[call.tool for call in plan.tool_calls],
-            tool_calls_derived=derived,
+            tool_calls_derived=normalized.derived,
+            # What the model actually asked for, before normalisation -- so a hallucinated
+            # `merge_pull_request` under a derivable action is still on the record even
+            # though it was never judged (review finding 5).
+            proposed_tool_calls=[call.tool for call in plan_result.output.tool_calls],
+            dropped_tool_calls=list(normalized.dropped),
         ) as plan_span:
             decisions = decide_plan(self.engine, plan, facts)
             for decision in decisions:

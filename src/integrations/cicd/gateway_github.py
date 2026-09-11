@@ -73,6 +73,10 @@ LOG_DOWNLOAD_CAP_BYTES: Final[int] = 20 * 1024 * 1024
 MALFORMED_EVIDENCE_CHARS: Final[int] = 500
 
 API_VERSION: Final[str] = "2022-11-28"
+#: Phrasings of "this run is already re-running" a 403 on the re-run endpoint may carry.
+_ALREADY_RUNNING_PHRASES: Final[tuple[str, ...]] = (
+    "in progress", "already running", "currently running", "is running",
+)
 _ZIP_MAGIC: Final[bytes] = b"PK\x03\x04"
 
 Sleep = Callable[[float], Awaitable[None]]
@@ -237,7 +241,15 @@ class GitHubToolGateway:
                 retry_after = response.headers.get("retry-after")
                 if remaining == "0":
                     reset = response.headers.get("x-ratelimit-reset")
-                    wait = max(0.0, float(reset) - time.time()) if reset else RATE_LIMIT_MAX_SLEEP_S
+                    try:
+                        wait = (
+                            max(0.0, float(reset) - time.time())
+                            if reset else RATE_LIMIT_MAX_SLEEP_S
+                        )
+                    except ValueError:
+                        # A malformed reset header is still a rate limit, not a bad
+                        # argument (review finding 4); wait the cap, as for a missing one.
+                        wait = RATE_LIMIT_MAX_SLEEP_S
                     if wait <= RATE_LIMIT_MAX_SLEEP_S and not primary_slept:
                         primary_slept = True
                         await self._sleep(wait)
@@ -351,6 +363,15 @@ class GitHubToolGateway:
                     raise _Failure(
                         "timeout", "log download timed out", retryable=True
                     ) from exc
+                except httpx.HTTPError as exc:
+                    # The same transport-error classification the API-host path
+                    # applies: `invoke` never raises for a remote failure, and the
+                    # blob host is a remote (review finding 1).
+                    raise _Failure(
+                        "unknown",
+                        f"log download failed at the transport: {type(exc).__name__}",
+                        retryable=True,
+                    ) from exc
         else:
             buffer = first.content
             total = len(buffer)
@@ -401,7 +422,14 @@ class GitHubToolGateway:
             )
         except _Failure as failure:
             # Appendix C: "cannot re-run; the run is already in progress" is success.
-            if failure.http_status == 403 and "in progress" in failure.message.lower():
+            # Matched on a few phrasings because the exact text is PLAN's paraphrase
+            # and the real message is unverified offline (review note); a phrasing
+            # this misses degrades to `auth` -> `tool_failure`, which is loud, not
+            # silent.
+            lowered = failure.message.lower()
+            if failure.http_status == 403 and any(
+                phrase in lowered for phrase in _ALREADY_RUNNING_PHRASES
+            ):
                 return {
                     "run_id": run_id,
                     "rerun_requested": False,

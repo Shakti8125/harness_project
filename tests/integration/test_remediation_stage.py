@@ -331,6 +331,86 @@ async def test_a_forbidden_tool_in_the_plan_is_denied_before_the_gateway_sees_it
     assert gateway.calls == [], "the first enforcement point stops it; the gateway never sees it"
 
 
+async def test_a_forbidden_call_beside_a_derivable_action_still_denies_the_whole_plan(
+    repo_root: Path, tmp_db_path: Path
+) -> None:
+    """Derivation replaces the model's calls -- except a forbidden one, which is carried
+    into the judged plan so it is denied by name and the run escalates, rather than
+    vanishing into a span attribute."""
+    gateway = SpyGateway(
+        ReplayToolGateway(
+            scenario_dir=scenario_dir(repo_root, "flaky_test"), repo=REPO,
+            forbidden=load_forbidden(),
+        )
+    )
+    plan = remediation_plan("retry_job", run_id=501234890)
+    plan["tool_calls"].append(
+        {"call_id": "tc_model000009", "tool": "merge_pull_request", "args": {"number": 1},
+         "idempotency_key": None}
+    )
+    rec = recorder(tmp_db_path)
+    await rec.initialize()
+    agent = Remediator(
+        llm=PlanStubLlm(plan), model="stub", recorder=rec, gateway=gateway,
+        engine=PolicyEngine(load_policy_spec()),
+        context_manager=ContextManager(default_budget=ContextBudget(total_chars=120_000)),
+    )
+    state = state_with(diagnosis_for("flaky_test"), retries=0, unavailable=False)
+    with rec.run_scope(state.run_id):
+        result = await agent.run(state)
+
+    assert result.output is not None
+    assert result.output.status == "denied"
+    tools = [(d.tool, d.rule_id, d.effect) for d in result.output.decisions]
+    assert ("rerun_failed_jobs", "retry-suspected-flaky", "allow") in tools
+    assert ("merge_pull_request", RULE_FORBIDDEN, "deny") in tools
+    assert gateway.calls == [], "one deny and nothing runs, not even the allowed retry"
+    trace = await rec.read_trace(state.run_id)
+    assert trace is not None
+    plan_span = next(s for s in trace.spans if s.name == "remediation.plan")
+    proposed = plan_span.attributes["proposed_tool_calls"]
+    assert proposed == ["rerun_failed_jobs", "merge_pull_request"]
+    assert plan_span.attributes["tool_calls_derived"] is True
+
+
+async def test_calls_outside_the_action_are_dropped_and_recorded(
+    repo_root: Path, tmp_db_path: Path
+) -> None:
+    """Review finding 2: `no_action` with a `rerun_failed_jobs` attached must not be judged
+    (and, with a readable history, executed). The proposal survives only in the trace."""
+    gateway = SpyGateway(
+        ReplayToolGateway(
+            scenario_dir=scenario_dir(repo_root, "flaky_test"), repo=REPO,
+            forbidden=load_forbidden(),
+        )
+    )
+    plan = remediation_plan("no_action")
+    plan["tool_calls"] = [
+        {"call_id": "tc_model000001", "tool": "rerun_failed_jobs",
+         "args": {"run_id": 501234890, "attempt": 1}, "idempotency_key": None}
+    ]
+    rec = recorder(tmp_db_path)
+    await rec.initialize()
+    agent = Remediator(
+        llm=PlanStubLlm(plan), model="stub", recorder=rec, gateway=gateway,
+        engine=PolicyEngine(load_policy_spec()),
+        context_manager=ContextManager(default_budget=ContextBudget(total_chars=120_000)),
+    )
+    state = state_with(diagnosis_for("flaky_test"), retries=0, unavailable=False)
+    with rec.run_scope(state.run_id):
+        result = await agent.run(state)
+
+    assert result.output is not None
+    assert result.output.status == "no_action"
+    assert result.output.plan.tool_calls == []
+    assert result.output.decisions == []
+    assert gateway.calls == []
+    trace = await rec.read_trace(state.run_id)
+    assert trace is not None
+    plan_span = next(s for s in trace.spans if s.name == "remediation.plan")
+    assert plan_span.attributes["dropped_tool_calls"] == ["rerun_failed_jobs"]
+
+
 async def test_calls_are_derived_from_the_drafts_when_the_model_proposes_none(
     repo_root: Path, tmp_db_path: Path
 ) -> None:

@@ -69,7 +69,7 @@ Two layers, enforced mechanically rather than by discipline:
 
 | Layer | Package | May import | May know about |
 |---|---|---|---|
-| Harness (domain-agnostic) | `src/harness/**` | stdlib, pydantic, httpx, aiosqlite | nothing CI-specific |
+| Harness (domain-agnostic) | `src/harness/**` | stdlib, pydantic, httpx, aiosqlite, google-genai (`llm.py`), pyyaml (`guardrails.py`'s policy loader) | nothing CI-specific |
 | Integration (domain) | `src/integrations/cicd/**` | harness + GitHub SDK | everything CI-specific |
 | API/wiring | `src/api/**`, `src/settings.py` | both | composition root only |
 
@@ -130,18 +130,22 @@ harness_project/
 │  │  │  ├─ fingerprint.py      ← error normalization + signature_id
 │  │  │  ├─ agents/{investigator,diagnostician,remediator}.py
 │  │  │  ├─ prompts/*.md        ← versioned, hash logged into the trace
+│  │  │  ├─ catalog.py          ← the A.4 tool catalog, shared by both gateways (Phase 2)
 │  │  │  ├─ gateway_github.py   ← GitHubToolGateway(ToolGateway)
 │  │  │  ├─ gateway_replay.py   ← ReplayToolGateway(ToolGateway) + fault injection
+│  │  │  ├─ remediation.py      ← facts, plan normalisation, decisions, execution (Phase 2)
 │  │  │  ├─ claim_checkers.py   ← quote_exists, dependency_bump, file_in_diff, …
 │  │  │  ├─ policy.yaml         ← Guardrails policy for this integration
 │  │  │  └─ wiring.py           ← builds the Orchestrator for this domain
 │  │  └─ incident/              ← Phase 6 skeleton only
 │  ├─ api/
-│  │  ├─ main.py  routes_runs.py  routes_webhook.py  routes_approvals.py
+│  │  ├─ main.py                ← every route so far (runs, replay, approvals, escalations);
+│  │  │                            the routes_*.py split is deferred until a second file is needed
+│  │  ├─ run_registry.py  approval_registry.py   ← in-process until the memory phase
 │  │  ├─ deps.py                ← composition root
 │  │  └─ templates/trace.html   ← Jinja2, Phase 5
 ├─ fixtures/scenarios/{flaky_test,real_regression,dependency_break,infra_timeout}/
-├─ scripts/{replay.py,eval.py,record_fixture.py,scrub_fixtures.py,seed_demo_repo.sh}
+├─ scripts/{replay.py,eval.py,record_fixture.py,scrub_fixtures.py,seed_demo_repo.sh,gen_fixture_log.py}
 ├─ docs/ADAPTER_GUIDE.md        ← Phase 6
 └─ tests/
    ├─ test_layering.py          ← the seam test
@@ -649,7 +653,12 @@ right, not that the PR gets written). Recovery is **not** deferred here; it ship
 >
 > Also: the `max_side_effecting_actions_per_run` invariant counts *actions* (executed plans), not
 > tool calls -- a fix PR is one action made of three write calls -- and fails closed when the count
-> fact is absent. Live mode reached the API behind two opt-ins (`HARNESS_GATEWAY=github` and the
+> fact is absent. A model-proposed call outside its stated action's tool set is dropped before it
+> is judged and recorded on the `remediation.plan` span (audit finding 2); a proposed call naming a
+> *forbidden* tool is the one exception, always carried into the judged plan so it is denied by
+> name and the run escalates. A plan whose execution fails escalates `tool_failure` (B.2), in-run
+> and after approval alike; a person's rejection is `RemediationResult.status="rejected"`, never an
+> escalation. Live mode reached the API behind two opt-ins (`HARNESS_GATEWAY=github` and the
 > repo allowlist), with `scripts/replay.py --live` driving the same path; step 5 is blocked on a
 > real token and a demo repository and is recorded that way in `docs/progress/phase-2/verify.md`.
 
@@ -1212,7 +1221,9 @@ class GateDecision(BaseModel):
 class Suspension(BaseModel):               # Phase 2 amendment -- see the note below
     status: Literal["awaiting_approval", "escalated"]
     reason: str
-    escalate_as: str | None = None         # an EscalationReason; required when status == "escalated"
+    escalate_as: str | None = None         # an EscalationReason when status == "escalated";
+                                           # missing or unknown is coerced to "unknown_category"
+                                           # with a warning, never dropped
     payload: dict[str, JsonValue] = {}
 
 class RunState(BaseModel):                 # mutable, extra="allow" — the only non-frozen model
@@ -1348,7 +1359,7 @@ class ToolGateway(Protocol):
 | `get_commit` | read | ✓ | `{sha: str}` |
 | `get_file_contents` | read | ✓ | `{path: str, ref: str}` |
 | `search_workflow_runs` | read | ✓ | `{workflow_id: int, branch, status, per_page}` |
-| `rerun_failed_jobs` | write | ✓ | `{run_id: int}` |
+| `rerun_failed_jobs` | write | ✓ | `{run_id: int, attempt?: int}` — `attempt` lets the gateway apply Appendix C's "already advanced" no-op |
 | `create_branch` | write | ✓ | `{name: str, from_sha: str}` |
 | `create_or_update_file` | write | ✓ | `{branch, path, content_b64, message, sha?}` |
 | `open_pull_request` | write | ✓ | `{head, base, title, body, draft: true, labels}` |
@@ -1690,6 +1701,7 @@ class FilePatch(BaseModel):
 
 class PrDraft(BaseModel):
     branch: str                               # deterministic: "agent/fix/{signature_id[:8]}"
+                                              # (Phase 2, before signatures exist: head_sha[:8])
     base: str; title: str; body: str
     files: list[FilePatch] = Field(max_length=5)
     labels: list[str] = ["agent-generated"]
@@ -1715,7 +1727,9 @@ class RemediationResult(BaseModel):           # the remediate stage output
     decisions: list[PolicyDecision]
     executed: list[ToolResult] = []
     pending_approval: ApprovalRequest | None = None
-    status: Literal["executed","awaiting_approval","denied","no_action"]
+    status: Literal["executed","awaiting_approval","denied","rejected","no_action"]
+                                              # `rejected` (Phase 2): a person refused the plan;
+                                              # `denied`: the policy did
 ```
 
 ## A.12 HTTP API

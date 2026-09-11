@@ -14,6 +14,12 @@ and both spend real model calls (two or three per run on the free tier's 20/day)
 Prints the diagnosis, the remediation decision, and a summary of every gateway span in the
 trace, which is what step 5 asks to be checked: in a dry run every gateway span with a
 write tool reports `dry_run=True`, and nothing destructive appears at all.
+
+`--json` prints the *internal* `RunOutcome` -- raw log excerpts, patches and drafted file
+content included -- not the digested, scrubbed body the HTTP boundary serves. It is a local
+operator's view of the run, on the operator's own terminal; do not paste it anywhere public.
+A pending `approval_id` printed here is decidable only by the API process that would have
+raised it, which this script is not.
 """
 
 from __future__ import annotations

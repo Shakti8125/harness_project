@@ -41,8 +41,10 @@ from src.harness.gateway import ToolGateway
 from src.harness.observability import REDACTION_PLACEHOLDER
 from src.integrations.cicd.agents.investigator import parse_subject
 from src.integrations.cicd.remediation import (
+    EVALUATION_SKIPPED,
     build_facts,
     decide_plan,
+    denial_summary,
     execute_plan,
     failed_execution,
     failure_summary,
@@ -901,14 +903,63 @@ class ApprovalDecision(BaseModel):
     note: str | None = Field(None, max_length=1000)
 
 
+def _escalation_after_approval(
+    remediation: RemediationResult,
+) -> EscalationRecord | None:
+    """The same two rules `wiring.remediation_suspend` applies in-run, for a plan decided
+    later through the approval route: an execution that failed escalates `tool_failure`
+    (Appendix B.2); a re-evaluation that *denied* an approved plan escalates
+    `policy_denied` (review finding 3 -- unreachable while the facts cannot change between
+    suspension and approval, live once memory can move them). A person's rejection is
+    neither: it completes the run.
+    """
+    approval_id = (
+        remediation.pending_approval.approval_id
+        if remediation.pending_approval is not None else None
+    )
+    failed = failed_execution(remediation)
+    if failed is not None:
+        return EscalationRecord(
+            escalation_id="esc_" + secrets.token_hex(8),
+            reason="tool_failure",
+            message=failure_summary(failed),
+            payload={
+                "stage": "approval",
+                "approval_id": approval_id,
+                "action": remediation.plan.action,
+                "tool": failed.tool,
+                "error_kind": failed.error.kind if failed.error is not None else None,
+                "executed": len(remediation.executed),
+            },
+            channels=["log"],
+            delivered_at=datetime.now(UTC),
+        )
+    if remediation.status == "denied":
+        return EscalationRecord(
+            escalation_id="esc_" + secrets.token_hex(8),
+            reason="policy_denied",
+            message=denial_summary(remediation.decisions),
+            payload={
+                "stage": "approval",
+                "approval_id": approval_id,
+                "action": remediation.plan.action,
+                "decisions": [
+                    {"tool": d.tool, "rule_id": d.rule_id, "effect": d.effect}
+                    for d in remediation.decisions
+                ],
+            },
+            channels=["log"],
+            delivered_at=datetime.now(UTC),
+        )
+    return None
+
+
 async def _settle_run(run_id: RunId, remediation: RemediationResult) -> None:
     """Write the decided remediation back into the stored `RunOutcome`.
 
     Without this, `GET /v1/runs/{id}` would say `awaiting_approval` forever after the
     approval was decided -- the response to the `POST` would be the only record. The run's
-    status follows the same rule the orchestrator's suspend hook applies in-run: an
-    execution that failed escalates as `tool_failure` (Appendix B.2), anything else
-    completes.
+    status follows the rules `_escalation_after_approval` states.
     """
     outcome = await registry.get(run_id)
     if outcome is None:
@@ -916,26 +967,13 @@ async def _settle_run(run_id: RunId, remediation: RemediationResult) -> None:
     final = dict(outcome.final)
     final[REMEDIATION_KEY] = remediation.model_dump(mode="json")
     update: dict[str, Any] = {"status": "completed", "final": final}
-    failed = failed_execution(remediation)
-    if failed is not None:
+    escalation = _escalation_after_approval(remediation)
+    if escalation is not None:
         update["status"] = "escalated"
-        update["escalation"] = EscalationRecord(
-            escalation_id="esc_" + secrets.token_hex(8),
-            reason="tool_failure",
-            message=failure_summary(failed),
-            payload={
-                "stage": "approval",
-                "approval_id": remediation.pending_approval.approval_id
-                if remediation.pending_approval is not None else None,
-                "tool": failed.tool,
-                "error_kind": failed.error.kind if failed.error is not None else None,
-            },
-            channels=["log"],
-            delivered_at=datetime.now(UTC),
-        )
+        update["escalation"] = escalation
         logger.warning(
-            "run %s escalated (tool_failure) after approval: %s",
-            run_id, update["escalation"].message,
+            "run %s escalated (%s) after approval: %s",
+            run_id, escalation.reason, escalation.message,
         )
     await registry.save(outcome.model_copy(update=update))
 
@@ -959,7 +997,16 @@ async def _execute_approved(
         raise LookupError(request.run_id)
     diagnosis = Diagnosis.model_validate(outcome.final["diagnosis"])
     bundle = FailureBundle.model_validate(outcome.final["bundle"])
-    facts = build_facts(diagnosis, bundle, side_effecting_actions_so_far=0)
+    facts = build_facts(
+        diagnosis,
+        bundle,
+        # Phase 4: the run's own evaluation verdict, the same value the Remediator was
+        # given in-run. Spelled here rather than defaulted so that change has to happen
+        # in both places at once.
+        evaluation_verdict=EVALUATION_SKIPPED,
+        # Nothing executed before the suspension, by construction (`plan_verdict`).
+        side_effecting_actions_so_far=0,
+    )
     decisions = decide_plan(context.engine, request.plan, facts)
     verdict = plan_verdict(request.plan, decisions)
     executed = []
@@ -1012,6 +1059,18 @@ async def decide_approval(
             extensions={"state": "expired"},
         )
 
+    # Checked *before* the single-use transition: an approval whose run this process no
+    # longer knows (both registries are in-process) cannot be executed or settled, and
+    # burning the approval on the way to a 500 would leave it 409 forever with nothing
+    # done (review note).
+    run_outcome = await registry.get(entry.request.run_id)
+    if run_outcome is None or not {"diagnosis", "bundle"} <= set(run_outcome.final):
+        return problem(
+            request, status_code=404, title="Run not found",
+            detail="The run this approval belongs to is not known to this process.",
+            run_id=entry.request.run_id,
+        )
+
     target: Literal["approved", "rejected"] = (
         "approved" if body.decision == "approve" else "rejected"
     )
@@ -1032,7 +1091,7 @@ async def decide_approval(
             decisions=entry.request.decisions,
             executed=[],
             pending_approval=entry.request,
-            status="denied",
+            status="rejected",
         )
         await _settle_run(entry.request.run_id, remediation)
         decisions = [d.model_dump(mode="json") for d in entry.request.decisions]

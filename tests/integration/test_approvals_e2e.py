@@ -124,7 +124,8 @@ def test_reject_then_repost_is_409(client: TestClient) -> None:
     # The run reflects the decision.
     run = client.get(f"/v1/runs/{body['run_id']}").json()
     assert run["status"] == "completed"
-    assert run["final"]["remediation"]["status"] == "denied"
+    assert run["escalation"] is None, "a person's rejection is not an escalation"
+    assert run["final"]["remediation"]["status"] == "rejected"
     assert run["final"]["remediation"]["pending_approval"]["state"] == "rejected"
 
 
@@ -135,6 +136,7 @@ def test_approve_re_evaluates_and_executes_through_the_gateway(client: TestClien
     body = client.post("/v1/replay/real_regression").json()
     apr = body["final"]["remediation"]["pending_approval"]["approval_id"]
 
+    stored = body["final"]["remediation"]["decisions"]
     response = client.post(
         f"/v1/approvals/{apr}", json={"decision": "approve", "actor": "shakti", "note": "lgtm"}
     )
@@ -142,6 +144,11 @@ def test_approve_re_evaluates_and_executes_through_the_gateway(client: TestClien
     payload = response.json()
     assert payload["state"] == "approved"
     assert [d["effect"] for d in payload["decisions"]] == ["require_approval"] * 3
+    # Re-evaluated, not echoed: every decision in the response is newer than the one the
+    # run stored when it suspended (review finding 6).
+    for fresh, old in zip(payload["decisions"], stored, strict=True):
+        assert fresh["evaluated_at"] > old["evaluated_at"]
+        assert fresh["rule_id"] == old["rule_id"]
     assert len(payload["executed"]) == 1
     executed = payload["executed"][0]
     assert executed["tool"] == "create_branch"
