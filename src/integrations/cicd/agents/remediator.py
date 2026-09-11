@@ -86,6 +86,13 @@ _DIFF_PRIORITY: Final[int] = 7
 #: PLAN.md "Concrete numbers in one place": approval expiry, 24 h.
 DEFAULT_APPROVAL_TTL_H: Final[int] = 24
 
+#: Twice the harness default. The provider counts thinking tokens against
+#: `max_output_tokens`, and the first live run spent ~3 900 of the default 4 096 thinking,
+#: hit `MAX_TOKENS` with 152 tokens of output, and -- after Recovery's "answer more
+#: briefly" nudge -- produced a one-call plan with no draft. A fix PR carries a whole
+#: file in `pr_draft.files[].new_content`; it needs the room.
+REMEDIATOR_MAX_OUTPUT_TOKENS: Final[int] = 8192
+
 
 def render_policy_summary(spec: PolicySpec) -> str:
     """The policy, as a short list the model can read before it proposes.
@@ -135,6 +142,7 @@ class Remediator(LLMAgent[RemediationPlan]):
             model=model,
             recorder=recorder,
             retry_policy=retry_policy,
+            max_output_tokens=REMEDIATOR_MAX_OUTPUT_TOKENS,
             timeout_s=DEFAULT_REQUEST_TIMEOUT_S if timeout_s is None else timeout_s,
         )
         self.gateway = gateway

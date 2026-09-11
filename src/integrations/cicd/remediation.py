@@ -119,11 +119,12 @@ def idempotency_key_for(run_id: RunId, call: ToolCall) -> str:
 def canonical_tool_calls(plan: RemediationPlan, job: JobRef) -> list[ToolCall]:
     """The tool calls an action implies, derived from the plan's own drafts.
 
-    Used only when the model named an action and proposed no calls for it. The mapping is
-    fixed -- there is exactly one way to retry a run, and a PR is always branch, files, PR
-    -- so this is normalisation, not invention: the *choice* of action and every word of
-    content are the model's. An action whose content the plan does not carry (a PR with no
-    `pr_draft`) derives nothing, and the plan then reads as `no_action`.
+    The mapping is fixed -- there is exactly one way to retry a run, a ticket is one
+    `create_issue`, and a PR is always branch, files, PR -- so this is normalisation, not
+    invention: the *choice* of action and every word of content are the model's, and the
+    identifiers (run id, attempt, head sha) come from the bundle rather than from the
+    model's transcription of them. An action whose content the plan does not carry (a PR
+    with no `pr_draft`) derives nothing; see `normalize_plan` for what happens then.
     """
     if plan.action == "retry_job":
         return [
@@ -196,15 +197,23 @@ def normalize_plan(
 ) -> tuple[RemediationPlan, bool]:
     """The plan as the harness will evaluate and store it.
 
-    Returns the normalised plan and whether its calls were *derived* (the model proposed
-    none). Every call gets a fresh harness-minted `call_id`; every side-effecting call gets
-    Appendix C's `idempotency_key`. Read calls keep no key -- nothing to protect.
+    Returns the normalised plan and whether its calls were *derived*. Whenever the action
+    and the drafts determine the calls -- always for `retry_job`, and for `file_ticket`
+    and the PR actions when their draft is present -- the canonical calls replace whatever
+    the model proposed: the model's calls are a redundant, error-prone transcription of
+    content it already gave in the draft (the first live run proposed `create_branch` with
+    empty args and no PR after it). The model's own calls are used only when nothing can
+    be derived, so a plan is never silently emptied. Every call gets a fresh harness-minted
+    `call_id`; every side-effecting call gets Appendix C's `idempotency_key`. Read calls
+    keep no key -- nothing to protect.
     """
     derived = False
     calls = list(plan.tool_calls)
-    if not calls and plan.action != "no_action":
-        calls = canonical_tool_calls(plan, job)
-        derived = bool(calls)
+    if plan.action != "no_action":
+        canonical = canonical_tool_calls(plan, job)
+        if canonical:
+            derived = True
+            calls = canonical
 
     normalized: list[ToolCall] = []
     for call in calls:
