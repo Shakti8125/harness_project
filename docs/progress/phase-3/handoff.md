@@ -13,10 +13,23 @@ is true about this tree but written down nowhere else.
 ## 1. Deploy state
 
 The Space at <https://shakti-agent-harness.hf.space> serves the `phase-2-green` tree, pushed
-as a fast-forward of the Phase 2 commits. Verified after the push: `healthz` ok; `readyz`
-reports `policy_loaded: true`; the error-shape checks (which cost no quota) answer RFC 9457.
-The `flaky_test` replay was checked live locally (`docs/progress/phase-2/verify.md`) and
-the Space runs the same image.
+as a fast-forward of the Phase 2 commits (`85a168b..d7e4cb9`, plus this docs commit).
+Verified live after the push, not assumed:
+
+| Check | Result |
+|---|---|
+| `GET /healthz` | `{"status":"ok","db":"ok","version":"0.1.0"}` |
+| `GET /readyz` | `policy_loaded: true` (was `false` on every earlier build) |
+| `POST /v1/replay/flaky_test` | `escalated` / `policy_denied`; `flaky_test` at 0.85; plan `retry_job`; decision `<default>` / `deny`; 46 s, one attempt per stage |
+| `GET /v1/escalations` | the run above, `reason: policy_denied` |
+| `GET /v1/runs/{id}/trace` | 12 spans, including `policy.decide` and `remediation.plan` (component `guardrails`) |
+| Served body | 7 559 bytes, zero credential-shaped matches |
+| `POST /v1/approvals/apr_nope` | `404 application/problem+json`; a malformed body `422` |
+| `POST /v1/runs` with `mode: live` | `501 Live mode not available`, naming `HARNESS_GATEWAY` |
+
+One thing to know about `readyz` on a redeploy: the *old* container keeps answering while
+the Space rebuilds, so for about a minute after a push `readyz` reports the previous build.
+Poll for the field you changed, not for `200`.
 
 **The exposure story is unchanged in kind and slightly wider in surface.** Still no
 authentication on any endpoint. Two write endpoints are new: `POST /v1/approvals/{id}`
