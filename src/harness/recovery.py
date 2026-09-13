@@ -11,13 +11,16 @@ per-condition behaviour is Appendix B.1, row for row.
 
 **Two adaptations of B.1 to A.8's frozen signature, recorded rather than discovered.**
 ``call`` takes a prompt and nothing else, so the only knob this loop can turn between
-attempts is the prompt text:
+attempts through the signature itself is the prompt text:
 
 * ``finish_reason == "MAX_TOKENS"`` is specified as "retry with ``max_output_tokens x
-  1.5``". The output token budget belongs to the ``LlmRequest`` the caller closed over
-  and is not reachable from here, so the same condition is instead treated as a
-  validation failure and retried with an explicit instruction to answer more briefly.
-  Same budget, same number of attempts, same terminal ``invalid_output``.
+  1.5``". The output token budget belongs to the ``LlmRequest`` the caller closed over.
+  Since Phase 4 the caller may share that budget with the loop as an
+  :class:`OutputBudget` (an additive keyword, A.8 otherwise unchanged): the loop grows
+  it x1.5 before the repaired attempt and the closure reads the grown value. Without
+  one -- the Phase 1 shape -- the condition is treated as a validation failure and
+  retried with an instruction to answer more briefly. Same number of attempts, same
+  terminal ``invalid_output`` either way.
 * "400 request too large -> re-assemble context at ``budget x 0.5``" would require the
   ``ContextManager`` and the original sections, neither of which this function has.
   It halves the *prompt* instead, keeping the head and the tail, which is where a
@@ -91,6 +94,48 @@ RETRY_DELAY_BUDGET_S: Final[float] = 20.0
 
 #: Span attribute set when the prompt was halved after an oversized-request failure.
 ATTR_CONTEXT_DOWNSHIFT: Final[str] = "context_downshift"
+
+#: Span attribute carrying the output budget an attempt was made under, when the caller
+#: shared one; it is how the trace shows a `MAX_TOKENS` retry asked for more room.
+ATTR_MAX_OUTPUT_TOKENS: Final[str] = "max_output_tokens"
+
+#: Appendix B.1: `MAX_TOKENS` -> retry with `max_output_tokens x 1.5`.
+OUTPUT_BUDGET_GROWTH: Final[float] = 1.5
+#: A ceiling on the grown budget, so two growths of a generous starting budget cannot
+#: ask the provider for more output than any current model will produce.
+OUTPUT_BUDGET_CEILING: Final[int] = 65_536
+
+
+class OutputBudget:
+    """The output-token budget a `call` closure reads, shared with the retry loop.
+
+    Deliberately a small mutable object rather than a field on `RetryPolicy` (frozen)
+    or a second argument to `call` (A.8 fixes its shape): the caller builds one from its
+    own `max_output_tokens`, closes over it in `call`, and hands it to
+    :func:`retry_structured`, which grows it on a `MAX_TOKENS` finish. Neither side
+    needs to know the other's type.
+    """
+
+    __slots__ = ("ceiling", "growth", "max_output_tokens")
+
+    def __init__(
+        self,
+        max_output_tokens: int,
+        *,
+        growth: float = OUTPUT_BUDGET_GROWTH,
+        ceiling: int = OUTPUT_BUDGET_CEILING,
+    ) -> None:
+        self.max_output_tokens = max_output_tokens
+        self.growth = growth
+        self.ceiling = ceiling
+
+    def grow(self) -> int:
+        """Raise the budget by `growth`, capped at `ceiling`; return the new value."""
+        self.max_output_tokens = min(
+            self.ceiling,
+            max(self.max_output_tokens + 1, int(self.max_output_tokens * self.growth)),
+        )
+        return self.max_output_tokens
 
 #: Finish reasons that are terminal: no retry can change them.
 #:
@@ -238,12 +283,19 @@ async def retry_structured(
     schema: type[TOut],
     policy: RetryPolicy,
     recorder: TraceRecorder,
+    *,
+    output_budget: OutputBudget | None = None,
 ) -> tuple[TOut | None, list[AttemptRecord], AgentError | None]:
     """Call `call` until it yields text that validates as `schema`, or the policy is spent.
 
     Each attempt is a child span, per Appendix B.1. Returns the parsed model on success;
     on exhaustion returns ``(None, attempts, AgentError(...))`` whose ``kind`` names the
     condition that ended the loop. Never raises for a provider failure.
+
+    ``output_budget`` (Phase 4, additive) is the :class:`OutputBudget` the caller's
+    ``call`` reads its ``max_output_tokens`` from. When present, a ``MAX_TOKENS`` finish
+    grows it before the repaired attempt (B.1's "x1.5") and every attempt span records
+    the budget it ran under.
     """
     attempts: list[AttemptRecord] = []
     current_prompt = prompt
@@ -265,6 +317,8 @@ async def retry_structured(
         async with recorder.span(
             "llm.attempt", "llm", attempt=attempt_number, schema=schema.__name__
         ) as span:
+            if output_budget is not None:
+                span.set_attribute(ATTR_MAX_OUTPUT_TOKENS, output_budget.max_output_tokens)
             try:
                 response = await call(current_prompt)
             except LlmTransportError as exc:
@@ -372,10 +426,18 @@ async def retry_structured(
                 )
 
             if response.finish_reason == "MAX_TOKENS":
-                error_summary = (
-                    "your previous response was cut off before it was complete; answer "
-                    "the same question substantially more briefly"
-                )
+                if output_budget is not None:
+                    grown = output_budget.grow()
+                    error_summary = (
+                        "your previous response was cut off before it was complete; the "
+                        f"output budget has been raised to {grown} tokens -- return the "
+                        "complete JSON object, and be concise"
+                    )
+                else:
+                    error_summary = (
+                        "your previous response was cut off before it was complete; answer "
+                        "the same question substantially more briefly"
+                    )
             else:
                 try:
                     parsed = schema.model_validate_json(extract_json(response.text))

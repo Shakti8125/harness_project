@@ -10,6 +10,12 @@ Which signals fired is a domain reading of the bundle, which is why it happens h
 not in `harness/confidence.py`: only this layer knows that an empty diff contradicts a
 `real_regression` verdict, or that a failed log fetch is what "a required read tool
 returned an error" means for this integration.
+
+The two Evaluator rows of that table are not signalled here, and neither is the verdict
+remembered here (Phase 4): the evaluate stage that follows re-calibrates the diagnosis
+with its own row and writes memory once the confidence is final -- a verdict the
+Evaluator refutes must not be tallied at the figure this agent computed. See
+`agents/evaluator.py`.
 """
 
 from __future__ import annotations
@@ -29,12 +35,11 @@ from src.harness.context_manager import (
 )
 from src.harness.contracts import AgentResult, Evidence
 from src.harness.llm import LlmClient, to_gemini_schema
-from src.harness.memory import MemoryStore
 from src.harness.observability import TraceRecorder
 from src.harness.orchestrator import RunState
 from src.harness.recovery import RetryPolicy
 from src.integrations.cicd.fingerprint import ANCHOR_PATTERNS
-from src.integrations.cicd.history import DEGRADED_MEMORY, memory_agrees, observation_for
+from src.integrations.cicd.history import memory_agrees
 from src.integrations.cicd.rendering import (
     load_prompt_template,
     make_evidence,
@@ -47,7 +52,7 @@ from src.integrations.cicd.rendering import (
     render_prior_history,
     render_truncation,
 )
-from src.integrations.cicd.schemas import Diagnosis, FailureBundle
+from src.integrations.cicd.schemas import Citation, Diagnosis, FailureBundle
 
 logger = logging.getLogger("harness.integrations.cicd.diagnostician")
 
@@ -64,6 +69,12 @@ EMPTY_DIFF_CONTRADICTION_DELTA: Final[float] = -0.10
 
 _LOG_PRIORITY: Final[int] = 10
 _DIFF_PRIORITY: Final[int] = 7
+
+#: What `HARNESS_FAULT_INJECT=diagnostician_fabricate_citation` makes this agent cite:
+#: a `quote_exists` claim whose quote appears in no fixture log (PLAN.md Phase 4 Verify,
+#: step 1 names the quote). The Evaluator must refute it and the run must escalate
+#: `evidence_refuted` without the Remediator running.
+FABRICATED_QUOTE: Final[str] = "AssertionError: expected 42"
 
 #: Appendix A.11 marks these two `Diagnosis` fields "added by the harness after the
 #: model returns, not requested from the model" -- `Diagnostician.run` below writes
@@ -119,8 +130,7 @@ class Diagnostician(LLMAgent[Diagnosis]):
         retry_policy: RetryPolicy | None = None,
         anchor_patterns: tuple[str, ...] = ANCHOR_PATTERNS,
         timeout_s: float | None = None,
-        memory: MemoryStore | None = None,
-        verdict_threshold: float | None = None,
+        fabricate_citation: bool = False,
     ) -> None:
         super().__init__(
             key="diagnostician",
@@ -136,15 +146,12 @@ class Diagnostician(LLMAgent[Diagnosis]):
         self.confidence_model = confidence_model
         self.budget = budget if budget is not None else context_manager.default_budget
         self.anchor_patterns = anchor_patterns
-        # Phase 3: where the verdict is born is where it is remembered. `None` (a
-        # hand-built orchestrator) records nothing and says nothing.
-        self.memory = memory
-        # Phase 3 fix round (audit finding 4): the confidence the remediation gate will
-        # demand of this verdict. A verdict below it is remembered as a sighting, not as
-        # a verdict -- the harness would not act on it, so the prior must not be built
-        # from it. `None` counts every verdict, which is only right for a caller with no
-        # gate at all.
-        self.verdict_threshold = verdict_threshold
+        # Phase 4 fault injection (`diagnostician_fabricate_citation`, dev-only, refused
+        # elsewhere by the composition root): after the model answers, its citations are
+        # replaced by one that quotes text the log does not contain, so the evaluate
+        # stage can be shown refuting it end to end. Never set outside a fault-injected
+        # run; the wiring passes it, nothing else does.
+        self.fabricate_citation = fabricate_citation
 
     def _bundle(self, state: RunState) -> FailureBundle:
         bundle = state.artifacts.get(BUNDLE_KEY)
@@ -264,56 +271,36 @@ class Diagnostician(LLMAgent[Diagnosis]):
         result = await super().run(state)
         if result.output is None:
             return result
-        final_confidence, adjustments = self._calibrate(result.output, state)
-        diagnosis = result.output.model_copy(
+        output = result.output
+        if self.fabricate_citation:
+            output = self._fabricate(output, state)
+        final_confidence, adjustments = self._calibrate(output, state)
+        diagnosis = output.model_copy(
             update={
                 "final_confidence": final_confidence,
                 "confidence_adjustments": adjustments,
             }
         )
-        await self._remember(diagnosis, state)
         return result.model_copy(
             update={"output": diagnosis, "confidence": final_confidence}
         )
 
-    def _counts_as_verdict(self, diagnosis: Diagnosis) -> bool:
-        """Whether the signature's `verdict_counts` should count this verdict.
-
-        The observation row always carries the verdict and its calibrated confidence;
-        this decides only the signature's tally, which `dominant_verdict` and the
-        `memory_agreement` bonus read. Three sightings the gate refused must not add up
-        to a prior that lifts a fourth over the same gate (audit finding 4).
-        """
-        return (
-            self.verdict_threshold is None
-            or diagnosis.final_confidence >= self.verdict_threshold
+    def _fabricate(self, output: Diagnosis, state: RunState) -> Diagnosis:
+        """The fault: replace the model's citations with one the log cannot support."""
+        job_id = self._bundle(state).job.job_id
+        logger.warning(
+            "fault diagnostician_fabricate_citation: replacing %d citation(s) with a "
+            "fabricated quote", len(output.citations),
         )
-
-    async def _remember(self, diagnosis: Diagnosis, state: RunState) -> None:
-        """Count this sighting and record its verdict (dispatch decision 9).
-
-        Every diagnosed run is remembered, gated or not: the sighting always counts, the
-        observation always carries the calibrated confidence, and the verdict joins the
-        signature's tally only when it clears `verdict_threshold`. Written after
-        calibration, so the stored confidence is the one the gate will read. Any failure
-        degrades the run's `memory` component and leaves the diagnosis untouched: memory
-        is a soft dependency on the write side exactly as on the read side.
-        """
-        if self.memory is None:
-            return
-        bundle = self._bundle(state)
-        key = bundle.prior_history.key
-        if key is None:
-            return
-        verdict = diagnosis.category if self._counts_as_verdict(diagnosis) else None
-        try:
-            await self.memory.upsert_signature(key, verdict, state.run_id)
-            await self.memory.record_observation(
-                observation_for(
-                    key=key, run_id=state.run_id, diagnosis=diagnosis, job=bundle.job
-                )
-            )
-        except Exception:  # noqa: BLE001 - a dead cache must never take down triage
-            logger.warning("diagnostician: could not record the verdict in memory", exc_info=True)
-            if DEGRADED_MEMORY not in state.degraded:
-                state.degraded.append(DEGRADED_MEMORY)
+        return output.model_copy(
+            update={
+                "citations": [
+                    Citation(
+                        claim_kind="quote_exists",
+                        locator=f"log:job/{job_id}",
+                        quote=FABRICATED_QUOTE,
+                        note="fault-injected: this line is not in the log",
+                    )
+                ]
+            }
+        )

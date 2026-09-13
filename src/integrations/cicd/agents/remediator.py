@@ -53,9 +53,9 @@ from src.integrations.cicd.history import (
     action_observation,
 )
 from src.integrations.cicd.remediation import (
-    EVALUATION_SKIPPED,
     build_facts,
     decide_plan,
+    evaluation_verdict_of,
     execute_plan,
     new_approval,
     normalize_plan,
@@ -82,6 +82,8 @@ logger = logging.getLogger("harness.integrations.cicd.remediator")
 
 #: The artifact key the Diagnostician's output is filed under in `RunState.artifacts`.
 DIAGNOSIS_KEY: Final[str] = "diagnosis"
+#: The artifact key the evaluate stage's report is filed under (Phase 4).
+EVALUATION_KEY: Final[str] = "evaluation"
 
 #: The diff is the only large thing this prompt carries, and it is budgeted rather than
 #: pasted: a fix PR needs the patch, not the log -- the Diagnostician already pulled the
@@ -135,7 +137,6 @@ class Remediator(LLMAgent[RemediationPlan]):
         engine: PolicyEngine,
         context_manager: ContextManager,
         approval_ttl_h: int = DEFAULT_APPROVAL_TTL_H,
-        evaluation_verdict: str = EVALUATION_SKIPPED,
         budget: ContextBudget | None = None,
         retry_policy: RetryPolicy | None = None,
         timeout_s: float | None = None,
@@ -155,10 +156,6 @@ class Remediator(LLMAgent[RemediationPlan]):
         self.engine = engine
         self.context_manager = context_manager
         self.approval_ttl_h = approval_ttl_h
-        # Phase 4 replaces the literal with the Evaluator's verdict for the run. Injected
-        # rather than read from an artifact so the wiring, not this class, says where a
-        # verdict comes from.
-        self.evaluation_verdict = evaluation_verdict
         self.budget = budget if budget is not None else context_manager.default_budget
         # Phase 3: an executed side-effecting plan is written back to memory as the
         # observation's action (`record_observation` obligation). `None` records nothing.
@@ -223,6 +220,7 @@ class Remediator(LLMAgent[RemediationPlan]):
             tool=decision.tool,
             rule_id=decision.rule_id,
             effect=decision.effect,
+            downgraded_from=decision.downgraded_from,
             reason=decision.reason,
             obligations=list(decision.obligations),
             facts=dict(facts),
@@ -293,7 +291,9 @@ class Remediator(LLMAgent[RemediationPlan]):
         facts = build_facts(
             diagnosis,
             bundle,
-            evaluation_verdict=self.evaluation_verdict,
+            # Phase 4: the evaluate stage's verdict for this run, read off the artifact
+            # it filed; `skipped` only for an orchestrator built without that stage.
+            evaluation_verdict=evaluation_verdict_of(state.artifacts.get(EVALUATION_KEY)),
             # One plan per run in this phase, so nothing has executed yet when it is
             # judged. A later phase that lets a run act twice supplies the real count.
             side_effecting_actions_so_far=0,

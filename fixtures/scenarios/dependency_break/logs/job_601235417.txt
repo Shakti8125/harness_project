@@ -1,0 +1,467 @@
+2026-09-10T09:03:27.1205530Z Current runner version: '2.320.0'
+2026-09-10T09:03:27.2302970Z Runner name: 'gh-actions-runner-ubuntu-17'
+2026-09-10T09:03:27.2978680Z Runner group name: 'GitHub Actions'
+2026-09-10T09:03:27.3452330Z Machine name: 'fv-az1017-629'
+2026-09-10T09:03:27.4241420Z [36m##[group]GITHUB_TOKEN Permissions[0m
+2026-09-10T09:03:27.4897590Z Contents: read
+2026-09-10T09:03:27.6027340Z Metadata: read
+2026-09-10T09:03:27.6556480Z Packages: read
+2026-09-10T09:03:27.7302230Z [36m##[endgroup][0m
+2026-09-10T09:03:27.8181460Z Secret source: Actions
+2026-09-10T09:03:27.9466600Z Prepare workflow directory
+2026-09-10T09:03:28.0247460Z Prepare all required actions
+2026-09-10T09:03:28.0749760Z Getting action download info
+2026-09-10T09:03:28.1844520Z Download action repository 'actions/checkout@v4' (SHA:11bd71901bbe5b1630ceea73d27597364c9af683)
+2026-09-10T09:03:28.2767480Z Download action repository 'actions/setup-python@v5' (SHA:0a5c61591373683505ea898e09a3ea4f39ef2b9c)
+2026-09-10T09:03:28.3230610Z Download action repository 'actions/cache@v4' (SHA:0c907a75c2c80ebcb7f088228285e798b750cf8f)
+2026-09-10T09:03:28.4517790Z Complete job name: test (3.12)
+2026-09-10T09:03:28.5896270Z [36m##[group]Run actions/checkout@v4[0m
+2026-09-10T09:03:28.7059040Z with:
+2026-09-10T09:03:28.8336750Z   repository: octo-org/harness-demo-repo
+2026-09-10T09:03:28.8874430Z   token: ***
+2026-09-10T09:03:28.9936720Z   ssh-strict: true
+2026-09-10T09:03:29.1210270Z   persist-credentials: true
+2026-09-10T09:03:29.2215250Z   clean: true
+2026-09-10T09:03:29.2955430Z   fetch-depth: 1
+2026-09-10T09:03:29.3231310Z [36m##[endgroup][0m
+2026-09-10T09:03:29.3924020Z Syncing repository: octo-org/harness-demo-repo
+2026-09-10T09:03:29.4837630Z Getting Git version info
+2026-09-10T09:03:29.6128890Z /usr/bin/git version
+2026-09-10T09:03:29.7487150Z git version 2.46.0
+2026-09-10T09:03:29.8233410Z Deleting the contents of '/home/runner/work/harness-demo-repo/harness-demo-repo'
+2026-09-10T09:03:29.9465050Z Initializing the repository
+2026-09-10T09:03:29.9940670Z Disabling automatic garbage collection
+2026-09-10T09:03:30.1096950Z Setting up auth
+2026-09-10T09:03:30.1932820Z Fetching the repository
+2026-09-10T09:03:30.2100370Z remote: Enumerating objects: 418, done.
+2026-09-10T09:03:30.3150000Z remote: Counting objects: 100% (418/418), done.
+2026-09-10T09:03:30.3798530Z remote: Compressing objects: 100% (301/301), done.
+2026-09-10T09:03:30.4979590Z remote: Total 418 (delta 160), reused 384 (delta 142), pack-reused 0
+2026-09-10T09:03:30.5964780Z Receiving objects: 100% (418/418), 1.44 MiB | 9.02 MiB/s, done.
+2026-09-10T09:03:30.6116210Z Resolving deltas: 100% (160/160), done.
+2026-09-10T09:03:30.6883180Z From https://github.com/octo-org/harness-demo-repo
+2026-09-10T09:03:30.8117680Z  * [new ref]         c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4 -> origin/main
+2026-09-10T09:03:30.8572570Z Determining the checkout info
+2026-09-10T09:03:30.9129080Z Checking out the ref
+2026-09-10T09:03:31.0367170Z /usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-09-10T09:03:31.0756000Z Switched to a new branch 'main'
+2026-09-10T09:03:31.1615390Z branch 'main' set up to track 'origin/main'.
+2026-09-10T09:03:31.2063660Z /usr/bin/git log -1 --format='%H'
+2026-09-10T09:03:31.3423090Z 'c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4'
+2026-09-10T09:03:31.4577060Z [36m##[group]Run actions/setup-python@v5[0m
+2026-09-10T09:03:31.5287020Z with:
+2026-09-10T09:03:31.5537580Z   python-version: 3.12
+2026-09-10T09:03:31.6087650Z   cache: pip
+2026-09-10T09:03:31.6872580Z [36m##[endgroup][0m
+2026-09-10T09:03:31.8188620Z Installed versions
+2026-09-10T09:03:31.8474940Z   Successfully set up CPython (3.12.6)
+2026-09-10T09:03:31.9314020Z Received 0 of 31457280 (0.0%), 0.0 MBs/sec
+2026-09-10T09:03:32.0347220Z Received 31457280 of 31457280 (100.0%), 28.4 MBs/sec
+2026-09-10T09:03:32.1181520Z Cache Size: ~30 MB (31457280 B)
+2026-09-10T09:03:32.2349600Z /usr/bin/tar -xf /home/runner/work/_temp/cache.tzst -P -C /home/runner/work --use-compress-program unzstd
+2026-09-10T09:03:32.3174950Z Cache restored successfully
+2026-09-10T09:03:32.4529750Z Cache restored from key: setup-python-Linux-x64-python-3.12.6-pip-8c1f
+2026-09-10T09:03:32.5433730Z [36m##[group]Run pip install -r requirements.txt -r requirements-dev.txt[0m
+2026-09-10T09:03:32.6318250Z shell: /usr/bin/bash -e {0}
+2026-09-10T09:03:32.7024490Z env:
+2026-09-10T09:03:32.7919850Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.6/x64
+2026-09-10T09:03:32.8550980Z   PIP_DISABLE_PIP_VERSION_CHECK: 1
+2026-09-10T09:03:32.9420540Z [36m##[endgroup][0m
+2026-09-10T09:03:32.9933450Z Collecting pydantic==2.9.2
+2026-09-10T09:03:33.0320190Z   Downloading pydantic-2.9.2-py3-none-any.whl (2178 kB)
+2026-09-10T09:03:33.0703600Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.7/1.3 MB 28.4 MB/s eta 0:00:00
+2026-09-10T09:03:33.1619570Z Collecting fastapi==0.115.0
+2026-09-10T09:03:33.2590390Z   Downloading fastapi-0.115.0-py3-none-any.whl (755 kB)
+2026-09-10T09:03:33.3336050Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.3/1.2 MB 12.0 MB/s eta 0:00:00
+2026-09-10T09:03:33.3598330Z Collecting httpx==0.27.2
+2026-09-10T09:03:33.4695330Z   Downloading httpx-0.27.2-py3-none-any.whl (1059 kB)
+2026-09-10T09:03:33.5941290Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.8 MB 21.8 MB/s eta 0:00:00
+2026-09-10T09:03:33.7245520Z Collecting sqlalchemy==2.0.35
+2026-09-10T09:03:33.8448600Z   Downloading sqlalchemy-2.0.35-py3-none-any.whl (1340 kB)
+2026-09-10T09:03:33.9721320Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.7/0.6 MB 40.0 MB/s eta 0:00:00
+2026-09-10T09:03:34.1025170Z Collecting alembic==1.13.3
+2026-09-10T09:03:34.1850920Z   Downloading alembic-1.13.3-py3-none-any.whl (612 kB)
+2026-09-10T09:03:34.2490040Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.8/0.7 MB 50.8 MB/s eta 0:00:00
+2026-09-10T09:03:34.3521640Z Collecting pytest==8.3.3
+2026-09-10T09:03:34.4016180Z   Downloading pytest-8.3.3-py3-none-any.whl (2329 kB)
+2026-09-10T09:03:34.5180720Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.9/1.4 MB 39.1 MB/s eta 0:00:00
+2026-09-10T09:03:34.6392580Z Collecting pytest-asyncio==0.24.0
+2026-09-10T09:03:34.7661380Z   Downloading pytest_asyncio-0.24.0-py3-none-any.whl (323 kB)
+2026-09-10T09:03:34.8548630Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.7 MB 10.8 MB/s eta 0:00:00
+2026-09-10T09:03:34.9885840Z Collecting pytest-cov==5.0.0
+2026-09-10T09:03:35.0760460Z   Downloading pytest_cov-5.0.0-py3-none-any.whl (1981 kB)
+2026-09-10T09:03:35.1473660Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.6/1.7 MB 57.8 MB/s eta 0:00:00
+2026-09-10T09:03:35.2448970Z Collecting coverage==7.6.1
+2026-09-10T09:03:35.3844290Z   Downloading coverage-7.6.1-py3-none-any.whl (1417 kB)
+2026-09-10T09:03:35.5140470Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.1/1.8 MB 28.9 MB/s eta 0:00:00
+2026-09-10T09:03:35.6282130Z Collecting ruff==0.6.8
+2026-09-10T09:03:35.6535100Z   Downloading ruff-0.6.8-py3-none-any.whl (251 kB)
+2026-09-10T09:03:35.7451080Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.5/0.2 MB 35.5 MB/s eta 0:00:00
+2026-09-10T09:03:35.8209140Z Collecting mypy==1.11.2
+2026-09-10T09:03:35.9146820Z   Downloading mypy-1.11.2-py3-none-any.whl (61 kB)
+2026-09-10T09:03:36.0353170Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.7/1.0 MB 12.8 MB/s eta 0:00:00
+2026-09-10T09:03:36.0806960Z Collecting uvicorn==0.30.6
+2026-09-10T09:03:36.1871320Z   Downloading uvicorn-0.30.6-py3-none-any.whl (915 kB)
+2026-09-10T09:03:36.2167740Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/2.2 MB 28.0 MB/s eta 0:00:00
+2026-09-10T09:03:36.2593320Z Collecting anyio==4.6.0
+2026-09-10T09:03:36.3736550Z   Downloading anyio-4.6.0-py3-none-any.whl (1134 kB)
+2026-09-10T09:03:36.4302220Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.3/1.2 MB 17.9 MB/s eta 0:00:00
+2026-09-10T09:03:36.5472110Z Collecting idna==3.10
+2026-09-10T09:03:36.5747870Z   Downloading idna-3.10-py3-none-any.whl (2315 kB)
+2026-09-10T09:03:36.6080820Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.2/2.3 MB 13.4 MB/s eta 0:00:00
+2026-09-10T09:03:36.7102910Z Collecting sniffio==1.3.1
+2026-09-10T09:03:36.7309450Z   Downloading sniffio-1.3.1-py3-none-any.whl (1299 kB)
+2026-09-10T09:03:36.8176780Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.5/1.3 MB 15.5 MB/s eta 0:00:00
+2026-09-10T09:03:36.9464300Z Collecting certifi==2024.8.30
+2026-09-10T09:03:37.0282050Z   Downloading certifi-2024.8.30-py3-none-any.whl (425 kB)
+2026-09-10T09:03:37.1282790Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.4/1.2 MB 26.0 MB/s eta 0:00:00
+2026-09-10T09:03:37.1466160Z Collecting h11==0.14.0
+2026-09-10T09:03:37.2409910Z   Downloading h11-0.14.0-py3-none-any.whl (247 kB)
+2026-09-10T09:03:37.3317830Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.5/0.1 MB 34.4 MB/s eta 0:00:00
+2026-09-10T09:03:37.4187770Z Collecting typing-extensions==4.12.2
+2026-09-10T09:03:37.4826780Z   Downloading typing_extensions-4.12.2-py3-none-any.whl (1980 kB)
+2026-09-10T09:03:37.5439450Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.3/0.9 MB 24.4 MB/s eta 0:00:00
+2026-09-10T09:03:37.6815100Z Collecting annotated-types==0.7.0
+2026-09-10T09:03:37.7010590Z   Downloading annotated_types-0.7.0-py3-none-any.whl (347 kB)
+2026-09-10T09:03:37.7187640Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/0.1 MB 44.9 MB/s eta 0:00:00
+2026-09-10T09:03:37.8538930Z Collecting pydantic-core==2.23.4
+2026-09-10T09:03:37.8920140Z   Downloading pydantic_core-2.23.4-py3-none-any.whl (2191 kB)
+2026-09-10T09:03:37.9225010Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.6/1.7 MB 36.9 MB/s eta 0:00:00
+2026-09-10T09:03:37.9638230Z Collecting starlette==0.38.6
+2026-09-10T09:03:38.0789160Z   Downloading starlette-0.38.6-py3-none-any.whl (1643 kB)
+2026-09-10T09:03:38.2110370Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.8/0.8 MB 21.2 MB/s eta 0:00:00
+2026-09-10T09:03:38.2288850Z Collecting click==8.1.7
+2026-09-10T09:03:38.2970870Z   Downloading click-8.1.7-py3-none-any.whl (492 kB)
+2026-09-10T09:03:38.3247750Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.9/0.2 MB 58.8 MB/s eta 0:00:00
+2026-09-10T09:03:38.3722650Z Collecting packaging==24.1
+2026-09-10T09:03:38.4148690Z   Downloading packaging-24.1-py3-none-any.whl (1289 kB)
+2026-09-10T09:03:38.5107350Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 8.2 MB/s eta 0:00:00
+2026-09-10T09:03:38.5695220Z Collecting pluggy==1.5.0
+2026-09-10T09:03:38.6070620Z   Downloading pluggy-1.5.0-py3-none-any.whl (1756 kB)
+2026-09-10T09:03:38.6850170Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.4/1.3 MB 58.4 MB/s eta 0:00:00
+2026-09-10T09:03:38.7049390Z Collecting iniconfig==2.0.0
+2026-09-10T09:03:38.7325540Z   Downloading iniconfig-2.0.0-py3-none-any.whl (1693 kB)
+2026-09-10T09:03:38.8710830Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/0.3 MB 39.1 MB/s eta 0:00:00
+2026-09-10T09:03:38.9110020Z Collecting mako==1.3.5
+2026-09-10T09:03:38.9708210Z   Downloading mako-1.3.5-py3-none-any.whl (2264 kB)
+2026-09-10T09:03:39.0772710Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.0/1.0 MB 39.4 MB/s eta 0:00:00
+2026-09-10T09:03:39.1970620Z Collecting markupsafe==2.1.5
+2026-09-10T09:03:39.3268720Z   Downloading markupsafe-2.1.5-py3-none-any.whl (2399 kB)
+2026-09-10T09:03:39.3630500Z      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0.7/1.2 MB 8.7 MB/s eta 0:00:00
+2026-09-10T09:03:39.4621300Z Installing collected packages: pydantic, fastapi, httpx, sqlalchemy, alembic, pytest, pytest-asyncio, pytest-cov, coverage, ruff, mypy, uvicorn, anyio, idna, sniffio, certifi, h11, typing-extensions, annotated-types, pydantic-core, starlette, click, packaging, pluggy, iniconfig, mako, markupsafe
+2026-09-10T09:03:39.5979490Z Successfully installed pydantic-2.9.2 fastapi-0.115.0 httpx-0.27.2 sqlalchemy-2.0.35 alembic-1.13.3 pytest-8.3.3 pytest-asyncio-0.24.0 pytest-cov-5.0.0 coverage-7.6.1 ruff-0.6.8 mypy-1.11.2 uvicorn-0.30.6 anyio-4.6.0 idna-3.10 sniffio-1.3.1 certifi-2024.8.30 h11-0.14.0 typing-extensions-4.12.2 annotated-types-0.7.0 pydantic-core-2.23.4 starlette-0.38.6 click-8.1.7 packaging-24.1 pluggy-1.5.0 iniconfig-2.0.0 mako-1.3.5 markupsafe-2.1.5
+2026-09-10T09:03:39.6202050Z [36m##[group]Run ruff check .[0m
+2026-09-10T09:03:39.7197300Z shell: /usr/bin/bash -e {0}
+2026-09-10T09:03:39.8404080Z [36m##[endgroup][0m
+2026-09-10T09:03:39.8981970Z All checks passed!
+2026-09-10T09:03:39.9445330Z [36m##[group]Run pytest -v --cov=src --cov-report=term-missing -p no:cacheprovider[0m
+2026-09-10T09:03:40.0341320Z shell: /usr/bin/bash -e {0}
+2026-09-10T09:03:40.1044210Z env:
+2026-09-10T09:03:40.1412730Z   PYTHONHASHSEED: 0
+2026-09-10T09:03:40.2152260Z [36m##[endgroup][0m
+2026-09-10T09:03:40.2814640Z ============================= test session starts ==============================
+2026-09-10T09:03:40.3676030Z platform linux -- Python 3.12.6, pytest-8.3.3, pluggy-1.5.0 -- /opt/hostedtoolcache/Python/3.12.6/x64/bin/python
+2026-09-10T09:03:40.4461780Z cachedir: .pytest_cache
+2026-09-10T09:03:40.5001090Z rootdir: /home/runner/work/harness-demo-repo/harness-demo-repo
+2026-09-10T09:03:40.5597530Z configfile: pyproject.toml
+2026-09-10T09:03:40.6794610Z plugins: asyncio-0.24.0, cov-5.0.0, anyio-4.6.0
+2026-09-10T09:03:40.7258280Z asyncio: mode=Mode.AUTO, default_loop_scope=None
+2026-09-10T09:03:40.8109030Z collected 0 items / 15 errors
+2026-09-10T09:03:40.8274580Z 
+2026-09-10T09:03:40.9351550Z ==================================== ERRORS ====================================
+2026-09-10T09:03:40.9921450Z [31m[1m_______________ ERROR collecting tests/test_pricing.py _______________[0m
+2026-09-10T09:03:41.0128570Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_pricing.py'.
+2026-09-10T09:03:41.0629670Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:41.1079830Z Traceback:
+2026-09-10T09:03:41.2421240Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:41.3011520Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:41.3521370Z tests/test_pricing.py:6: in <module>
+2026-09-10T09:03:41.4120370Z     from src.pricing import *  # noqa: F403
+2026-09-10T09:03:41.5454000Z src/pricing/__init__.py:2: in <module>
+2026-09-10T09:03:41.6396180Z     from src.config import settings
+2026-09-10T09:03:41.7322530Z src/config.py:3: in <module>
+2026-09-10T09:03:41.8367050Z     from pydantic import BaseSettings
+2026-09-10T09:03:41.9002070Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:41.9670090Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:42.0633630Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:42.0785540Z     raise PydanticImportError(
+2026-09-10T09:03:42.1175930Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:42.1743930Z [31m[1m_______________ ERROR collecting tests/test_checkout.py _______________[0m
+2026-09-10T09:03:42.2193200Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_checkout.py'.
+2026-09-10T09:03:42.3139950Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:42.3763260Z Traceback:
+2026-09-10T09:03:42.5007540Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:42.5867730Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:42.6535740Z tests/test_checkout.py:5: in <module>
+2026-09-10T09:03:42.7188570Z     from src.checkout import *  # noqa: F403
+2026-09-10T09:03:42.8215860Z src/checkout/__init__.py:2: in <module>
+2026-09-10T09:03:42.8888640Z     from src.config import settings
+2026-09-10T09:03:42.9866380Z src/config.py:3: in <module>
+2026-09-10T09:03:43.0074850Z     from pydantic import BaseSettings
+2026-09-10T09:03:43.0781540Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:43.1255570Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:43.1602680Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:43.2412150Z     raise PydanticImportError(
+2026-09-10T09:03:43.3171230Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:43.4022990Z [31m[1m_______________ ERROR collecting tests/test_cart.py _______________[0m
+2026-09-10T09:03:43.5117350Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_cart.py'.
+2026-09-10T09:03:43.6372190Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:43.7140420Z Traceback:
+2026-09-10T09:03:43.7680490Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:43.8414110Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:43.9575420Z tests/test_cart.py:5: in <module>
+2026-09-10T09:03:44.0819190Z     from src.cart import *  # noqa: F403
+2026-09-10T09:03:44.1984710Z src/cart/__init__.py:2: in <module>
+2026-09-10T09:03:44.2369710Z     from src.config import settings
+2026-09-10T09:03:44.3768990Z src/config.py:3: in <module>
+2026-09-10T09:03:44.4710350Z     from pydantic import BaseSettings
+2026-09-10T09:03:44.4964680Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:44.6021620Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:44.7405150Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:44.8057420Z     raise PydanticImportError(
+2026-09-10T09:03:44.9055560Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:44.9600780Z [31m[1m_______________ ERROR collecting tests/test_inventory.py _______________[0m
+2026-09-10T09:03:45.0017690Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_inventory.py'.
+2026-09-10T09:03:45.1064350Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:45.1217300Z Traceback:
+2026-09-10T09:03:45.2395710Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:45.3206140Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:45.3478370Z tests/test_inventory.py:3: in <module>
+2026-09-10T09:03:45.3777000Z     from src.inventory import *  # noqa: F403
+2026-09-10T09:03:45.4738580Z src/inventory/__init__.py:2: in <module>
+2026-09-10T09:03:45.5980650Z     from src.config import settings
+2026-09-10T09:03:45.6480630Z src/config.py:3: in <module>
+2026-09-10T09:03:45.7853770Z     from pydantic import BaseSettings
+2026-09-10T09:03:45.8129000Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:45.9346420Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:45.9992290Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:46.0243970Z     raise PydanticImportError(
+2026-09-10T09:03:46.0737360Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:46.1453580Z [31m[1m_______________ ERROR collecting tests/test_scheduler.py _______________[0m
+2026-09-10T09:03:46.2594010Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_scheduler.py'.
+2026-09-10T09:03:46.3820710Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:46.4137490Z Traceback:
+2026-09-10T09:03:46.4938570Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:46.5902050Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:46.6485870Z tests/test_scheduler.py:6: in <module>
+2026-09-10T09:03:46.7725700Z     from src.scheduler import *  # noqa: F403
+2026-09-10T09:03:46.8223710Z src/scheduler/__init__.py:2: in <module>
+2026-09-10T09:03:46.8396930Z     from src.config import settings
+2026-09-10T09:03:46.8597760Z src/config.py:3: in <module>
+2026-09-10T09:03:46.9599010Z     from pydantic import BaseSettings
+2026-09-10T09:03:47.0446950Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:47.1780080Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:47.3103130Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:47.4390440Z     raise PydanticImportError(
+2026-09-10T09:03:47.4592950Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:47.5679370Z [31m[1m_______________ ERROR collecting tests/test_reports.py _______________[0m
+2026-09-10T09:03:47.6706030Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_reports.py'.
+2026-09-10T09:03:47.7675230Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:47.8715680Z Traceback:
+2026-09-10T09:03:47.9994070Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:48.0944250Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:48.1559810Z tests/test_reports.py:5: in <module>
+2026-09-10T09:03:48.2382220Z     from src.reports import *  # noqa: F403
+2026-09-10T09:03:48.2792030Z src/reports/__init__.py:2: in <module>
+2026-09-10T09:03:48.3675940Z     from src.config import settings
+2026-09-10T09:03:48.3837060Z src/config.py:3: in <module>
+2026-09-10T09:03:48.4175840Z     from pydantic import BaseSettings
+2026-09-10T09:03:48.4742600Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:48.5879630Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:48.6927750Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:48.7500570Z     raise PydanticImportError(
+2026-09-10T09:03:48.8426240Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:48.8627740Z [31m[1m_______________ ERROR collecting tests/test_api_orders.py _______________[0m
+2026-09-10T09:03:48.8982570Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_api_orders.py'.
+2026-09-10T09:03:49.0359960Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:49.0871870Z Traceback:
+2026-09-10T09:03:49.1515360Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:49.2350970Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:49.2867730Z tests/test_api_orders.py:6: in <module>
+2026-09-10T09:03:49.3615310Z     from src.api_orders import *  # noqa: F403
+2026-09-10T09:03:49.4064940Z src/api_orders/__init__.py:2: in <module>
+2026-09-10T09:03:49.4275260Z     from src.config import settings
+2026-09-10T09:03:49.4649740Z src/config.py:3: in <module>
+2026-09-10T09:03:49.5453550Z     from pydantic import BaseSettings
+2026-09-10T09:03:49.5692130Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:49.6346090Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:49.6906740Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:49.7575140Z     raise PydanticImportError(
+2026-09-10T09:03:49.7849390Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:49.9135210Z [31m[1m_______________ ERROR collecting tests/test_api_customers.py _______________[0m
+2026-09-10T09:03:49.9877720Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_api_customers.py'.
+2026-09-10T09:03:50.1078780Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:50.2449070Z Traceback:
+2026-09-10T09:03:50.3028630Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:50.3777490Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:50.4801980Z tests/test_api_customers.py:5: in <module>
+2026-09-10T09:03:50.5485150Z     from src.api_customers import *  # noqa: F403
+2026-09-10T09:03:50.6012530Z src/api_customers/__init__.py:2: in <module>
+2026-09-10T09:03:50.7080970Z     from src.config import settings
+2026-09-10T09:03:50.8348970Z src/config.py:3: in <module>
+2026-09-10T09:03:50.9648580Z     from pydantic import BaseSettings
+2026-09-10T09:03:51.0582010Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:51.1201470Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:51.2569670Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:51.3518270Z     raise PydanticImportError(
+2026-09-10T09:03:51.3750560Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:51.4006400Z [31m[1m_______________ ERROR collecting tests/test_auth.py _______________[0m
+2026-09-10T09:03:51.5093740Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_auth.py'.
+2026-09-10T09:03:51.5320190Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:51.5480000Z Traceback:
+2026-09-10T09:03:51.6122260Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:51.6921010Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:51.7631690Z tests/test_auth.py:2: in <module>
+2026-09-10T09:03:51.8392460Z     from src.auth import *  # noqa: F403
+2026-09-10T09:03:51.9273570Z src/auth/__init__.py:2: in <module>
+2026-09-10T09:03:52.0272700Z     from src.config import settings
+2026-09-10T09:03:52.0951500Z src/config.py:3: in <module>
+2026-09-10T09:03:52.1561910Z     from pydantic import BaseSettings
+2026-09-10T09:03:52.2947480Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:52.3423630Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:52.4545010Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:52.5234040Z     raise PydanticImportError(
+2026-09-10T09:03:52.5832190Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:52.6062010Z [31m[1m_______________ ERROR collecting tests/test_webhooks.py _______________[0m
+2026-09-10T09:03:52.7291480Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_webhooks.py'.
+2026-09-10T09:03:52.8318990Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:52.9597750Z Traceback:
+2026-09-10T09:03:53.0312260Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:53.1308410Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:53.1607050Z tests/test_webhooks.py:5: in <module>
+2026-09-10T09:03:53.2254490Z     from src.webhooks import *  # noqa: F403
+2026-09-10T09:03:53.2663530Z src/webhooks/__init__.py:2: in <module>
+2026-09-10T09:03:53.2866160Z     from src.config import settings
+2026-09-10T09:03:53.4201110Z src/config.py:3: in <module>
+2026-09-10T09:03:53.4620980Z     from pydantic import BaseSettings
+2026-09-10T09:03:53.4953920Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:53.5351380Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:53.5973920Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:53.6806910Z     raise PydanticImportError(
+2026-09-10T09:03:53.7146080Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:53.8531940Z [31m[1m_______________ ERROR collecting tests/test_currency.py _______________[0m
+2026-09-10T09:03:53.9910680Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_currency.py'.
+2026-09-10T09:03:54.0246180Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:54.0903560Z Traceback:
+2026-09-10T09:03:54.1903470Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:54.3150540Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:54.3919800Z tests/test_currency.py:3: in <module>
+2026-09-10T09:03:54.5216110Z     from src.currency import *  # noqa: F403
+2026-09-10T09:03:54.5769190Z src/currency/__init__.py:2: in <module>
+2026-09-10T09:03:54.6542240Z     from src.config import settings
+2026-09-10T09:03:54.7315550Z src/config.py:3: in <module>
+2026-09-10T09:03:54.8303140Z     from pydantic import BaseSettings
+2026-09-10T09:03:54.8705630Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:54.9617840Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:55.0041310Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:55.0616590Z     raise PydanticImportError(
+2026-09-10T09:03:55.1969800Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:55.3243560Z [31m[1m_______________ ERROR collecting tests/test_tax.py _______________[0m
+2026-09-10T09:03:55.4416210Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_tax.py'.
+2026-09-10T09:03:55.4610550Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:55.4946010Z Traceback:
+2026-09-10T09:03:55.5417110Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:55.6547320Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:55.7750240Z tests/test_tax.py:3: in <module>
+2026-09-10T09:03:55.8628930Z     from src.tax import *  # noqa: F403
+2026-09-10T09:03:55.9676590Z src/tax/__init__.py:2: in <module>
+2026-09-10T09:03:56.0835410Z     from src.config import settings
+2026-09-10T09:03:56.1068360Z src/config.py:3: in <module>
+2026-09-10T09:03:56.1324160Z     from pydantic import BaseSettings
+2026-09-10T09:03:56.2560280Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:56.2759550Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:56.3190910Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:56.3391700Z     raise PydanticImportError(
+2026-09-10T09:03:56.3560810Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:56.4765750Z [31m[1m_______________ ERROR collecting tests/test_shipping.py _______________[0m
+2026-09-10T09:03:56.5328990Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_shipping.py'.
+2026-09-10T09:03:56.5679850Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:56.6015870Z Traceback:
+2026-09-10T09:03:56.6985970Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:56.8346720Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:56.9127970Z tests/test_shipping.py:5: in <module>
+2026-09-10T09:03:57.0404330Z     from src.shipping import *  # noqa: F403
+2026-09-10T09:03:57.1182370Z src/shipping/__init__.py:2: in <module>
+2026-09-10T09:03:57.2049710Z     from src.config import settings
+2026-09-10T09:03:57.3047920Z src/config.py:3: in <module>
+2026-09-10T09:03:57.4204310Z     from pydantic import BaseSettings
+2026-09-10T09:03:57.5301620Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:57.6689790Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:57.7773500Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:57.9055730Z     raise PydanticImportError(
+2026-09-10T09:03:57.9463360Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:58.0282630Z [31m[1m_______________ ERROR collecting tests/test_notifications.py _______________[0m
+2026-09-10T09:03:58.1180900Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_notifications.py'.
+2026-09-10T09:03:58.2363020Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:58.3115790Z Traceback:
+2026-09-10T09:03:58.4254590Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:58.4890300Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:58.5773290Z tests/test_notifications.py:4: in <module>
+2026-09-10T09:03:58.6987440Z     from src.notifications import *  # noqa: F403
+2026-09-10T09:03:58.8135010Z src/notifications/__init__.py:2: in <module>
+2026-09-10T09:03:58.9106240Z     from src.config import settings
+2026-09-10T09:03:58.9256540Z src/config.py:3: in <module>
+2026-09-10T09:03:58.9634000Z     from pydantic import BaseSettings
+2026-09-10T09:03:59.0417570Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:03:59.0885640Z     return _getattr_migration(attr_name)
+2026-09-10T09:03:59.1117670Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:03:59.2342520Z     raise PydanticImportError(
+2026-09-10T09:03:59.3671200Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:03:59.4199710Z [31m[1m_______________ ERROR collecting tests/test_search.py _______________[0m
+2026-09-10T09:03:59.4859800Z ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/tests/test_search.py'.
+2026-09-10T09:03:59.6022350Z Hint: make sure your test modules/packages have valid Python names.
+2026-09-10T09:03:59.6250170Z Traceback:
+2026-09-10T09:03:59.7201400Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-09-10T09:03:59.7510550Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-09-10T09:03:59.8019410Z tests/test_search.py:3: in <module>
+2026-09-10T09:03:59.9206840Z     from src.search import *  # noqa: F403
+2026-09-10T09:03:59.9426250Z src/search/__init__.py:2: in <module>
+2026-09-10T09:03:59.9621170Z     from src.config import settings
+2026-09-10T09:04:00.0293500Z src/config.py:3: in <module>
+2026-09-10T09:04:00.1058290Z     from pydantic import BaseSettings
+2026-09-10T09:04:00.2287450Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__
+2026-09-10T09:04:00.3333940Z     return _getattr_migration(attr_name)
+2026-09-10T09:04:00.4325870Z /opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper
+2026-09-10T09:04:00.4665090Z     raise PydanticImportError(
+2026-09-10T09:04:00.6048470Z E   pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+2026-09-10T09:04:00.6712400Z =========================== short test summary info ============================
+2026-09-10T09:04:00.7627110Z [31mERROR tests/test_pricing.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:00.8260460Z [31mERROR tests/test_checkout.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:00.8469250Z [31mERROR tests/test_cart.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:00.9207860Z [31mERROR tests/test_inventory.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:00.9547070Z [31mERROR tests/test_scheduler.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:00.9737650Z [31mERROR tests/test_reports.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.0659400Z [31mERROR tests/test_api_orders.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.1596860Z [31mERROR tests/test_api_customers.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.1878480Z [31mERROR tests/test_auth.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.2714910Z [31mERROR tests/test_webhooks.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.3298240Z [31mERROR tests/test_currency.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.3927510Z [31mERROR tests/test_tax.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.5048030Z [31mERROR tests/test_shipping.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.5810930Z [31mERROR tests/test_notifications.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.7062530Z [31mERROR tests/test_search.py - pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings for more details.[0m
+2026-09-10T09:04:01.7975180Z [31m!!!!!!!!!!!!!!!!!!! Interrupted: 15 errors during collection !!!!!!!!!!!!!!!!!!![0m
+2026-09-10T09:04:01.8709170Z [31m[1m=========================== 15 errors in 2.47s ===========================[0m
+2026-09-10T09:04:01.9649560Z [36m##[group]Post Run actions/cache@v4[0m
+2026-09-10T09:04:02.0221890Z Post job cleanup.
+2026-09-10T09:04:02.0527290Z Cache hit occurred on the primary key, not saving cache.
+2026-09-10T09:04:02.1530450Z [36m##[endgroup][0m
+2026-09-10T09:04:02.2458000Z [36m##[group]Post Run actions/setup-python@v5[0m
+2026-09-10T09:04:02.3593710Z Post job cleanup.
+2026-09-10T09:04:02.3902600Z [36m##[endgroup][0m
+2026-09-10T09:04:02.5192330Z [36m##[group]Post Run actions/checkout@v4[0m
+2026-09-10T09:04:02.6341510Z Post job cleanup.
+2026-09-10T09:04:02.7637620Z /usr/bin/git version
+2026-09-10T09:04:02.8878290Z git version 2.46.0
+2026-09-10T09:04:02.9879550Z Temporarily overriding HOME='/home/runner/work/_temp/...' before making global config changes
+2026-09-10T09:04:03.1042360Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-10T09:04:03.1841120Z /usr/bin/git config --global --add safe.directory /home/runner/work/harness-demo-repo/harness-demo-repo
+2026-09-10T09:04:03.2972980Z /usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-10T09:04:03.3359390Z /usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-10T09:04:03.4487030Z [36m##[endgroup][0m
+2026-09-10T09:04:03.5192750Z [31m##[error]Process completed with exit code 1.[0m
+2026-09-10T09:04:03.6288520Z [36m##[group]Complete job[0m
+2026-09-10T09:04:03.7007860Z Cleaning up orphan processes
+2026-09-10T09:04:03.8144810Z Uploading runner diagnostic logs
+2026-09-10T09:04:03.8388980Z Job completed with conclusion 'failure'
+2026-09-10T09:04:03.8594780Z [36m##[endgroup][0m

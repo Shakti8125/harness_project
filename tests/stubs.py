@@ -164,7 +164,14 @@ SCENARIO_RUN_IDS = {
     "real_regression": "501234567",
     "flaky_test": "501234890",
     "infra_timeout": "501235102",
+    "dependency_break": "501235417",
 }
+
+DEPENDENCY_BREAK_HEAD = "c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4"
+
+#: `cold_start` is `flaky_test`'s failure on a workflow with no green run, so it shares
+#: that scenario's run id and the stub answers it with the flaky diagnosis -- which is
+#: also its label.
 
 
 def scenario_of(prompt: str) -> str:
@@ -189,6 +196,11 @@ def notes_for(scenario: str) -> dict[str, Any]:
             "pip install fails: ReadTimeoutError: HTTPSConnectionPool(host='pypi.org', "
             "port=443): Read timed out",
             "The diff contains no files",
+        ],
+        "dependency_break": [
+            "Every test module errors at collection with PydanticImportError: "
+            "BaseSettings has been moved to the pydantic-settings package",
+            "The diff changes only requirements.txt: pydantic 1.10.13 -> 2.9.2",
         ],
     }[scenario]
     return {
@@ -230,6 +242,32 @@ def diagnosis_for(scenario: str, self_confidence: float = 0.92) -> dict[str, Any
             "suspected_package": None,
             "suggested_action": "retry",
         }
+    if scenario == "dependency_break":
+        return {
+            "reasoning": "Every test module fails at import with PydanticImportError: "
+                         "BaseSettings moved to pydantic-settings. The diff changes only "
+                         "requirements.txt, bumping pydantic 1.10.13 -> 2.9.2; src/config.py "
+                         "still imports BaseSettings from pydantic.",
+            "category": "dependency_break",
+            "summary": "pydantic 1.10.13 -> 2.9.2 moved BaseSettings; src/config.py still "
+                       "imports it from pydantic.",
+            "self_confidence": self_confidence,
+            "citations": [
+                {"claim_kind": "dependency_bump", "locator": "diff:requirements.txt",
+                 "quote": "pip: pydantic 1.10.13 -> 2.9.2", "note": "the only change"},
+                {"claim_kind": "quote_exists", "locator": "log:job/601235417",
+                 "quote": "pydantic.errors.PydanticImportError: `BaseSettings` has been "
+                          "moved to the `pydantic-settings` package.", "note": ""},
+                {"claim_kind": "file_in_diff", "locator": "diff:requirements.txt",
+                 "quote": "requirements.txt", "note": ""},
+                {"claim_kind": "commit_in_range", "locator": f"diff:{DEPENDENCY_BREAK_HEAD}",
+                 "quote": DEPENDENCY_BREAK_HEAD, "note": ""},
+            ],
+            "suspected_commit_sha": DEPENDENCY_BREAK_HEAD,
+            "suspected_test_ids": [],
+            "suspected_package": "pydantic",
+            "suggested_action": "open_fix_pr",
+        }
     if scenario == "infra_timeout":
         return {
             "reasoning": "pip could not reach pypi.org; everything after is a consequence. "
@@ -253,6 +291,7 @@ PLAN_ACTION_FOR_SCENARIO = {
     "real_regression": "open_fix_pr",
     "flaky_test": "retry_job",
     "infra_timeout": "retry_job",
+    "dependency_break": "open_fix_pr",
 }
 
 

@@ -162,6 +162,14 @@ def diff_from_compare(data: dict[str, Any], base_sha: str, head_sha: str) -> Dif
                 )
             )
     total_files = int(data.get("total_files", len(files)) or len(files))
+    raw_commits = data.get("commits")
+    commit_shas: list[str] = []
+    if isinstance(raw_commits, list):
+        commit_shas = [
+            str(entry["sha"])
+            for entry in raw_commits
+            if isinstance(entry, dict) and isinstance(entry.get("sha"), str)
+        ]
     return DiffSummary(
         baseline_kind="branch_green",
         base_sha=base_sha,
@@ -172,6 +180,7 @@ def diff_from_compare(data: dict[str, Any], base_sha: str, head_sha: str) -> Dif
         # is how that cap announces itself.
         truncated=total_files > len(files),
         total_files=total_files,
+        commit_shas=commit_shas,
     )
 
 

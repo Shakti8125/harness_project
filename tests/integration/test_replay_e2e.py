@@ -295,8 +295,11 @@ def test_trace_is_persisted_and_readable(client: TestClient) -> None:
     run_span = next(span for span in payload["spans"] if span["name"] == "run")
     assert run_span["parent_span_id"] is None
     agent_spans = [span for span in payload["spans"] if span["name"] == "agent.run"]
-    assert len(agent_spans) == 3
+    # Four since Phase 4: the evaluate stage records an `agent.run` span with no model
+    # call under it, and its claim verdicts as `evaluation.claim` children.
+    assert len(agent_spans) == 4
     assert all(span["parent_span_id"] == run_span["span_id"] for span in agent_spans)
+    assert "evaluation.claim" in names
 
 
 def test_trace_for_an_unknown_run_is_a_problem_document(client: TestClient) -> None:

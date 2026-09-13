@@ -10,6 +10,10 @@ services:
       - .env
     environment:
       HARNESS_DATABASE_PATH: /app/data/harness.db
+      # Phase 4: forwarded from the shell so the fault-injected Verify steps can run
+      # against the container as well as under uvicorn. Empty when not exported, which
+      # the composition root reads as "no fault"; refused at boot unless HARNESS_ENV=dev.
+      HARNESS_FAULT_INJECT: ${HARNESS_FAULT_INJECT:-}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

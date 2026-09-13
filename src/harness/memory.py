@@ -549,14 +549,22 @@ class SqliteMemoryStore:
             )
             if outcome.escalation is not None:
                 record = outcome.escalation
+                # `delivered_at` / `delivery_error` are the record's own (Phase 4: the
+                # webhook's verdict rides on the record), not this write's clock: the row
+                # says when a person was notified, not when the row was filed.
                 await db.execute(
                     "INSERT INTO escalation (escalation_id, run_id, reason, payload_json,"
-                    " created_at, channel, delivered_at) VALUES (?, ?, ?, ?, ?, 'db', ?)"
+                    " created_at, channel, delivered_at, delivery_error)"
+                    " VALUES (?, ?, ?, ?, ?, 'db', ?, ?)"
                     " ON CONFLICT(escalation_id) DO UPDATE SET reason = excluded.reason,"
-                    " payload_json = excluded.payload_json, delivered_at = excluded.delivered_at",
+                    " payload_json = excluded.payload_json,"
+                    " delivered_at = excluded.delivered_at,"
+                    " delivery_error = excluded.delivery_error",
                     (
                         record.escalation_id, outcome.run_id, record.reason,
-                        self._dump(record), now, now,
+                        self._dump(record), now,
+                        _ts(record.delivered_at) if record.delivered_at else None,
+                        record.delivery_error,
                     ),
                 )
 

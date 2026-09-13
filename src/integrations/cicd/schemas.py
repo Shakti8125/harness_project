@@ -83,6 +83,11 @@ class DiffSummary(BaseModel):
     files: list[FileChange] = []
     truncated: bool = False  # GitHub caps compare at 300 files
     total_files: int = 0
+    # Phase 4 amendment, additive: the shas of the commits between `base_sha` and
+    # `head_sha`, oldest first, read off the compare response -- the list the
+    # `commit_in_range` claim is checked against. Empty on a cold start (no range) and
+    # on a bundle stored before this phase, both of which the checker reads as "unknown".
+    commit_shas: list[str] = []
 
 
 class DependencyChange(BaseModel):

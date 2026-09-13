@@ -672,7 +672,10 @@ def test_three_gated_verdicts_do_not_lift_a_fourth_over_the_gate(
             ).fetchall()
         assert rows == [(3, None, "{}")], "sightings counted, verdicts not vouched for"
 
-        stub.self_confidence = 0.65  # +0.10 would clear the gate and the rule's 0.75
+        # 0.60 self-reported + 0.05 `evidence_fully_verified` (Phase 4: the stub's one
+        # citation verifies) = 0.65; a +0.10 `memory_agreement` would clear the gate and
+        # the rule's 0.75.
+        stub.self_confidence = 0.60
         fourth = replay(client)
     diagnosis = fourth["final"]["diagnosis"]
     assert 0.60 <= diagnosis["final_confidence"] < 0.70, diagnosis["final_confidence"]

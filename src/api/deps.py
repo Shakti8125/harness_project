@@ -20,6 +20,12 @@ applies the schema migrations through both objects that share the SQLite file. T
 lifespan calls it under Docker; `app.py` hand-calls it on the Space, because a mounted
 sub-app receives no lifespan events (Phase 2 handoff §10). Anything that must happen at
 startup goes in there, so there is one list to keep and two callers of it.
+
+And one from Phase 4: **`build_fault` is the one reader of `HARNESS_FAULT_INJECT`.** It
+refuses the setting outside `dev` and refuses a name no component registered, and each
+fault reaches exactly the component that knows how to fail that way -- the store, the
+per-run LLM client wrapper, or the Diagnostician. A fault the composition root does not
+route is a fault nothing injects, which is why the known-names check lives here.
 """
 
 from __future__ import annotations
@@ -35,8 +41,10 @@ from typing import Final, Literal
 from pydantic import SecretStr
 
 from src.harness.context_manager import ContextBudget, ContextManager
-from src.harness.contracts import RunId
+from src.harness.contracts import EscalationRecord, RunId
 from src.harness.errors import ConfigurationError
+from src.harness.escalation import EscalationNotifier, WebhookNotifier
+from src.harness.faults import LLM_FAULTS, Fault, FaultInjectingLlmClient, parse_fault
 from src.harness.gateway import ToolGateway
 from src.harness.guardrails import PolicyEngine
 from src.harness.llm import GeminiClient, LlmClient
@@ -46,7 +54,11 @@ from src.harness.orchestrator import HEARTBEAT_INTERVAL_S, Orchestrator, new_run
 from src.harness.storage import apply_migrations
 from src.integrations.cicd.gateway_github import GitHubToolGateway
 from src.integrations.cicd.gateway_replay import ReplayToolGateway
-from src.integrations.cicd.wiring import build_orchestrator, load_policy_spec
+from src.integrations.cicd.wiring import (
+    FAULT_FABRICATE_CITATION,
+    build_orchestrator,
+    load_policy_spec,
+)
 from src.settings import Settings, get_settings
 
 logger = logging.getLogger("harness.api.deps")
@@ -67,9 +79,69 @@ SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
-#: The escalation channels a run built here delivers on. `db` is real since Phase 3:
-#: `MemoryStore.save_run` files the record on the `escalation` table (dispatch decision 13).
+#: The escalation channels every run built here delivers on. `db` is real since Phase 3:
+#: `MemoryStore.save_run` files the record on the `escalation` table (dispatch decision
+#: 13). `webhook` (Phase 4) is added by `escalation_channels_for` when a URL is set.
 ESCALATION_CHANNELS: Final[tuple[str, ...]] = ("log", "db")
+
+#: Every `HARNESS_FAULT_INJECT` name some component knows how to inject: the store's,
+#: the LLM client wrapper's, and the CI/CD integration's. Anything else is refused at
+#: boot -- a misspelt fault that injects nothing would make a Verify step pass vacuously.
+KNOWN_FAULTS: Final[frozenset[str]] = frozenset(
+    {FAULT_SQLITE_LOCKED, *LLM_FAULTS, FAULT_FABRICATE_CITATION}
+)
+
+
+def webhook_url(settings: Settings) -> str | None:
+    """`HARNESS_ESCALATION_WEBHOOK_URL`, or `None` when unset or blank -- an empty value
+    from a `.env` line with nothing after the `=` is "no webhook", not a webhook at ""."""
+    if settings.escalation_webhook_url is None:
+        return None
+    url = settings.escalation_webhook_url.get_secret_value().strip()
+    return url or None
+
+
+def escalation_channels_for(settings: Settings) -> tuple[str, ...]:
+    """`log` and `db` always; `webhook` when `HARNESS_ESCALATION_WEBHOOK_URL` is set."""
+    if webhook_url(settings) is not None:
+        return (*ESCALATION_CHANNELS, "webhook")
+    return ESCALATION_CHANNELS
+
+
+def build_fault(settings: Settings) -> Fault | None:
+    """Parse `HARNESS_FAULT_INJECT`, or refuse it.
+
+    Refused outside `env=dev` (Appendix E: "test-only; refused when env != dev") and for
+    any name outside `KNOWN_FAULTS`, both at construction, so a production process with
+    the variable set fails to boot rather than serving degraded runs -- and a typo fails
+    the boot rather than injecting nothing.
+    """
+    spec = settings.fault_inject
+    if spec is None or not spec.strip():
+        # Unset, or set to nothing (`HARNESS_FAULT_INJECT=` in a `.env`, or compose
+        # forwarding a variable the shell never exported): no fault.
+        return None
+    if settings.env != "dev":
+        raise ConfigurationError(
+            "HARNESS_FAULT_INJECT is a development-only setting and is refused when "
+            f"HARNESS_ENV={settings.env!r}"
+        )
+    fault = parse_fault(spec)
+    if fault.name not in KNOWN_FAULTS:
+        raise ConfigurationError(f"unknown fault injection {fault.name!r}")
+    return fault
+
+
+def build_notifier(settings: Settings, redactor: Redactor) -> EscalationNotifier | None:
+    """The outbound escalation channel (Appendix B.4), or `None` when no URL is set.
+
+    The URL is a `SecretStr` and therefore already in the redactor's registry; the
+    notifier scrubs every body through that same redactor before it leaves.
+    """
+    url = webhook_url(settings)
+    if url is None:
+        return None
+    return WebhookNotifier(url, redactor=redactor)
 
 
 @dataclass(frozen=True)
@@ -129,11 +201,46 @@ class AppContext:
     #: while it waits for a concurrency slot, before the orchestrator's own heartbeat
     #: takes over. The orchestrator's constant; a knob only so a test can shrink it.
     heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S
+    #: Phase 4. The parsed `HARNESS_FAULT_INJECT`, routed by `build_orchestrator_for`
+    #: (LLM faults, the citation fault) and by the default memory store below (the store
+    #: fault). Defaulted from the settings in `__post_init__` so a hand-built context is
+    #: guarded exactly like the real one.
+    fault: Fault | None = None
+    #: Phase 4. The outbound escalation channel; `None` when no webhook URL is set.
+    #: Defaulted from the settings in `__post_init__`.
+    notifier: EscalationNotifier | None = None
 
     def __post_init__(self) -> None:
+        if self.fault is None:
+            object.__setattr__(self, "fault", build_fault(self.settings))
         if self.memory is None:
             object.__setattr__(
-                self, "memory", build_memory_store(self.settings, self.recorder.redactor)
+                self,
+                "memory",
+                build_memory_store(self.settings, self.recorder.redactor, fault=self.fault),
+            )
+        if self.notifier is None:
+            object.__setattr__(
+                self, "notifier", build_notifier(self.settings, self.recorder.redactor)
+            )
+
+    @property
+    def escalation_channels(self) -> tuple[str, ...]:
+        return escalation_channels_for(self.settings)
+
+    async def deliver_escalation(
+        self, run_id: RunId, record: EscalationRecord
+    ) -> EscalationRecord:
+        """Deliver an escalation raised outside a run (the approval route) on the same
+        outbound channel a run's own escalations use. Never raises (Appendix B.4)."""
+        if self.notifier is None:
+            return record
+        try:
+            return await self.notifier.deliver(run_id, record)
+        except Exception:  # noqa: BLE001 - a delivery failure never fails the request
+            logger.warning("run %s: escalation notifier raised", run_id, exc_info=True)
+            return record.model_copy(
+                update={"delivered_at": None, "delivery_error": "notifier raised"}
             )
 
     @property
@@ -221,11 +328,21 @@ class AppContext:
         ``run_id`` fixes the id the run will be recorded under, so a route that must
         answer with an id *before* the run finishes can mint one and still have the
         orchestrator agree with it.
+
+        Phase 4: an LLM fault wraps the client *per run*, so its per-agent counters start
+        fresh for every run (`faults.FaultInjectingLlmClient`); the citation fault reaches
+        the Diagnostician through the wiring.
         """
+        llm = self.llm
+        fabricate_citation = False
+        if self.fault is not None and self.fault.name in LLM_FAULTS:
+            llm = FaultInjectingLlmClient(self.llm, self.fault)
+        elif self.fault is not None and self.fault.name == FAULT_FABRICATE_CITATION:
+            fabricate_citation = True
         orchestrator = build_orchestrator(
             gateway=gateway,
             context_manager=self.context_manager,
-            llm=self.llm,
+            llm=llm,
             recorder=self.recorder,
             engine=self.engine,
             escalation_threshold=self.settings.escalation_threshold,
@@ -236,8 +353,10 @@ class AppContext:
             remediator_model=self.settings.model_remediator or self.settings.gemini_model,
             timeout_s=self.settings.gemini_timeout_s,
             approval_ttl_h=self.settings.approval_ttl_h,
-            escalation_channels=ESCALATION_CHANNELS,
+            escalation_channels=self.escalation_channels,
             memory=self.memory,
+            notifier=self.notifier,
+            fabricate_citation=fabricate_citation,
         )
         if run_id is not None:
             orchestrator.run_id_factory = lambda: run_id
@@ -252,27 +371,22 @@ class AppContext:
         )
 
 
-def build_memory_store(settings: Settings, redactor: Redactor | None = None) -> SqliteMemoryStore:
+def build_memory_store(
+    settings: Settings, redactor: Redactor | None = None, *, fault: Fault | None = None
+) -> SqliteMemoryStore:
     """The one `MemoryStore`, over the same file the recorder writes, scrubbing what it
     stores through the same `Redactor` the recorder uses (or one built here when a
     hand-assembled context did not pass its own).
 
-    `HARNESS_FAULT_INJECT=sqlite_locked` makes every store operation fail as if the file
-    were locked -- PLAN.md Phase 3 Verify step 4 -- and is refused outside `env=dev`
-    (Appendix E: "test-only; refused when env != dev"), at construction, so a production
-    process with the variable set fails to boot rather than serving degraded runs.
+    `fault` is the already-guarded `HARNESS_FAULT_INJECT` (`build_fault`); only
+    `sqlite_locked` is the store's -- it makes every store operation fail as if the file
+    were locked (PLAN.md Phase 3 Verify step 4) -- and any other fault leaves the store
+    alone.
     """
-    fault = settings.fault_inject
-    if fault is not None and settings.env != "dev":
-        raise ConfigurationError(
-            "HARNESS_FAULT_INJECT is a development-only setting and is refused when "
-            f"HARNESS_ENV={settings.env!r}"
-        )
-    if fault is not None and fault != FAULT_SQLITE_LOCKED:
-        raise ConfigurationError(f"unknown fault injection {fault!r}")
+    store_fault = fault.name if fault is not None and fault.name == FAULT_SQLITE_LOCKED else None
     return SqliteMemoryStore(
         settings.database_path,
-        fault_inject=fault,
+        fault_inject=store_fault,
         redactor=redactor or Redactor(build_secret_registry(settings), SECRET_PATTERNS),
     )
 
@@ -315,6 +429,7 @@ def get_app_context() -> AppContext:
         api_key=settings.gemini_api_key.get_secret_value(),
         default_timeout_s=settings.gemini_timeout_s,
     )
+    fault = build_fault(settings)
 
     return AppContext(
         settings=settings,
@@ -322,8 +437,10 @@ def get_app_context() -> AppContext:
         context_manager=context_manager,
         llm=llm,
         run_semaphore=asyncio.Semaphore(settings.max_concurrent_runs),
-        memory=build_memory_store(settings, redactor),
+        memory=build_memory_store(settings, redactor, fault=fault),
         engine=PolicyEngine(load_policy_spec()),
+        fault=fault,
+        notifier=build_notifier(settings, redactor),
     )
 
 

@@ -19,7 +19,10 @@ rules:
     when:
       diagnosis.category:            {in: [flaky_test, infra_transient]}
       diagnosis.final_confidence:    {gte: 0.75}
-      evaluation.verdict:            {in: [pass, skipped]}
+      evaluation.verdict:            {in: [pass, warn]}   # Phase 4: a real verdict exists.
+                                                          # `warn` matches so the harness can
+                                                          # downgrade allow -> require_approval;
+                                                          # `skipped` (no citations) matches nothing.
       memory.retries_for_signature_24h: {lt: 2}
       context.cold_start:            {eq: false}
     obligations: [record_observation, annotate_run]
@@ -30,8 +33,8 @@ rules:
     when:
       diagnosis.category:         {in: [real_regression, dependency_break, config_issue]}
       diagnosis.final_confidence: {gte: 0.85}
-      evaluation.verdict:         {in: [pass, skipped]}   # `skipped` comes back out in Phase 4,
-                                                          # when a real verdict exists (amendment 2)
+      evaluation.verdict:         {in: [pass, warn]}      # Phase 4 (Phase 2 amendment 2): `skipped`
+                                                          # is out now that a verdict is computed
     obligations: [draft_only, label:agent-generated, no_auto_merge, assign_human_reviewer]
 
   - id: file-ticket

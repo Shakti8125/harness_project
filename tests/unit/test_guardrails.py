@@ -26,6 +26,7 @@ from src.harness.guardrails import (
     PolicyDecision,
     PolicyEngine,
     PolicySpec,
+    downgrade_for_warn,
     load_policy,
 )
 from src.integrations.cicd.gateway_github import GitHubToolGateway
@@ -54,7 +55,7 @@ def engine(spec: PolicySpec) -> PolicyEngine:
 def facts(
     category: str = "flaky_test",
     confidence: float = 0.9,
-    verdict: str = "skipped",
+    verdict: str = "pass",   # Phase 4: a real verdict exists; `skipped` matches no rule
     *,
     retries: int = 0,
     cold_start: bool = False,
@@ -263,13 +264,52 @@ def test_action_cap_is_not_expressible_in_yaml(spec: PolicySpec) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_amended_open_fix_pr_rule_matches_a_skipped_verdict(engine: PolicyEngine) -> None:
-    """Amendment 2: the Evaluator is Phase 4, so `skipped` must reach require_approval."""
+def test_skipped_verdict_no_longer_matches_any_write_rule(engine: PolicyEngine) -> None:
+    """Phase 2 amendment 2, closed in Phase 4: with a real verdict computed, `skipped`
+    (a run with no citations, or one without the evaluate stage) matches neither write
+    rule -- the default deny answers and names the clause. `file-ticket` still does."""
     for tool in ("create_branch", "create_or_update_file", "open_pull_request"):
         decision = engine.decide(ctx(tool, "write", facts("real_regression", 0.9, "skipped")))
+        assert decision.effect == "deny", tool
+        assert decision.rule_id == RULE_DEFAULT
+        assert "evaluation.verdict: 'skipped'" in decision.reason
+    retry = engine.decide(ctx("rerun_failed_jobs", "write", facts(verdict="skipped")))
+    assert retry.effect == "deny" and retry.rule_id == RULE_DEFAULT
+    ticket = engine.decide(ctx("create_issue", "write", facts(verdict="skipped")))
+    assert ticket.effect == "allow" and ticket.rule_id == "file-ticket"
+
+
+def test_warn_verdict_matches_both_write_rules_so_the_harness_can_downgrade(
+    engine: PolicyEngine,
+) -> None:
+    """`warn` must *match* (PLAN.md Phase 4: "the run proceeds but every effect is
+    downgraded one step"); the downgrade itself is `guardrails.downgrade_for_warn`,
+    applied by the integration's `decide_plan`, not by the matcher."""
+    retry = engine.decide(ctx("rerun_failed_jobs", "write", facts(verdict="warn")))
+    assert retry.effect == "allow" and retry.rule_id == "retry-suspected-flaky"
+    for tool in ("create_branch", "create_or_update_file", "open_pull_request"):
+        decision = engine.decide(ctx(tool, "write", facts("real_regression", 0.9, "warn")))
         assert decision.effect == "require_approval", tool
         assert decision.rule_id == "open-fix-pr"
-        assert "draft_only" in decision.obligations
+    fail = engine.decide(ctx("rerun_failed_jobs", "write", facts(verdict="fail")))
+    assert fail.effect == "deny" and fail.rule_id == RULE_DEFAULT
+
+
+def test_downgrade_for_warn_moves_allow_one_step_and_nothing_else(engine: PolicyEngine) -> None:
+    allowed = engine.decide(ctx("rerun_failed_jobs", "write", facts(verdict="warn")))
+    downgraded = downgrade_for_warn(allowed)
+    assert downgraded.effect == "require_approval"
+    assert downgraded.downgraded_from == "allow"
+    assert downgraded.rule_id == "retry-suspected-flaky"
+    assert downgraded.obligations == allowed.obligations
+    assert "verdict warn" in downgraded.reason
+
+    approval = engine.decide(ctx("create_branch", "write", facts("real_regression", 0.9, "warn")))
+    assert downgrade_for_warn(approval) == approval
+    assert downgrade_for_warn(approval).downgraded_from is None
+
+    denied = engine.decide(ctx("merge_pull_request", "destructive", facts(verdict="warn")))
+    assert downgrade_for_warn(denied) == denied
 
 
 def test_retry_rule_allows_only_with_a_real_count_under_the_cap(engine: PolicyEngine) -> None:
@@ -393,7 +433,9 @@ def test_duplicate_rule_ids_are_rejected() -> None:
 def test_shipped_policy_is_the_amended_plan_text(spec: PolicySpec) -> None:
     """Pins the two facts the phase's Verify block depends on."""
     by_id = {rule.id: rule for rule in spec.rules}
-    assert by_id["open-fix-pr"].when["evaluation.verdict"].in_ == ["pass", "skipped"]
+    # Phase 4: `skipped` is out (Phase 2 amendment 2), `warn` is in so it can be downgraded.
+    assert by_id["open-fix-pr"].when["evaluation.verdict"].in_ == ["pass", "warn"]
+    assert by_id["retry-suspected-flaky"].when["evaluation.verdict"].in_ == ["pass", "warn"]
     assert by_id["retry-suspected-flaky"].when["memory.retries_for_signature_24h"].lt == 2
     assert set(spec.forbidden) == {
         "merge_pull_request", "force_push", "delete_branch",

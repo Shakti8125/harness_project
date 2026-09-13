@@ -52,6 +52,7 @@ from src.harness.observability import ATTR_DEGRADED_COMPONENT, TraceRecorder
 
 if TYPE_CHECKING:
     from src.harness.agent import Agent
+    from src.harness.escalation import EscalationNotifier
     from src.harness.memory import MemoryStore
 
 logger = logging.getLogger("harness.orchestrator")
@@ -240,6 +241,7 @@ class Orchestrator:
         run_budget_s: float = DEFAULT_RUN_BUDGET_S,
         memory: MemoryStore | None = None,
         heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S,
+        notifier: EscalationNotifier | None = None,
     ) -> None:
         """Bind the driver to its stage list and the agents behind it.
 
@@ -267,6 +269,12 @@ class Orchestrator:
         outcome after, both by whoever drives the orchestrator -- and a heartbeat that
         fails is logged, never raised: memory is a soft dependency and a run must not die
         because its liveness record could not be written.
+
+        ``notifier`` (Phase 4) is the outbound escalation channel -- Appendix B.4's
+        webhook -- and is awaited by ``_escalate`` for every escalation the run records.
+        Its verdict lands on the record (``delivered_at`` / ``delivery_error``), never on
+        the run: a delivery that fails is a fact about the notification, and the run's
+        status and its ``escalation`` row are the same either way.
         """
         missing = [
             stage.agent_key
@@ -287,11 +295,12 @@ class Orchestrator:
         self.run_budget_s = run_budget_s
         self.memory = memory
         self.heartbeat_interval_s = heartbeat_interval_s
+        self.notifier = notifier
 
     def _artifact_key(self, stage: StageSpec) -> str:
         return self.artifact_keys.get(stage.name, stage.name)
 
-    def _escalate(
+    async def _escalate(
         self,
         *,
         run_id: RunId,
@@ -301,13 +310,16 @@ class Orchestrator:
     ) -> EscalationRecord:
         """Build the escalation record and deliver it on the configured channels.
 
-        Phase 1 delivers to the log only. Appendix B.4 is explicit that a delivery
-        failure never fails the run -- the record is the durable artifact, the webhook is
-        a convenience -- so the outbound channels arriving in a later phase changes what
-        is *notified*, never what is *returned*.
+        The log line is written here; the ``db`` channel is the store's ``save_run``
+        (Phase 3); the ``webhook`` channel is the notifier (Phase 4), awaited here so its
+        result rides on the record. Appendix B.4 is explicit that a delivery failure
+        never fails the run -- the record is the durable artifact, the webhook is a
+        convenience -- so the notifier changes what is *notified*, never what is
+        *returned*: ``delivered_at`` is when the furthest channel accepted the record and
+        ``delivery_error`` says why the webhook did not, and the status is unaffected.
         """
         logger.warning("run %s escalated (%s): %s", run_id, reason, message)
-        return EscalationRecord(
+        record = EscalationRecord(
             escalation_id="esc_" + secrets.token_hex(8),
             reason=reason,
             message=message,
@@ -315,6 +327,15 @@ class Orchestrator:
             channels=list(self.escalation_channels),
             delivered_at=datetime.now(UTC),
         )
+        if self.notifier is None:
+            return record
+        try:
+            return await self.notifier.deliver(run_id, record)
+        except Exception:  # noqa: BLE001 - B.4: a delivery failure never fails the run
+            logger.warning("run %s: escalation notifier raised", run_id, exc_info=True)
+            return record.model_copy(
+                update={"delivered_at": None, "delivery_error": "notifier raised"}
+            )
 
     async def run(self, request: RunRequest) -> RunOutcome:
         """Drive every stage for one request and return its outcome.
@@ -374,7 +395,7 @@ class Orchestrator:
                                     )
                                     reason = "unknown_category"
                                 status = "escalated"
-                                escalation = self._escalate(
+                                escalation = await self._escalate(
                                     run_id=run_id,
                                     reason=reason,  # type: ignore[arg-type]
                                     message=decision.reason,
@@ -423,7 +444,7 @@ class Orchestrator:
                             )
                         )
                         status = "escalated"
-                        escalation = self._escalate(
+                        escalation = await self._escalate(
                             run_id=run_id,
                             reason="run_timeout",
                             message=(
@@ -477,7 +498,7 @@ class Orchestrator:
                                 )
                                 reason = "unknown_category"
                             status = "escalated"
-                            escalation = self._escalate(
+                            escalation = await self._escalate(
                                 run_id=run_id,
                                 reason=reason,  # type: ignore[arg-type]
                                 message=suspension.reason,
@@ -502,7 +523,7 @@ class Orchestrator:
                     # `EscalationReason` check on the argument below.
                     outcome = _OUTCOME_FOR_ERROR_KIND.get(kind, _DEFAULT_STAGE_OUTCOME)
                     status = outcome[0]
-                    escalation = self._escalate(
+                    escalation = await self._escalate(
                         run_id=run_id,
                         reason=outcome[1],
                         message=(

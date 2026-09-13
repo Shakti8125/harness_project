@@ -160,8 +160,13 @@ async def test_an_optional_tool_call_404_never_fires_gateway_degraded(
     outcome = await _run(scenario_dir, notes)
 
     diagnosis = outcome.final["diagnosis"]
-    assert diagnosis["final_confidence"] == pytest.approx(0.95)
-    assert diagnosis["confidence_adjustments"] == []
+    # Phase 4: the stub's citations all verify, so `evidence_fully_verified` (+0.05)
+    # lifts 0.95 to the 0.99 ceiling. The point of the test is unchanged: no
+    # `gateway_degraded` row, and nothing pulled the figure *down*.
+    assert diagnosis["final_confidence"] == pytest.approx(0.99)
+    assert [a["name"] for a in diagnosis["confidence_adjustments"]] == [
+        "evidence_fully_verified"
+    ]
     bundle = outcome.final["bundle"]
     assert bundle["gateway_errors"] == []
 
@@ -218,5 +223,10 @@ async def test_a_refused_write_tool_request_carries_no_confidence_signal(
     diagnosis = outcome.final["diagnosis"]
     bundle = outcome.final["bundle"]
     assert bundle["gateway_errors"] == []
-    assert diagnosis["final_confidence"] == pytest.approx(0.95)
-    assert diagnosis["confidence_adjustments"] == []
+    # Phase 4: the stub's citations all verify, so `evidence_fully_verified` (+0.05)
+    # lifts 0.95 to the 0.99 ceiling. The point of the test is unchanged: no
+    # `gateway_degraded` row, and nothing pulled the figure *down*.
+    assert diagnosis["final_confidence"] == pytest.approx(0.99)
+    assert [a["name"] for a in diagnosis["confidence_adjustments"]] == [
+        "evidence_fully_verified"
+    ]

@@ -19,7 +19,7 @@ import logging
 import re
 import secrets
 import sqlite3
-from collections.abc import AsyncIterator, Coroutine, Mapping
+from collections.abc import AsyncIterator, Coroutine, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -59,10 +59,10 @@ from src.integrations.cicd.history import (
     unavailable_history,
 )
 from src.integrations.cicd.remediation import (
-    EVALUATION_SKIPPED,
     build_facts,
     decide_plan,
     denial_summary,
+    evaluation_verdict_of,
     execute_plan,
     failed_execution,
     failure_summary,
@@ -76,7 +76,7 @@ from src.integrations.cicd.schemas import (
     PriorHistory,
     RemediationResult,
 )
-from src.integrations.cicd.wiring import INTEGRATION, REMEDIATION_KEY
+from src.integrations.cicd.wiring import EVALUATION_KEY, INTEGRATION, REMEDIATION_KEY
 from src.settings import get_settings
 
 APP_VERSION = "0.1.0"
@@ -1127,14 +1127,15 @@ class ApprovalDecision(BaseModel):
 
 
 def _escalation_after_approval(
-    remediation: RemediationResult,
+    remediation: RemediationResult, channels: Sequence[str] = ("log",)
 ) -> EscalationRecord | None:
     """The same two rules `wiring.remediation_suspend` applies in-run, for a plan decided
     later through the approval route: an execution that failed escalates `tool_failure`
     (Appendix B.2); a re-evaluation that *denied* an approved plan escalates
     `policy_denied` (review finding 3 -- unreachable while the facts cannot change between
     suspension and approval, live once memory can move them). A person's rejection is
-    neither: it completes the run.
+    neither: it completes the run. `channels` is what the composition root delivers on;
+    the record is built here and delivered by `_settle_run`.
     """
     approval_id = (
         remediation.pending_approval.approval_id
@@ -1154,7 +1155,7 @@ def _escalation_after_approval(
                 "error_kind": failed.error.kind if failed.error is not None else None,
                 "executed": len(remediation.executed),
             },
-            channels=["log"],
+            channels=list(channels),  # type: ignore[arg-type]
             delivered_at=datetime.now(UTC),
         )
     if remediation.status == "denied":
@@ -1171,35 +1172,38 @@ def _escalation_after_approval(
                     for d in remediation.decisions
                 ],
             },
-            channels=["log"],
+            channels=list(channels),  # type: ignore[arg-type]
             delivered_at=datetime.now(UTC),
         )
     return None
 
 
 async def _settle_run(
-    memory: MemoryStore, run_id: RunId, remediation: RemediationResult
+    context: AppContext, run_id: RunId, remediation: RemediationResult
 ) -> None:
     """Write the decided remediation back into the stored `RunOutcome`.
 
     Without this, `GET /v1/runs/{id}` would say `awaiting_approval` forever after the
     approval was decided -- the response to the `POST` would be the only record. The run's
-    status follows the rules `_escalation_after_approval` states.
+    status follows the rules `_escalation_after_approval` states, and an escalation is
+    delivered on the same channels a run's own would be (Phase 4: the webhook, when
+    configured) before it is filed.
     """
+    memory = context.store
     outcome = await memory.get_run(run_id)
     if outcome is None:
         return
     final = dict(outcome.final)
     final[REMEDIATION_KEY] = remediation.model_dump(mode="json")
     update: dict[str, Any] = {"status": "completed", "final": final}
-    escalation = _escalation_after_approval(remediation)
+    escalation = _escalation_after_approval(remediation, context.escalation_channels)
     if escalation is not None:
-        update["status"] = "escalated"
-        update["escalation"] = escalation
         logger.warning(
             "run %s escalated (%s) after approval: %s",
             run_id, escalation.reason, escalation.message,
         )
+        update["status"] = "escalated"
+        update["escalation"] = await context.deliver_escalation(run_id, escalation)
     await memory.save_run(outcome.model_copy(update=update))
 
 
@@ -1276,10 +1280,10 @@ async def _execute_approved(
     facts = build_facts(
         diagnosis,
         bundle,
-        # Phase 4: the run's own evaluation verdict, the same value the Remediator was
-        # given in-run. Spelled here rather than defaulted so that change has to happen
-        # in both places at once.
-        evaluation_verdict=EVALUATION_SKIPPED,
+        # Phase 4: the run's own evaluation verdict, read off the stored outcome exactly
+        # as the Remediator read it off the live artifact -- one helper for both, so a
+        # plan judged under `warn` in-run is judged under `warn` again here.
+        evaluation_verdict=evaluation_verdict_of(outcome.final.get(EVALUATION_KEY)),
         # Nothing executed before the suspension, by construction (`plan_verdict`).
         side_effecting_actions_so_far=0,
     )
@@ -1371,12 +1375,12 @@ async def decide_approval(
             pending_approval=approval,
             status="rejected",
         )
-        await _settle_run(memory, record.run_id, remediation)
+        await _settle_run(context, record.run_id, remediation)
         decisions = [d.model_dump(mode="json") for d in approval.decisions]
         executed: list[dict[str, Any]] = []
     else:
         remediation, decisions = await _execute_approved(context, record)
-        await _settle_run(memory, record.run_id, remediation)
+        await _settle_run(context, record.run_id, remediation)
         executed = [r.model_dump(mode="json") for r in remediation.executed]
 
     payload: dict[str, JsonValue] = {

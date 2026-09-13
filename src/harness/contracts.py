@@ -104,6 +104,11 @@ class EscalationRecord(BaseModel):
     payload: dict[str, JsonValue]
     channels: list[Literal["log", "db", "webhook"]]
     delivered_at: datetime | None
+    # Phase 4 amendment, additive: Appendix B.4 says a failed webhook delivery is
+    # "recorded in `escalation.delivery_error`" and the `escalation` table has had the
+    # column since Phase 3; the contract lacked the field. `None` when delivery succeeded
+    # or no outbound channel is configured. Never carries the webhook URL.
+    delivery_error: str | None = None
 
 
 class RunOutcome(BaseModel):

@@ -46,7 +46,7 @@ from src.harness.llm import (
     to_gemini_schema,
 )
 from src.harness.observability import ATTR_DEGRADED_COMPONENT, TraceRecorder
-from src.harness.recovery import RetryPolicy, retry_structured
+from src.harness.recovery import OutputBudget, RetryPolicy, retry_structured
 
 #: How a terminal `AgentError.kind` becomes an `AgentResult.status`. The two vocabularies
 #: are deliberately different sizes -- the error names the condition, the status names
@@ -217,6 +217,9 @@ class LLMAgent[TOut: BaseModel]:
             span.set_attribute("prompt_chars", len(prompt.text))
 
             schema = self.schema_translator(self.output_model)
+            # Shared with the retry loop, which grows it on a `MAX_TOKENS` finish
+            # (Appendix B.1's "x1.5"); the closure reads it afresh on every attempt.
+            output_budget = OutputBudget(self.max_output_tokens)
 
             async def call(text: str) -> RawLlmResponse:
                 return await self.llm.generate(
@@ -225,14 +228,15 @@ class LLMAgent[TOut: BaseModel]:
                         prompt=text,
                         schema=schema,
                         temperature=self.temperature,
-                        max_output_tokens=self.max_output_tokens,
+                        max_output_tokens=output_budget.max_output_tokens,
                         thinking_budget=self.thinking_budget,
                         timeout_s=self.timeout_s,
                     )
                 )
 
             output, attempts, error = await retry_structured(
-                call, prompt.text, self.output_model, self.retry_policy, self.recorder
+                call, prompt.text, self.output_model, self.retry_policy, self.recorder,
+                output_budget=output_budget,
             )
 
             tokens = TokenUsage(

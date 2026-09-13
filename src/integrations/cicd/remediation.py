@@ -34,18 +34,21 @@ import hashlib
 import json
 import logging
 import secrets
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Final, Literal
 
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue
 
 from src.harness.contracts import RunId
+from src.harness.evaluator import EvaluationReport
 from src.harness.gateway import ToolCall, ToolGateway, ToolResult
 from src.harness.guardrails import (
     FACT_SIDE_EFFECTING_ACTIONS,
     ActionContext,
     PolicyDecision,
     PolicyEngine,
+    downgrade_for_warn,
 )
 from src.harness.observability import TraceRecorder
 from src.integrations.cicd.catalog import side_effect_of
@@ -61,11 +64,18 @@ from src.integrations.cicd.schemas import (
 
 logger = logging.getLogger("harness.integrations.cicd.remediation")
 
-#: The Evaluator is Phase 4. Until then the verdict fact is the literal `"skipped"` --
-#: honest about a verdict nobody computed, and the policy rules admit it explicitly (the
-#: `{in: [pass, skipped]}` clauses), so that admission is visible in the policy file and
-#: comes back out when a real verdict exists.
+#: The verdict fact for a run that has no `evaluation` artifact -- a hand-built
+#: orchestrator without the evaluate stage, or a run stored before Phase 4 and decided
+#: through the approval route now. Honest about a verdict nobody computed; since Phase 4
+#: no rule in `policy.yaml` admits it (PLAN Phase 2 amendment 2), so such a run can file a
+#: ticket and nothing else.
 EVALUATION_SKIPPED: Final[str] = "skipped"
+
+#: The verdict under which every side-effecting decision is downgraded one step.
+EVALUATION_WARN: Final[str] = "warn"
+
+#: The fact key the policy's `evaluation.verdict` clauses read.
+FACT_EVALUATION_VERDICT: Final[str] = "evaluation.verdict"
 
 PlanVerdict = Literal["execute", "await_approval", "deny", "no_action"]
 
@@ -88,6 +98,25 @@ TOOLS_FOR_ACTION: Final[dict[str, frozenset[str]]] = {
 # ---------------------------------------------------------------------------
 
 
+def evaluation_verdict_of(evaluation: object) -> str:
+    """The run's evaluation verdict, from the live artifact or its stored JSON.
+
+    One function for the two callers of `build_facts` (the Remediator in-run over
+    `state.artifacts["evaluation"]`, the approval route over
+    `outcome.final["evaluation"]`), so both read the same verdict for the same run and
+    fall back to the same `EVALUATION_SKIPPED` when the run has none.
+    """
+    if isinstance(evaluation, EvaluationReport):
+        return evaluation.verdict
+    if isinstance(evaluation, BaseModel):
+        verdict = getattr(evaluation, "verdict", None)
+        return verdict if isinstance(verdict, str) else EVALUATION_SKIPPED
+    if isinstance(evaluation, Mapping):
+        verdict = evaluation.get("verdict")
+        return verdict if isinstance(verdict, str) else EVALUATION_SKIPPED
+    return EVALUATION_SKIPPED
+
+
 def build_facts(
     diagnosis: Diagnosis,
     bundle: FailureBundle,
@@ -103,15 +132,15 @@ def build_facts(
     not (yet) read are included where they cost nothing and make the trace more legible.
 
     `evaluation_verdict` has no default on purpose: two callers build facts (the
-    Remediator in-run, the approval route later), and when Phase 4 gives a run a real
-    verdict both must pass it -- a default here would let one of them keep re-evaluating
-    against a verdict the run never had (review note).
+    Remediator in-run, the approval route later), and both must pass the run's real
+    verdict through `evaluation_verdict_of` -- a default here would let one of them keep
+    re-evaluating against a verdict the run never had (review note).
     """
     return {
         "diagnosis.category": diagnosis.category,
         "diagnosis.final_confidence": diagnosis.final_confidence,
         "diagnosis.suggested_action": diagnosis.suggested_action,
-        "evaluation.verdict": evaluation_verdict,
+        FACT_EVALUATION_VERDICT: evaluation_verdict,
         "memory.retries_for_signature_24h": bundle.prior_history.retries_in_24h,
         "memory.unavailable": bundle.prior_history.unavailable,
         "context.cold_start": bundle.cold_start,
@@ -292,15 +321,24 @@ def normalize_plan(
 def decide_plan(
     engine: PolicyEngine, plan: RemediationPlan, facts: dict[str, JsonValue]
 ) -> list[PolicyDecision]:
-    """One `PolicyDecision` per proposed call, in plan order, none of them executed."""
-    return [
-        engine.decide(
-            ActionContext(
-                tool=call.tool, side_effect=side_effect_of(call.tool), facts=facts
-            )
+    """One `PolicyDecision` per proposed call, in plan order, none of them executed.
+
+    PLAN.md Phase 4: when the run's evaluation verdict is `warn` -- a citation could not
+    be checked -- every side-effecting effect is downgraded one step
+    (`guardrails.downgrade_for_warn`), so a plan that would have executed now waits for
+    a person. Read calls are not downgraded; nothing about a read needs approval.
+    """
+    warned = facts.get(FACT_EVALUATION_VERDICT) == EVALUATION_WARN
+    decisions: list[PolicyDecision] = []
+    for call in plan.tool_calls:
+        side_effect = side_effect_of(call.tool)
+        decision = engine.decide(
+            ActionContext(tool=call.tool, side_effect=side_effect, facts=facts)
         )
-        for call in plan.tool_calls
-    ]
+        if warned and side_effect != "read":
+            decision = downgrade_for_warn(decision)
+        decisions.append(decision)
+    return decisions
 
 
 def plan_verdict(plan: RemediationPlan, decisions: list[PolicyDecision]) -> PlanVerdict:

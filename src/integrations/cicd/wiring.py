@@ -18,6 +18,8 @@ from typing import Any, Final
 from src.harness.agent import Agent
 from src.harness.confidence import DEFAULT_ADJUSTMENT_DELTAS, ConfidenceModel
 from src.harness.context_manager import ContextManager
+from src.harness.escalation import EscalationNotifier
+from src.harness.evaluator import EvaluationReport, Evaluator
 from src.harness.gateway import ToolGateway
 from src.harness.guardrails import PolicyEngine, PolicySpec, load_policy
 from src.harness.llm import LlmClient
@@ -36,8 +38,10 @@ from src.integrations.cicd.agents.diagnostician import (
     EMPTY_DIFF_CONTRADICTION_DELTA,
     Diagnostician,
 )
+from src.integrations.cicd.agents.evaluator import EVALUATOR_KEY, EvidenceEvaluator
 from src.integrations.cicd.agents.investigator import Investigator
 from src.integrations.cicd.agents.remediator import DEFAULT_APPROVAL_TTL_H, Remediator
+from src.integrations.cicd.claim_checkers import build_claim_checkers
 from src.integrations.cicd.remediation import (
     denial_summary,
     failed_execution,
@@ -55,12 +59,18 @@ POLICY_PATH: Final[Path] = Path(__file__).with_name("policy.yaml")
 ARTIFACT_KEYS: Final[Mapping[str, str]] = {
     "investigate": "bundle",
     "diagnose": "diagnosis",
+    "evaluate": "evaluation",
     "remediate": "remediation",
 }
 
 DIAGNOSIS_KEY: Final[str] = "diagnosis"
 EVALUATION_KEY: Final[str] = "evaluation"
 REMEDIATION_KEY: Final[str] = "remediation"
+
+#: `HARNESS_FAULT_INJECT` value that makes the Diagnostician cite a line the log does not
+#: contain (PLAN.md Phase 4 Verify, step 2). This integration's one fault name; the
+#: composition root unions it with the harness's and refuses everything else.
+FAULT_FABRICATE_CITATION: Final[str] = "diagnostician_fabricate_citation"
 
 
 def build_confidence_model() -> ConfidenceModel:
@@ -159,11 +169,15 @@ def make_remediation_gate(escalation_threshold: float):  # noqa: ANN201 - closur
 
         evaluation = state.artifacts.get(EVALUATION_KEY)
         # PLAN.md: "a refuted claim overrides confidence entirely". Checked first, and
-        # with no config override, so grounding beats self-belief.
+        # with no config override, so grounding beats self-belief. The report's own
+        # reason travels on the decision, because a `fail` can also be reached on the
+        # verified share alone (nothing refuted, too little verified) and the escalation
+        # should say which.
         if evaluation is not None and getattr(evaluation, "verdict", None) == "fail":
+            why = getattr(evaluation, "reason", "") or "evidence refuted"
             return GateDecision(
                 proceed=False,
-                reason="evidence refuted by evaluator",
+                reason=f"evaluator verdict fail: {why}",
                 escalate_as="evidence_refuted",
             )
         if diagnosis.final_confidence < escalation_threshold:
@@ -184,7 +198,14 @@ def make_remediation_gate(escalation_threshold: float):  # noqa: ANN201 - closur
 
 
 def build_stages(*, escalation_threshold: float) -> list[StageSpec]:
-    """The pipeline: investigate, diagnose, and the gated-and-suspendable remediate stage."""
+    """The pipeline: investigate, diagnose, evaluate, and the gated-and-suspendable
+    remediate stage.
+
+    The evaluate stage (Phase 4) sits between the diagnosis and anything that would act
+    on it. It needs no gate of its own -- a run without a diagnosis never reaches it,
+    because the diagnose stage is required -- and its `fail` verdict is enforced where
+    PLAN.md puts it: the gate on `remediate`, as `evidence_refuted`.
+    """
     return [
         StageSpec(
             name="investigate",
@@ -195,6 +216,11 @@ def build_stages(*, escalation_threshold: float) -> list[StageSpec]:
             name="diagnose",
             agent_key="diagnostician",
             output_model=Diagnosis,
+        ),
+        StageSpec(
+            name="evaluate",
+            agent_key=EVALUATOR_KEY,
+            output_model=EvaluationReport,
         ),
         StageSpec(
             name="remediate",
@@ -222,15 +248,19 @@ def build_agents(
     approval_ttl_h: int = DEFAULT_APPROVAL_TTL_H,
     memory: MemoryStore | None = None,
     escalation_threshold: float | None = None,
+    fabricate_citation: bool = False,
 ) -> dict[str, Agent[Any]]:
-    """The three agents, keyed by `StageSpec.agent_key`.
+    """The four agents, keyed by `StageSpec.agent_key`.
 
-    `memory` (Phase 3) reaches all three: the Investigator reads the prior, the
-    Diagnostician records the verdict, the Remediator records the action. `None` leaves
-    every run reporting its history as unavailable, which fails the retry cap closed.
-    `escalation_threshold` is the same number the remediation gate is built from, handed
-    to the Diagnostician so a verdict the gate will refuse is not tallied as a verdict.
+    `memory` (Phase 3) reaches three of them: the Investigator reads the prior, the
+    evaluate stage records the verdict once the confidence is final (Phase 4 dispatch
+    decision 1), the Remediator records the action. `None` leaves every run reporting
+    its history as unavailable, which fails the retry cap closed. `escalation_threshold`
+    is the same number the remediation gate is built from, handed to the evaluate stage
+    so a verdict the gate will refuse is not tallied as a verdict. `fabricate_citation`
+    is the `diagnostician_fabricate_citation` fault, set only by a dev composition root.
     """
+    model = confidence_model or build_confidence_model()
     return {
         "remediator": Remediator(
             llm=llm,
@@ -259,9 +289,15 @@ def build_agents(
             model=diagnostician_model,
             recorder=recorder,
             context_manager=context_manager,
-            confidence_model=confidence_model or build_confidence_model(),
+            confidence_model=model,
             retry_policy=retry_policy,
             timeout_s=timeout_s,
+            fabricate_citation=fabricate_citation,
+        ),
+        EVALUATOR_KEY: EvidenceEvaluator(
+            evaluator=Evaluator(build_claim_checkers()),
+            recorder=recorder,
+            confidence_model=model,
             memory=memory,
             verdict_threshold=escalation_threshold,
         ),
@@ -285,6 +321,8 @@ def build_orchestrator(
     approval_ttl_h: int = DEFAULT_APPROVAL_TTL_H,
     escalation_channels: Sequence[str] = ("log",),
     memory: MemoryStore | None = None,
+    notifier: EscalationNotifier | None = None,
+    fabricate_citation: bool = False,
 ) -> Orchestrator:
     """Assemble the CI/CD orchestrator from primitives the caller already built.
 
@@ -292,7 +330,8 @@ def build_orchestrator(
     client are: the composition root builds it once at startup (so a malformed policy
     fails the boot, not the first request), and `readyz` reports on that same object.
     `memory` (Phase 3) is the same kind of singleton and is handed to the agents and, for
-    the heartbeat, to the orchestrator itself.
+    the heartbeat, to the orchestrator itself. `notifier` (Phase 4) is the outbound
+    escalation channel, the orchestrator's alone.
     """
     return Orchestrator(
         stages=build_stages(escalation_threshold=escalation_threshold),
@@ -311,9 +350,11 @@ def build_orchestrator(
             approval_ttl_h=approval_ttl_h,
             memory=memory,
             escalation_threshold=escalation_threshold,
+            fabricate_citation=fabricate_citation,
         ),
         recorder=recorder,
         artifact_keys=ARTIFACT_KEYS,
         escalation_channels=list(escalation_channels),  # type: ignore[arg-type]
         memory=memory,
+        notifier=notifier,
     )

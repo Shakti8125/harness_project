@@ -54,9 +54,12 @@ def test_both_prompt_templates_load_from_a_relocated_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    for name in ("investigator", "diagnostician"):
+    # Both bumped in Phase 3 (the prior-history clause); the Diagnostician's again in
+    # Phase 4 (what each claim kind's `quote` must hold, for the Evaluator's checkers).
+    expected = {"investigator": "2", "diagnostician": "3"}
+    for name, version in expected.items():
         template = rendering.load_prompt_template(name)
-        assert template.version == "2"  # bumped in Phase 3: the prior-history clause
+        assert template.version == version
         assert "$" in template.body  # a string.Template body, not a literal string
 
 

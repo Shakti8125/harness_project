@@ -1,0 +1,76 @@
+{
+  "url": "https://api.github.com/repos/octo-org/harness-demo-repo/compare/5e7a9b1c3d5f7a9b1c3d5f7a9b1c3d5f7a9b1c3d...c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4",
+  "html_url": "https://github.com/octo-org/harness-demo-repo/compare/5e7a9b1c3d5f7a9b1c3d5f7a9b1c3d5f7a9b1c3d...c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4",
+  "permalink_url": "https://github.com/octo-org/harness-demo-repo/compare/octo-org:5e7a9b1...octo-org:c3d9e1f",
+  "diff_url": "https://github.com/octo-org/harness-demo-repo/compare/5e7a9b1c3d5f7a9b1c3d5f7a9b1c3d5f7a9b1c3d...c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4.diff",
+  "patch_url": "https://github.com/octo-org/harness-demo-repo/compare/5e7a9b1c3d5f7a9b1c3d5f7a9b1c3d5f7a9b1c3d...c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4.patch",
+  "base_commit": {
+    "sha": "5e7a9b1c3d5f7a9b1c3d5f7a9b1c3d5f7a9b1c3d",
+    "commit": {
+      "message": "Add currency rounding tests",
+      "author": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-10T08:41:09Z"
+      },
+      "committer": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-10T08:41:09Z"
+      }
+    }
+  },
+  "merge_base_commit": {
+    "sha": "5e7a9b1c3d5f7a9b1c3d5f7a9b1c3d5f7a9b1c3d",
+    "commit": {
+      "message": "Add currency rounding tests",
+      "author": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-10T08:41:09Z"
+      },
+      "committer": {
+        "name": "Jordan Lee",
+        "email": "jordan@harness-demo-repo.example",
+        "date": "2026-09-10T08:41:09Z"
+      }
+    }
+  },
+  "status": "ahead",
+  "ahead_by": 1,
+  "behind_by": 0,
+  "total_commits": 1,
+  "commits": [
+    {
+      "sha": "c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4",
+      "commit": {
+        "message": "Upgrade pydantic to 2.x\n\nBumps pydantic 1.10.13 -> 2.9.2 for the v2 validation API.",
+        "author": {
+          "name": "Sam Okafor",
+          "email": "sam-okafor@harness-demo-repo.example",
+          "date": "2026-09-10T09:03:12Z"
+        },
+        "committer": {
+          "name": "Sam Okafor",
+          "email": "sam-okafor@harness-demo-repo.example",
+          "date": "2026-09-10T09:03:12Z"
+        }
+      },
+      "html_url": "https://github.com/octo-org/harness-demo-repo/commit/c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4"
+    }
+  ],
+  "files": [
+    {
+      "sha": "0d4c8b2a6e1f3a5c7b9d1e3f5a7c9b1d3f5a7c9b",
+      "filename": "requirements.txt",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 1,
+      "changes": 2,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4/requirements.txt",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4/requirements.txt",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/requirements.txt?ref=c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4",
+      "patch": "@@ -3,7 +3,7 @@\n fastapi==0.115.0\n httpx==0.27.2\n-pydantic==1.10.13\n+pydantic==2.9.2\n sqlalchemy==2.0.35\n alembic==1.13.3\n uvicorn==0.30.6\n"
+    }
+  ]
+}

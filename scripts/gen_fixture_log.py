@@ -10,6 +10,7 @@ description of the failure.
 Usage:
     uv run python scripts/gen_fixture_log.py flaky_test
     uv run python scripts/gen_fixture_log.py infra_timeout
+    uv run python scripts/gen_fixture_log.py dependency_break
 
 Writes `fixtures/scenarios/<name>/logs/job_<id>.txt`. Deterministic: the same name
 produces byte-identical output, so a regenerated log never silently changes a fixture.
@@ -205,12 +206,13 @@ def pip_install(log: Log, *, fail_on: str | None = None, verbose: bool = False) 
     log.line("Successfully installed " + " ".join(f"{p}-{v}" for p, v in PACKAGES))
 
 
-def lint(log: Log) -> None:
-    log.group("Run ruff check . && mypy src")
+def lint(log: Log, *, mypy: bool = True) -> None:
+    log.group("Run ruff check . && mypy src" if mypy else "Run ruff check .")
     log.line("shell: /usr/bin/bash -e {0}")
     log.endgroup()
     log.line("All checks passed!")
-    log.line("Success: no issues found in 148 source files")
+    if mypy:
+        log.line("Success: no issues found in 148 source files")
 
 
 def pytest_session(
@@ -365,6 +367,72 @@ def pytest_collection_errors(log: Log) -> None:
     log.line(f"{RED}{BOLD}=========================== {len(MODULES)} errors in 3.91s ==========================={RESET}")
 
 
+PYDANTIC_IMPORT_ERROR = (
+    "pydantic.errors.PydanticImportError: `BaseSettings` has been moved to the "
+    "`pydantic-settings` package. See "
+    "https://docs.pydantic.dev/2.9/migration/#basesettings-has-moved-to-pydantic-settings "
+    "for more details."
+)
+
+
+def pytest_pydantic_import_errors(log: Log) -> None:
+    """What pytest prints when every test module transitively imports a settings module
+    written against pydantic 1 and the venv now holds pydantic 2: the same
+    `PydanticImportError` at collection, module after module, no test runs. The cascade
+    is fifteen identical errors; the cause is one line in `src/config.py`."""
+    log.group("Run pytest -v --cov=src --cov-report=term-missing -p no:cacheprovider")
+    log.line("shell: /usr/bin/bash -e {0}")
+    log.line("env:")
+    log.line("  PYTHONHASHSEED: 0")
+    log.endgroup()
+    log.line("============================= test session starts ==============================")
+    log.line("platform linux -- Python 3.12.6, pytest-8.3.3, pluggy-1.5.0 -- /opt/hostedtoolcache/Python/3.12.6/x64/bin/python")
+    log.line("cachedir: .pytest_cache")
+    log.line("rootdir: /home/runner/work/harness-demo-repo/harness-demo-repo")
+    log.line("configfile: pyproject.toml")
+    log.line("plugins: asyncio-0.24.0, cov-5.0.0, anyio-4.6.0")
+    log.line("asyncio: mode=Mode.AUTO, default_loop_scope=None")
+    log.line(f"collected 0 items / {len(MODULES)} errors")
+    log.line("")
+    log.line("==================================== ERRORS ====================================")
+    for module in MODULES:
+        package = module.split("test_", 1)[1][:-3]
+        log.line(f"{RED}{BOLD}_______________ ERROR collecting {module} _______________{RESET}")
+        log.line(f"ImportError while importing test module '/home/runner/work/harness-demo-repo/harness-demo-repo/{module}'.")
+        log.line("Hint: make sure your test modules/packages have valid Python names.")
+        log.line("Traceback:")
+        log.line("/opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/importlib/__init__.py:90: in import_module")
+        log.line("    return _bootstrap._gcd_import(name[level:], package, level)")
+        log.line(f"{module}:{log.rng.randint(2, 6)}: in <module>")
+        log.line(f"    from src.{package} import *  # noqa: F403")
+        log.line(f"src/{package}/__init__.py:2: in <module>")
+        log.line("    from src.config import settings")
+        log.line("src/config.py:3: in <module>")
+        log.line("    from pydantic import BaseSettings")
+        log.line("/opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/__init__.py:412: in __getattr__")
+        log.line("    return _getattr_migration(attr_name)")
+        log.line("/opt/hostedtoolcache/Python/3.12.6/x64/lib/python3.12/site-packages/pydantic/_migration.py:296: in wrapper")
+        log.line("    raise PydanticImportError(")
+        log.line(f"E   {PYDANTIC_IMPORT_ERROR}")
+    log.line("=========================== short test summary info ============================")
+    for module in MODULES:
+        log.line(f"{RED}ERROR {module} - {PYDANTIC_IMPORT_ERROR}{RESET}")
+    log.line(f"{RED}!!!!!!!!!!!!!!!!!!! Interrupted: {len(MODULES)} errors during collection !!!!!!!!!!!!!!!!!!!{RESET}")
+    log.line(f"{RED}{BOLD}=========================== {len(MODULES)} errors in 2.47s ==========================={RESET}")
+
+
+def build_dependency_break(log: Log) -> None:
+    repo = "octo-org/harness-demo-repo"
+    head = "c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4"
+    bootstrap(log, repo, head, "test (3.12)", runner=17)
+    # The install succeeds -- pydantic 2.9.2 resolves and installs cleanly; the break is
+    # at import time, one step later. `PACKAGES` already pins 2.9.2 and pydantic-core.
+    pip_install(log)
+    lint(log, mypy=False)
+    pytest_pydantic_import_errors(log)
+    post_steps(log, upload_warning=False)
+
+
 def build_flaky(log: Log) -> None:
     repo = "octo-org/harness-demo-repo"
     head = "4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
@@ -408,6 +476,9 @@ def build_infra(log: Log) -> None:
 SCENARIOS = {
     "flaky_test": (build_flaky, 601234890, datetime(2026, 9, 8, 10, 15, 4, tzinfo=UTC), 11),
     "infra_timeout": (build_infra, 601235102, datetime(2026, 9, 9, 7, 42, 18, tzinfo=UTC), 13),
+    "dependency_break": (
+        build_dependency_break, 601235417, datetime(2026, 9, 10, 9, 3, 27, tzinfo=UTC), 17
+    ),
 }
 
 

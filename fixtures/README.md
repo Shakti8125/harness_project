@@ -3,8 +3,8 @@
 This directory is the deterministic substrate for every CI/CD demo scenario: everything a
 reviewer or the eval harness sees replays through these files, so nothing depends on a real
 GitHub call succeeding. It is also the eval set — `scenario.yaml` carries the ground-truth
-label that `scripts/eval.py` scores the Diagnostician against (introduced in a later phase;
-not present yet).
+label that `scripts/eval.py` scores the Diagnostician against (Phase 4; `--llm stub`
+scores the pipeline over canned diagnoses, `--llm gemini` scores the model).
 
 This file is the format spec. It is intentionally more detailed than any single scenario
 needs, so a future agent adding scenario N+1 does not have to re-derive conventions from
@@ -186,15 +186,15 @@ Realism requirements (see `.claude/skills/fixture-new/SKILL.md` for the fuller r
 |---|---|---|---|
 | `real_regression` | off-by-one in `discount()`, `assert 91 == 90`, diff contains exactly that one-line change | correct blame + `require_approval` | **complete** (Phase 1) |
 | `flaky_test` | wall-clock deadline test slips on a shared runner; diff touches only formatting code | the retry rule -- denied by the fail-closed cap in Phase 2, allowed once memory is real (Phase 3) | **complete** (Phase 2) |
-| `dependency_break` | `requirements.txt` bumps pydantic 1.10.13 -> 2.9.2, import-time failure | dependency_bump claim checking | not yet built |
+| `dependency_break` | `requirements.txt` bumps pydantic 1.10.13 -> 2.9.2 and nothing else; every module fails at collection with `PydanticImportError: BaseSettings has been moved` | `dependency_bump` claim checking; `open-fix-pr` on a dependency category | **complete** (Phase 4) |
 | `infra_timeout` | pypi.org read timeout during install, cascading collection errors, **empty diff** (an empty re-trigger commit) | the empty-diff contradiction penalty; the retry rule for `infra_transient` | **complete** (Phase 2) |
-| `cold_start` | copy of `flaky_test` with `find_last_successful_run` returning an empty list | `baseline_kind: none`, auto-retry disabled | not yet built |
-| `hallucination` | fixture whose log deliberately lacks the line the Diagnostician is steered to cite | the Evaluator refuting a fabricated citation | not yet built |
+| `cold_start` | copy of `flaky_test` with `find_last_successful_run` returning an empty list | `baseline_kind: none`, auto-retry disabled | **complete** (Phase 3) |
+| `hallucination` | *not a fixture.* The refuted-citation path is exercised by `HARNESS_FAULT_INJECT=diagnostician_fabricate_citation` on `real_regression` (PLAN.md Phase 4 Verify, step 2): the Diagnostician's citations are replaced after the model answers with one quoting a line no log contains | the Evaluator refuting a fabricated citation, the run escalating `evidence_refuted`, the Remediator never running | **covered by fault injection** (Phase 4) -- a fixture that *steers* a model into fabricating would test the prompt, not the Evaluator |
 
 `infra_timeout`'s empty diff is deliberate and must never be "fixed" by adding files — it is
 the only scenario that exercises `empty_diff_contradiction`.
 
-The `flaky_test` and `infra_timeout` logs were synthesised by `scripts/gen_fixture_log.py`,
+The `flaky_test`, `infra_timeout` and `dependency_break` logs were synthesised by `scripts/gen_fixture_log.py`,
 deterministically: re-running it for a scenario reproduces the committed file byte for byte,
 so a regenerated log never silently changes a fixture. The generator is the cheap way to
 give the next scenario the few thousand lines of realistic noise this format asks for.

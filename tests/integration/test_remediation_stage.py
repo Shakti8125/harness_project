@@ -17,6 +17,7 @@ import pytest
 from src.api.deps import SECRET_PATTERNS, build_secret_registry
 from src.harness.context_manager import ContextBudget, ContextManager
 from src.harness.contracts import RunRequest, TokenUsage
+from src.harness.evaluator import EvaluationReport
 from src.harness.gateway import ToolCall, ToolGateway, ToolResult, ToolSpec
 from src.harness.guardrails import RULE_DEFAULT, RULE_FORBIDDEN, PolicyDecision, PolicyEngine
 from src.harness.llm import LlmRequest, LlmUpstreamError, RawLlmResponse
@@ -114,8 +115,10 @@ async def test_retry_is_denied_by_the_fail_closed_cap_and_the_run_escalates(
     assert "retry-suspected-flaky" in decision.reason
     assert "fails {lt: 2" in decision.reason
 
-    # The stage list agrees with the status, and the trace carries the decision.
-    assert [s.status for s in outcome.stages] == ["ok", "ok", "ok"]
+    # The stage list agrees with the status, and the trace carries the decision. Four
+    # stages since Phase 4: investigate, diagnose, evaluate, remediate.
+    assert [s.status for s in outcome.stages] == ["ok", "ok", "ok", "ok"]
+    assert [s.stage for s in outcome.stages] == ["investigate", "diagnose", "evaluate", "remediate"]
     assert "policy denied" in outcome.stages[-1].summary
     trace = await rec.read_trace(outcome.run_id)
     assert trace is not None
@@ -156,8 +159,27 @@ def job_ref(run_id: int = 501234890) -> JobRef:
     )
 
 
+def evaluation(verdict: str = "pass") -> EvaluationReport:
+    """The evaluate stage's report, as a hand-built state sees it after that stage ran.
+
+    Phase 4: the Remediator reads `artifacts["evaluation"].verdict`; a state without it
+    is judged under `skipped`, which no write rule admits any more.
+    """
+    return EvaluationReport(
+        verdicts=[], verified=1 if verdict == "pass" else 0, refuted=0,
+        unverifiable=1 if verdict == "warn" else 0,
+        verdict=verdict,  # type: ignore[arg-type]
+        confidence_delta=0.0, reason="hand-built",
+    )
+
+
 def state_with(
-    diagnosis: dict[str, Any], *, retries: int, unavailable: bool, cold_start: bool = False
+    diagnosis: dict[str, Any],
+    *,
+    retries: int,
+    unavailable: bool,
+    cold_start: bool = False,
+    verdict: str | None = "pass",
 ) -> RunState:
     bundle = FailureBundle(
         job=job_ref(),
@@ -186,6 +208,7 @@ def state_with(
             "diagnosis": Diagnosis.model_validate(
                 {**diagnosis, "final_confidence": diagnosis["self_confidence"]}
             ),
+            **({"evaluation": evaluation(verdict)} if verdict is not None else {}),
         },
         degraded=[],
         stages=[],
@@ -539,12 +562,14 @@ async def test_a_failed_execution_escalates_as_tool_failure(
     assert suspension.payload["tool"] == "rerun_failed_jobs"
 
 
-def test_the_wiring_hands_the_gate_threshold_to_the_diagnostician(
+def test_the_wiring_hands_the_gate_threshold_to_the_evaluate_stage(
     repo_root: Path, tmp_db_path: Path
 ) -> None:
-    """Phase 3 audit finding 4: the Diagnostician tallies a verdict only when it clears
-    the same threshold the remediation gate is built from. Two numbers spelled once in
-    `build_orchestrator`; this pins that they stay the same number."""
+    """Phase 3 audit finding 4, as moved by Phase 4 dispatch decision 1: the evaluate
+    stage -- where memory is now written, on the post-penalty confidence -- tallies a
+    verdict only when it clears the same threshold the remediation gate is built from.
+    Two numbers spelled once in `build_orchestrator`; this pins that they stay the same
+    number, and that the Diagnostician no longer holds one."""
     orchestrator = build_orchestrator(
         gateway=ReplayToolGateway(
             scenario_dir=scenario_dir(repo_root, "flaky_test"), repo=REPO,
@@ -559,5 +584,8 @@ def test_the_wiring_hands_the_gate_threshold_to_the_diagnostician(
         diagnostician_model="stub",
         remediator_model="stub",
     )
+    evaluator = orchestrator.agents["evaluator"]
+    assert getattr(evaluator, "verdict_threshold", None) == 0.83
     diagnostician = orchestrator.agents["diagnostician"]
-    assert getattr(diagnostician, "verdict_threshold", None) == 0.83
+    assert not hasattr(diagnostician, "verdict_threshold")
+    assert not hasattr(diagnostician, "memory")

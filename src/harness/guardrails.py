@@ -99,6 +99,30 @@ class PolicyDecision(BaseModel):
     downgraded_from: str | None = None     # set when an Evaluator "warn" downgraded the effect
 
 
+def downgrade_for_warn(decision: PolicyDecision) -> PolicyDecision:
+    """PLAN.md Phase 4: an Evaluator `warn` downgrades every effect one step.
+
+    `allow` -> `require_approval`, `require_approval` stays, `deny` stays. The only writer
+    of `downgraded_from`, and it writes it only when the effect actually moved, so a
+    reader of the trace sees a downgrade exactly where one happened. The *trigger* -- that
+    the run's evaluation verdict was `warn` -- is the caller's to decide: the verdict
+    lives in the integration's fact namespace, the ladder lives here with the vocabulary
+    it rewrites.
+    """
+    if decision.effect != "allow":
+        return decision
+    return decision.model_copy(
+        update={
+            "effect": "require_approval",
+            "downgraded_from": decision.effect,
+            "reason": (
+                f"{decision.reason}; downgraded from allow: the evaluator could not "
+                "verify every citation (verdict warn)"
+            ),
+        }
+    )
+
+
 #: Fact the side-effecting-actions invariant reads. Named once so the engine and every
 #: caller that supplies it spell it identically; a misspelt key would read as "not
 #: supplied", which fails closed (see `PolicyEngine.decide`) rather than silently as 0.

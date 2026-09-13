@@ -1,0 +1,23 @@
+name: dependency_break
+description: >
+  requirements.txt bumps pydantic from 1.10.13 to 2.9.2 and nothing else changes. The
+  install succeeds; every test module then fails at collection with
+  "PydanticImportError: `BaseSettings` has been moved to the `pydantic-settings` package"
+  because src/config.py still does `from pydantic import BaseSettings`. Fifteen identical
+  import errors, one cause: a dependency whose API moved. The commit's intent (move to
+  pydantic 2) is legitimate, so the right action is a fix PR that completes the migration
+  (add pydantic-settings, import BaseSettings from it), not a revert.
+expected:
+  category: dependency_break
+  # The error string names pydantic and the diff changes only pydantic's pin: PLAN.md's
+  # "deterministic match" band, and open-fix-pr needs >= 0.85 to match at all.
+  min_confidence: 0.85
+  commit: c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4
+  cites_any_of:
+    - "pydantic"
+    - "BaseSettings"
+    - "pydantic-settings"
+  action: open_fix_pr
+  effect: require_approval
+  baseline_kind: branch_green
+  cold_start: false
