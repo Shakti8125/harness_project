@@ -33,13 +33,28 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from src.api.approval_registry import ApprovalEntry, ApprovalRegistry, RunContext
-from src.api.deps import AppContext, get_app_context, mint_run_id
-from src.api.run_registry import RunRegistry
-from src.harness.contracts import EscalationRecord, RunId, RunOutcome, RunRequest
-from src.harness.gateway import ToolGateway
+from src.api.deps import AppContext, RunContext, get_app_context, mint_run_id
+from src.harness.contracts import (
+    EscalationRecord,
+    RunId,
+    RunOutcome,
+    RunRequest,
+    TokenUsage,
+)
+from src.harness.memory import (
+    ApprovalRecord,
+    MemoryQuery,
+    MemoryStore,
+    MemoryStoreError,
+    RunClaim,
+)
 from src.harness.observability import REDACTION_PLACEHOLDER
+from src.harness.storage import schema_is_current
 from src.integrations.cicd.agents.investigator import parse_subject
+from src.integrations.cicd.history import (
+    prior_history_from,
+    unavailable_history,
+)
 from src.integrations.cicd.remediation import (
     EVALUATION_SKIPPED,
     build_facts,
@@ -51,7 +66,13 @@ from src.integrations.cicd.remediation import (
     plan_verdict,
 )
 from src.integrations.cicd.rendering import validate_prompt_templates
-from src.integrations.cicd.schemas import Diagnosis, FailureBundle, RemediationResult
+from src.integrations.cicd.schemas import (
+    ApprovalRequest,
+    Diagnosis,
+    FailureBundle,
+    PriorHistory,
+    RemediationResult,
+)
 from src.integrations.cicd.wiring import INTEGRATION, REMEDIATION_KEY
 from src.settings import get_settings
 
@@ -68,9 +89,6 @@ _RUN_ID_PATTERN = re.compile(r"^run_[0-9A-HJKMNP-TV-Z]{26}$")
 
 logger = logging.getLogger("harness.api")
 
-registry = RunRegistry()
-approvals = ApprovalRegistry()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -86,8 +104,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Ordered first so a template failure is reported before anything else runs.
     """
     validate_prompt_templates()
-    context = get_app_context()
-    await context.recorder.initialize()
+    # Phase 3: migrations, through the one startup routine `app.py` also hand-calls.
+    await get_app_context().initialize()
     yield
 
 
@@ -463,6 +481,26 @@ async def handle_http_exception(
     )
 
 
+@app.exception_handler(MemoryStoreError)
+async def handle_memory_store_error(request: Request, exc: MemoryStoreError) -> JSONResponse:
+    """The store is down (Appendix B.3, after the ladder) on a route that cannot answer
+    without it -- `GET /v1/runs`, an approval decision. `503`, not `500`: the request was
+    fine, the dependency is not, and a caller should retry later rather than report a
+    bug. The run paths never reach here: they degrade instead (`_claim_or_degrade`).
+    """
+    logger.warning(
+        "memory store unavailable on %s %s: %s", request.method, request.url.path, exc
+    )
+    return problem(
+        request,
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        title="Memory store unavailable",
+        detail="The run store could not be read or written; retry later.",
+        run_id=_run_id_in_scope(request),
+        headers={"Retry-After": "5"},
+    )
+
+
 @app.exception_handler(Exception)
 async def handle_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
     """The structural backstop Wave-3 finding 5 asks for: whatever a route, a dependency
@@ -577,10 +615,16 @@ async def readyz(response: Response) -> dict[str, Any]:
     # loaded. Reported off the object rather than as a constant.
     policy_loaded = bool(get_app_context().engine.spec.rules)
 
+    # Appendix B.3: "file missing → migrations create it at startup; readyz fails until
+    # they succeed". Reported off `schema_version`, so a container that booted against a
+    # file it could not migrate says so here rather than 500ing on the first run.
+    migrations_applied = await schema_is_current(settings.database_path)
+
     body = {
         "db_writable": db_writable,
         "gemini_key_present": gemini_key_present,
         "policy_loaded": policy_loaded,
+        "migrations_applied": migrations_applied,
     }
     response.status_code = (
         status.HTTP_200_OK
@@ -620,15 +664,60 @@ def idempotency_key_for(subject: dict[str, Any]) -> str:
 _background_runs: Final[set[asyncio.Task[RunOutcome]]] = set()
 
 
+def failed_outcome(existing: RunOutcome | None, run_id: RunId, detail: str) -> RunOutcome:
+    """The terminal `failed` outcome for a run that raised after its `202`.
+
+    Preserves `created_at`, `integration` and `trace_url` from the claimed row's
+    placeholder when one exists: the trace is written to SQLite as the run executes, so a
+    failed run usually has real spans worth linking to, and that link is the only
+    evidence of *where* it died.
+    """
+    now = datetime.now(UTC)
+    return RunOutcome(
+        run_id=run_id,
+        integration=existing.integration if existing else "unknown",
+        status="failed",
+        created_at=existing.created_at if existing else now,
+        completed_at=now,
+        duration_ms=(
+            int((now - existing.created_at).total_seconds() * 1000) if existing else 0
+        ),
+        stages=list(existing.stages) if existing else [],
+        total_tokens=existing.total_tokens if existing else TokenUsage(),
+        final={},
+        escalation=EscalationRecord(
+            escalation_id="esc_" + secrets.token_hex(8),
+            reason="tool_failure",
+            message="background run failed after the request was accepted",
+            payload={"detail": detail},
+            channels=["log", "db"],
+            delivered_at=now,
+        ),
+        trace_url=existing.trace_url if existing else f"/v1/runs/{run_id}/trace",
+    )
+
+
+async def mark_failed(memory: MemoryStore, run_id: RunId, detail: str) -> None:
+    """Replace a run's claimed placeholder with a terminal `failed` outcome.
+
+    For the one case no HTTP handler can reach: a background run that raised after its
+    `202` was already returned. Without this the row written by `claim_run` stays
+    `in_progress` until its heartbeat goes stale, and a caller polling
+    `GET /v1/runs/{run_id}` cannot tell a dead run from a slow one.
+    """
+    existing = await memory.get_run(run_id)
+    await memory.save_run(failed_outcome(existing, run_id, detail))
+
+
 async def _supervised(
     coro: Coroutine[Any, Any, RunOutcome], run_id: RunId
 ) -> RunOutcome:
     """Run `coro`, and record a failure that no HTTP handler could have caught.
 
     A background run raises *after* its `202` has been sent, so the exception has
-    nowhere to go: the registry row written by `mark_in_progress` would sit at
-    `in_progress` forever, and `GET /v1/runs/{run_id}` could not distinguish a dead
-    run from a slow one. Marking it `failed` is the whole point.
+    nowhere to go: the row written by `claim_run` would sit at `in_progress` until its
+    heartbeat went stale, and `GET /v1/runs/{run_id}` could not distinguish a dead run
+    from a slow one. Marking it `failed` is the whole point.
 
     `CancelledError` is re-raised untouched rather than recorded: it means the
     server is shutting down, which is not the run's fault, and it is not an
@@ -642,30 +731,25 @@ async def _supervised(
         raise
     except Exception as exc:
         logger.exception("background run %s failed", run_id)
-        await registry.mark_failed(run_id, str(exc))
+        try:
+            await mark_failed(get_app_context().store, run_id, str(exc))
+        except MemoryStoreError:
+            logger.warning("background run %s: could not record the failure", run_id)
         raise
 
 
 def _spawn_run(coro: Coroutine[Any, Any, RunOutcome], run_id: RunId) -> None:
     """Start a background run and keep a strong reference until it finishes.
 
-    Not a task supervisor, deliberately. `MemoryStore` already declares
-    `heartbeat(run_id)` and `RunClaim.took_over_from`, which is the plan's real
-    answer to "a run died mid-flight" -- takeover by another worker, needing the
-    durable store that arrives in Phase 3. Building a supervisor now would build it
-    twice, and the second one would replace this.
+    Still not a task supervisor. Phase 3 landed the durable half of "a run died
+    mid-flight" -- the claim row, the orchestrator's heartbeat, and Appendix C's
+    stale-heartbeat takeover on the next claim -- but none of that holds the *task*, and
+    `asyncio` holds tasks weakly. This set is the strong reference; the store is the
+    liveness record.
     """
     task = asyncio.create_task(_supervised(coro, run_id))
     _background_runs.add(task)
     task.add_done_callback(_background_runs.discard)
-
-
-def _gateway_for(context: AppContext, run_context: RunContext) -> ToolGateway:
-    if run_context.mode == "live":
-        return context.build_live_gateway(run_context.repo)
-    if run_context.scenario_dir is None:  # pragma: no cover - replay always names one
-        raise ValueError("a replay run must name a scenario directory")
-    return context.build_replay_gateway(run_context.scenario_dir, run_context.repo)
 
 
 async def _execute(
@@ -682,19 +766,125 @@ async def _execute(
     stores the plan" half of PLAN.md's approval state machine, in the layer that owns
     persistence.
     """
-    gateway = _gateway_for(context, run_context)
+    gateway = context.gateway_for(run_context)
     try:
         async with context.run_semaphore:
             orchestrator = context.build_orchestrator_for(gateway, run_id=run_id)
             outcome = await orchestrator.run(request_model)
     finally:
         await gateway.aclose()
-    await registry.save(outcome)
-    if outcome.status == "awaiting_approval":
-        remediation = _remediation_of(outcome)
-        if remediation is not None and remediation.pending_approval is not None:
-            await approvals.save(remediation.pending_approval, run_context)
+    try:
+        await context.store.save_run(outcome)
+        if outcome.status == "awaiting_approval":
+            remediation = _remediation_of(outcome)
+            if remediation is not None and remediation.pending_approval is not None:
+                await context.store.save_approval(
+                    _approval_record(remediation.pending_approval, run_context)
+                )
+    except MemoryStoreError:
+        # PLAN.md Phase 3: a dead cache must never take down triage. The outcome still
+        # goes back to the caller; what is lost is `GET /v1/runs/{id}` and, for a
+        # suspended run, the ability to decide its approval later -- both logged.
+        logger.warning(
+            "run %s: memory store unavailable; outcome not recorded", run_id, exc_info=True
+        )
     return outcome
+
+
+async def _claim_or_degrade(memory: MemoryStore, key: str, integration: str) -> RunClaim:
+    """Claim the run, or -- when the store is down -- run anyway without the claim.
+
+    The claim is memory, and memory is a soft dependency: a store that cannot be reached
+    after the B.3 ladder must not stop triage, it costs the idempotency guarantee for this
+    one request (a redelivery during the outage would run twice), which is logged.
+    """
+    try:
+        return await memory.claim_run(key, integration)
+    except MemoryStoreError:
+        run_id = mint_run_id()
+        logger.warning(
+            "run %s: memory store unavailable; running unclaimed (no dedup)", run_id,
+            exc_info=True,
+        )
+        return RunClaim(acquired=True, run_id=run_id, existing_status=None, existing_outcome=None)
+
+
+def _approval_record(request: ApprovalRequest, run_context: RunContext) -> ApprovalRecord:
+    """The `approval` row for a pending request, with the gateway context riding along."""
+    return ApprovalRecord(
+        approval_id=request.approval_id,
+        run_id=request.run_id,
+        state=request.state,
+        plan={
+            "plan": request.plan.model_dump(mode="json"),
+            "decisions": [d.model_dump(mode="json") for d in request.decisions],
+        },
+        requested_at=request.requested_at,
+        expires_at=request.expires_at,
+        context=dict(run_context.to_json()),
+    )
+
+
+def _approval_request(record: ApprovalRecord) -> ApprovalRequest:
+    """The inverse of `_approval_record`: the integration's request, re-validated."""
+    return ApprovalRequest.model_validate(
+        {
+            "approval_id": record.approval_id,
+            "run_id": record.run_id,
+            "state": record.state,
+            "plan": record.plan["plan"],
+            "decisions": record.plan["decisions"],
+            "requested_at": record.requested_at,
+            "expires_at": record.expires_at,
+        }
+    )
+
+
+def _fresh_key(idempotency_key: str) -> str:
+    """A claim key that can never collide: the demo path's `fresh=true` (decision 5).
+
+    Appendix C's takeover chain already uses `<key>#<n>` suffixes; this is the same
+    convention with a nonce, so the run row still records which webhook it came from.
+    """
+    return f"{idempotency_key}#fresh:{secrets.token_hex(4)}"
+
+
+def _deduplicated(existing: RunOutcome) -> RunOutcome:
+    """Appendix C: the `200` for a redelivery of finished work. No new run exists, so the
+    response keeps the original's `run_id` and names it again as `original_run_id`."""
+    return existing.model_copy(
+        update={"status": "deduplicated", "original_run_id": existing.run_id}
+    )
+
+
+def _claim_response(claim: RunClaim) -> Response | None:
+    """Appendix C's table for a claim that was not acquired; `None` when it was.
+
+    | existing state | response |
+    |---|---|
+    | completed / escalated / failed | `200`, `status="deduplicated"`, no agents run |
+    | awaiting_approval | `200`, the existing outcome and its approval id |
+    | in_progress (fresh heartbeat) | `202 {status: in_progress, run_id}` |
+
+    A stale `in_progress` never reaches here: `claim_run` takes it over and answers
+    `acquired=True` with `took_over_from` set.
+    """
+    if claim.acquired:
+        return None
+    outcome = claim.existing_outcome
+    if outcome is None or outcome.status == "in_progress":
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"run_id": claim.run_id, "status": "in_progress"},
+        )
+    if outcome.status == "awaiting_approval":
+        return JSONResponse(
+            status_code=status.HTTP_200_OK, content=_serialize_run_outcome(outcome)
+        )
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content=_serialize_run_outcome(_deduplicated(outcome)),
+    )
 
 
 def _remediation_of(outcome: RunOutcome) -> RemediationResult | None:
@@ -716,15 +906,23 @@ def _load_scenario(context: AppContext, scenario: str) -> tuple[Path, dict[str, 
 async def replay(
     request: Request,
     scenario: str,
-    fresh: bool = Query(True, description="Ignored in this phase; replays are always fresh."),
+    fresh: bool = Query(
+        True,
+        description=(
+            "Always start a new run (the default). With fresh=false the scenario's "
+            "webhook is claimed under its real idempotency key and a repeat replay "
+            "dedupes like a redelivery."
+        ),
+    ),
     sync: bool = Query(True, description="Run synchronously and return the outcome."),
 ) -> Response:
     """Replay a recorded scenario. Synchronous by default — this is the demo path.
 
-    `fresh` is accepted for A.12 compatibility and documented as a no-op: deduplicating a
-    replay needs the idempotency claim in the memory store, which arrives in a later
-    phase. Until then every replay genuinely re-runs, which is also what makes it usable
-    as a demo.
+    `fresh=true` (the default) claims the run under a nonce-suffixed key so every replay
+    genuinely re-runs -- which is what makes it usable as a demo, and what PLAN.md's
+    Phase 3 Verify block relies on when it replays the same scenario four times in a
+    row. `fresh=false` claims the webhook's real key, so a second replay answers
+    Appendix C's `deduplicated` outcome without spending a model call.
     """
     context = get_app_context()
     try:
@@ -754,14 +952,16 @@ async def replay(
         replay_fixture=scenario,
         requested_by="replay",
     )
-    run_id = mint_run_id()
+    claim_key = _fresh_key(run_request.idempotency_key) if fresh else run_request.idempotency_key
+    claim = await _claim_or_degrade(context.store, claim_key, INTEGRATION)
+    refused = _claim_response(claim)
+    if refused is not None:
+        return refused
+    run_id = claim.run_id
     request.state.run_id = run_id  # so an unhandled exception below can still report it
 
     run_context = RunContext(mode="replay", repo=parsed["repo"], scenario_dir=scenario_dir)
     if not sync:
-        await registry.mark_in_progress(
-            run_id, INTEGRATION, f"/v1/runs/{run_id}/trace"
-        )
         _spawn_run(_execute(context, run_request, run_context, run_id), run_id)
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
@@ -778,9 +978,11 @@ async def replay(
 async def create_run(request: Request, run_request: RunRequest) -> Response:
     """Accept a run and execute it in the background. `202 {run_id, status}` per A.12.
 
-    The run id is minted here rather than inside the orchestrator so that the 202 can
-    name the run it just accepted; the orchestrator is then wired to use that same id, so
-    the id in this response and the id in the trace are the same string by construction.
+    The run id is minted by the store's claim rather than inside the orchestrator so
+    that the 202 can name the run it just accepted; the orchestrator is then wired to
+    use that same id, so the id in this response, in the `run` row and in the trace are
+    the same string by construction. A claim that is not acquired answers per Appendix C
+    (`_claim_response`) and runs nothing.
     """
     context = get_app_context()
     if run_request.integration != INTEGRATION:
@@ -826,9 +1028,18 @@ async def create_run(request: Request, run_request: RunRequest) -> Response:
             )
         run_context = RunContext(mode="replay", repo=parsed["repo"], scenario_dir=scenario_dir)
 
-    run_id = mint_run_id()
+    claim = await _claim_or_degrade(
+        context.store, run_request.idempotency_key, run_request.integration
+    )
+    refused = _claim_response(claim)
+    if refused is not None:
+        return refused
+    if claim.took_over_from is not None:
+        logger.warning(
+            "run %s took over %s: its heartbeat went stale", claim.run_id, claim.took_over_from
+        )
+    run_id = claim.run_id
     request.state.run_id = run_id  # so an unhandled exception below can still report it
-    await registry.mark_in_progress(run_id, run_request.integration, f"/v1/runs/{run_id}/trace")
     _spawn_run(_execute(context, run_request, run_context, run_id), run_id)
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
@@ -840,8 +1051,12 @@ async def create_run(request: Request, run_request: RunRequest) -> Response:
 async def list_runs(
     status_filter: str | None = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=200),
+    cursor: str | None = Query(None, max_length=64),
 ) -> dict[str, Any]:
-    runs = await registry.list(limit=limit, status=status_filter)
+    """Newest first, keyset-paginated on `run_id` (A.12's `?cursor` and `next_cursor`)."""
+    runs, next_cursor = await get_app_context().store.list_runs(
+        limit=limit, status=status_filter, cursor=cursor
+    )
     return {
         "items": [
             {
@@ -853,20 +1068,17 @@ async def list_runs(
             }
             for run in runs
         ],
-        # Cursor pagination needs a durable, ordered store; it arrives with the memory
-        # phase. Reported as null rather than omitted so the response shape is already
-        # the one A.12 specifies.
-        "next_cursor": None,
+        "next_cursor": next_cursor,
     }
 
 
 @app.get("/v1/runs/{run_id}")
 async def get_run(request: Request, run_id: str) -> Response:
-    outcome = await registry.get(run_id)
+    outcome = await get_app_context().store.get_run(run_id)
     if outcome is None:
         return problem(
             request, status_code=404, title="Run not found",
-            detail="No run with that id is known to this process.", run_id=run_id,
+            detail="No run with that id is recorded.", run_id=run_id,
         )
     return JSONResponse(
         status_code=status.HTTP_200_OK, content=_serialize_run_outcome(outcome)
@@ -954,14 +1166,16 @@ def _escalation_after_approval(
     return None
 
 
-async def _settle_run(run_id: RunId, remediation: RemediationResult) -> None:
+async def _settle_run(
+    memory: MemoryStore, run_id: RunId, remediation: RemediationResult
+) -> None:
     """Write the decided remediation back into the stored `RunOutcome`.
 
     Without this, `GET /v1/runs/{id}` would say `awaiting_approval` forever after the
     approval was decided -- the response to the `POST` would be the only record. The run's
     status follows the rules `_escalation_after_approval` states.
     """
-    outcome = await registry.get(run_id)
+    outcome = await memory.get_run(run_id)
     if outcome is None:
         return
     final = dict(outcome.final)
@@ -975,28 +1189,49 @@ async def _settle_run(run_id: RunId, remediation: RemediationResult) -> None:
             "run %s escalated (%s) after approval: %s",
             run_id, escalation.reason, escalation.message,
         )
-    await registry.save(outcome.model_copy(update=update))
+    await memory.save_run(outcome.model_copy(update=update))
+
+
+async def _fresh_prior_history(memory: MemoryStore, bundle: FailureBundle) -> PriorHistory:
+    """Memory as it is *now*, for the approval-time re-evaluation (handoff §4).
+
+    The bundle's stored `prior_history` is what the Remediator saw at suspension time;
+    the retry count may have moved since. Re-queried under the key the Investigator put
+    on the bundle; a bundle with no key (investigated before this phase) or a store that
+    cannot be read re-evaluates as `unavailable`, which fails the retry cap closed by
+    `PriorHistory`'s own rule.
+    """
+    key = bundle.prior_history.key
+    if key is None:
+        return unavailable_history(None)
+    try:
+        return prior_history_from(await memory.lookup(MemoryQuery(key=key)), key)
+    except Exception:  # noqa: BLE001 - degrade, never fail the approval on a dead cache
+        logger.warning("approval: memory lookup failed; re-evaluating degraded", exc_info=True)
+        return unavailable_history(key)
 
 
 async def _execute_approved(
-    context: AppContext, entry: ApprovalEntry
+    context: AppContext, record: ApprovalRecord
 ) -> tuple[RemediationResult, list[dict[str, Any]]]:
     """Re-evaluate the stored plan against the run's artifacts, then execute if allowed.
 
     PLAN.md: "the harness re-evaluates policy against the stored plan at execution time
     before running it (the diagnosis may have been superseded)". The facts are rebuilt
     from the run's own `final` -- the same `Diagnosis` and `FailureBundle` the Remediator
-    read -- rather than copied from the original decisions, so a later phase that lets
-    facts change between suspension and approval (memory, a re-diagnosis) changes nothing
-    here. A plan the re-evaluation now denies is not executed, whatever the person said;
-    the decisions in the response show why.
+    read -- with one fact refreshed: the memory prior is re-queried rather than reused,
+    because since Phase 3 it can move between suspension and approval. A plan the
+    re-evaluation now denies is not executed, whatever the person said; the decisions in
+    the response show why, and the run escalates `policy_denied`.
     """
-    request = entry.request
-    outcome = await registry.get(request.run_id)
+    request = _approval_request(record)
+    outcome = await context.store.get_run(request.run_id)
     if outcome is None:
         raise LookupError(request.run_id)
     diagnosis = Diagnosis.model_validate(outcome.final["diagnosis"])
-    bundle = FailureBundle.model_validate(outcome.final["bundle"])
+    stored_bundle = FailureBundle.model_validate(outcome.final["bundle"])
+    prior = await _fresh_prior_history(context.store, stored_bundle)
+    bundle = stored_bundle.model_copy(update={"prior_history": prior})
     facts = build_facts(
         diagnosis,
         bundle,
@@ -1011,7 +1246,7 @@ async def _execute_approved(
     verdict = plan_verdict(request.plan, decisions)
     executed = []
     if verdict in ("execute", "await_approval"):
-        gateway = _gateway_for(context, entry.context)
+        gateway = context.gateway_for(RunContext.from_json(dict(record.context)))
         try:
             executed = await execute_plan(
                 gateway, request.plan, decisions, recorder=context.recorder.bind(request.run_id)
@@ -1042,69 +1277,70 @@ async def decide_approval(
     winner's state and answers `409`.
     """
     context = get_app_context()
-    entry = await approvals.get(approval_id)
-    if entry is None:
+    memory = context.store
+    record = await memory.get_approval(approval_id)
+    if record is None:
         return problem(
             request, status_code=404, title="Approval not found",
-            detail="No approval with that id is known to this process.",
+            detail="No approval with that id is recorded.",
         )
 
-    if entry.request.state == "pending" and datetime.now(UTC) >= entry.request.expires_at:
-        entry, _ = await approvals.transition(approval_id, "expired")
-    if entry.request.state == "expired":
+    if record.state == "pending" and datetime.now(UTC) >= record.expires_at:
+        record, _ = await memory.decide_approval(approval_id, "expired")
+    if record.state == "expired":
         return problem(
             request, status_code=410, title="Approval expired",
             detail="This approval expired before a decision was recorded.",
-            run_id=entry.request.run_id,
+            run_id=record.run_id,
             extensions={"state": "expired"},
         )
 
-    # Checked *before* the single-use transition: an approval whose run this process no
-    # longer knows (both registries are in-process) cannot be executed or settled, and
-    # burning the approval on the way to a 500 would leave it 409 forever with nothing
-    # done (review note).
-    run_outcome = await registry.get(entry.request.run_id)
+    # Checked *before* the single-use transition: an approval whose run is not recorded
+    # cannot be executed or settled, and burning the approval on the way to a 500 would
+    # leave it 409 forever with nothing done (review note).
+    run_outcome = await memory.get_run(record.run_id)
     if run_outcome is None or not {"diagnosis", "bundle"} <= set(run_outcome.final):
         return problem(
             request, status_code=404, title="Run not found",
-            detail="The run this approval belongs to is not known to this process.",
-            run_id=entry.request.run_id,
+            detail="The run this approval belongs to is not recorded.",
+            run_id=record.run_id,
         )
 
     target: Literal["approved", "rejected"] = (
         "approved" if body.decision == "approve" else "rejected"
     )
-    entry, applied = await approvals.transition(
+    record, applied = await memory.decide_approval(
         approval_id, target, actor=body.actor, note=body.note
     )
     if not applied:
         return problem(
             request, status_code=409, title="Approval already decided",
-            detail=f"This approval is already {entry.request.state}.",
-            run_id=entry.request.run_id,
-            extensions={"state": entry.request.state},
+            detail=f"This approval is already {record.state}.",
+            run_id=record.run_id,
+            extensions={"state": record.state},
         )
 
+    approval = _approval_request(record)
     if target == "rejected":
         remediation = RemediationResult(
-            plan=entry.request.plan,
-            decisions=entry.request.decisions,
+            plan=approval.plan,
+            decisions=approval.decisions,
             executed=[],
-            pending_approval=entry.request,
+            pending_approval=approval,
             status="rejected",
         )
-        await _settle_run(entry.request.run_id, remediation)
-        decisions = [d.model_dump(mode="json") for d in entry.request.decisions]
+        await _settle_run(memory, record.run_id, remediation)
+        decisions = [d.model_dump(mode="json") for d in approval.decisions]
         executed: list[dict[str, Any]] = []
     else:
-        remediation, decisions = await _execute_approved(context, entry)
-        await _settle_run(entry.request.run_id, remediation)
+        remediation, decisions = await _execute_approved(context, record)
+        await _settle_run(memory, record.run_id, remediation)
         executed = [r.model_dump(mode="json") for r in remediation.executed]
 
     payload: dict[str, JsonValue] = {
         "approval_id": approval_id,
-        "run_id": entry.request.run_id,
-        "state": entry.request.state,
+        "run_id": record.run_id,
+        "state": record.state,
         "executed": list(executed),
         "decisions": list(decisions),
     }
@@ -1120,21 +1356,16 @@ async def decide_approval(
 
 @app.get("/v1/escalations")
 async def list_escalations(limit: int = Query(50, ge=1, le=200)) -> Response:
-    """Every escalation this process has recorded, newest first.
+    """Every recorded escalation, newest first, from the durable `escalation` table.
 
-    Read off the run registry rather than a separate store: the `EscalationRecord` is a
-    field of the `RunOutcome`, and PLAN.md's durable `escalation` table arrives with the
-    memory phase alongside the `run` table it references. Each item is the record plus
-    `run_id` -- A.12's bare `[EscalationRecord]` would leave a reader unable to find the
-    run an escalation belongs to.
+    Each item is the record plus `run_id` -- A.12's bare `[EscalationRecord]` would leave
+    a reader unable to find the run an escalation belongs to.
     """
     context = get_app_context()
-    runs = await registry.list(limit=200)
-    items: list[JsonValue] = [  # type: ignore[assignment]  # dict[str, Any] is JsonValue here
-        {"run_id": run.run_id, **run.escalation.model_dump(mode="json")}
-        for run in runs
-        if run.escalation is not None
-    ][:limit]
+    rows = await context.store.list_escalations(limit=limit)
+    items: list[JsonValue] = [
+        {"run_id": run_id, **record.model_dump(mode="json")} for run_id, record in rows
+    ]
     return JSONResponse(
         status_code=status.HTTP_200_OK, content=context.recorder.redactor.scrub(items)
     )

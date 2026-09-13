@@ -14,6 +14,7 @@ returned an error" means for this integration.
 
 from __future__ import annotations
 
+import logging
 from typing import Final
 
 from pydantic import BaseModel, JsonValue
@@ -28,10 +29,12 @@ from src.harness.context_manager import (
 )
 from src.harness.contracts import AgentResult, Evidence
 from src.harness.llm import LlmClient, to_gemini_schema
+from src.harness.memory import MemoryStore
 from src.harness.observability import TraceRecorder
 from src.harness.orchestrator import RunState
 from src.harness.recovery import RetryPolicy
-from src.integrations.cicd.agents.investigator import ANCHOR_PATTERNS
+from src.integrations.cicd.fingerprint import ANCHOR_PATTERNS
+from src.integrations.cicd.history import DEGRADED_MEMORY, memory_agrees, observation_for
 from src.integrations.cicd.rendering import (
     load_prompt_template,
     make_evidence,
@@ -41,9 +44,12 @@ from src.integrations.cicd.rendering import (
     render_diff_summary,
     render_investigation_summary,
     render_job,
+    render_prior_history,
     render_truncation,
 )
 from src.integrations.cicd.schemas import Diagnosis, FailureBundle
+
+logger = logging.getLogger("harness.integrations.cicd.diagnostician")
 
 #: The bundle key the Investigator's output is filed under in `RunState.artifacts`.
 BUNDLE_KEY: Final[str] = "bundle"
@@ -113,6 +119,7 @@ class Diagnostician(LLMAgent[Diagnosis]):
         retry_policy: RetryPolicy | None = None,
         anchor_patterns: tuple[str, ...] = ANCHOR_PATTERNS,
         timeout_s: float | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         super().__init__(
             key="diagnostician",
@@ -128,6 +135,9 @@ class Diagnostician(LLMAgent[Diagnosis]):
         self.confidence_model = confidence_model
         self.budget = budget if budget is not None else context_manager.default_budget
         self.anchor_patterns = anchor_patterns
+        # Phase 3: where the verdict is born is where it is remembered. `None` (a
+        # hand-built orchestrator) records nothing and says nothing.
+        self.memory = memory
 
     def _bundle(self, state: RunState) -> FailureBundle:
         bundle = state.artifacts.get(BUNDLE_KEY)
@@ -172,11 +182,7 @@ class Diagnostician(LLMAgent[Diagnosis]):
             job_summary=render_job(bundle.job),
             diff_summary=render_diff_summary(bundle.diff),
             dependency_summary=render_dependencies(bundle.dependency_changes),
-            prior_history_summary=(
-                "No prior history is available: the memory store is not wired up in "
-                "this phase. Do not treat the absence of history as evidence of "
-                "either flakiness or novelty."
-            ),
+            prior_history_summary=render_prior_history(bundle.prior_history),
             investigation_summary=render_investigation_summary(bundle.notes),
             context_bundle=assembled.text,
             truncation_note=render_truncation(assembled.truncation),
@@ -197,14 +203,20 @@ class Diagnostician(LLMAgent[Diagnosis]):
     def signals(self, output: Diagnosis, bundle: FailureBundle) -> dict[str, str]:
         """Which rows of PLAN.md's adjustment table fired, and why.
 
-        Only the rows this phase can actually observe. `memory_agreement` needs the
-        memory store (Phase 3) and the two evidence rows need the Evaluator (Phase 4);
-        signalling them from here on a guess would put a number in the trace that nothing
-        verified.
+        Only the rows this phase can actually observe. The two evidence rows need the
+        Evaluator (Phase 4); signalling them from here on a guess would put a number in
+        the trace that nothing verified. `memory_agreement` (Phase 3) reads the prior the
+        Investigator put on the bundle and is never asserted on a degraded read.
         """
         fired: dict[str, str] = {}
         if not output.citations:
             fired["no_citations"] = "the model cited no evidence"
+        prior = bundle.prior_history
+        if memory_agrees(prior, output.category):
+            share = prior.verdict_counts.get(output.category, 0) / max(prior.occurrences, 1)
+            fired["memory_agreement"] = (
+                f"{prior.occurrences} prior sightings, {share:.0%} judged {output.category}"
+            )
         if bundle.cold_start:
             fired["cold_start"] = "no green baseline run existed to compare against"
         # `bundle.gateway_errors` is populated ONLY from the Investigator's required
@@ -252,6 +264,34 @@ class Diagnostician(LLMAgent[Diagnosis]):
                 "confidence_adjustments": adjustments,
             }
         )
+        await self._remember(diagnosis, state)
         return result.model_copy(
             update={"output": diagnosis, "confidence": final_confidence}
         )
+
+    async def _remember(self, diagnosis: Diagnosis, state: RunState) -> None:
+        """Count this sighting and record its verdict (dispatch decision 9).
+
+        Every diagnosed run is remembered, gated or not -- the observation carries the
+        calibrated confidence so a reader can weigh it. Written after calibration, so the
+        stored confidence is the one the gate will read. Any failure degrades the run's
+        `memory` component and leaves the diagnosis untouched: memory is a soft dependency
+        on the write side exactly as on the read side.
+        """
+        if self.memory is None:
+            return
+        bundle = self._bundle(state)
+        key = bundle.prior_history.key
+        if key is None:
+            return
+        try:
+            await self.memory.upsert_signature(key, diagnosis.category, state.run_id)
+            await self.memory.record_observation(
+                observation_for(
+                    key=key, run_id=state.run_id, diagnosis=diagnosis, job=bundle.job
+                )
+            )
+        except Exception:  # noqa: BLE001 - a dead cache must never take down triage
+            logger.warning("diagnostician: could not record the verdict in memory", exc_info=True)
+            if DEGRADED_MEMORY not in state.degraded:
+                state.degraded.append(DEGRADED_MEMORY)

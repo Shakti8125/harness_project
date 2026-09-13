@@ -62,10 +62,19 @@ from src.harness.contracts import AgentResult, Evidence
 from src.harness.gateway import ToolCall, ToolError, ToolGateway, ToolResult
 from src.harness.guardrails import PolicyDecision
 from src.harness.llm import LlmClient
+from src.harness.memory import MemoryQuery, MemoryStore
 from src.harness.observability import TraceRecorder
 from src.harness.orchestrator import RunState
 from src.harness.recovery import RetryPolicy
+from src.integrations.cicd.fingerprint import ANCHOR_PATTERNS
 from src.integrations.cicd.gateway_replay import READ_TOOLS
+from src.integrations.cicd.history import (
+    DEGRADED_MEMORY,
+    prior_history_from,
+    resolve_pending_outcomes,
+    signature_key_for_job,
+    unavailable_history,
+)
 from src.integrations.cicd.rendering import (
     diff_from_compare,
     load_prompt_template,
@@ -78,6 +87,7 @@ from src.integrations.cicd.rendering import (
     render_diff_summary,
     render_investigator_prompt,
     render_job,
+    render_prior_history,
     render_truncation,
 )
 from src.integrations.cicd.schemas import (
@@ -94,25 +104,6 @@ from src.integrations.cicd.schemas import (
 
 logger = logging.getLogger("harness.integrations.cicd.investigator")
 
-#: PLAN.md Phase 1, step 2 of the Context Manager algorithm. This list lives in the
-#: integration and is passed in, because every entry names a convention of a specific
-#: toolchain -- the harness's Context Manager takes anchors as a parameter and knows
-#: nothing about test runners or workflow log formats.
-ANCHOR_PATTERNS: Final[tuple[str, ...]] = (
-    r"^E\s",
-    r"^FAILED\s",
-    r"^ERROR\b",
-    r"Traceback \(most recent call last\)",
-    r"##\[error\]",
-    r"AssertionError",
-    r"Error:\s",
-    r"npm ERR!",
-    r"exit code \d+",
-    r"\bTimeout\b",
-    r"Connection refused",
-    r"ModuleNotFoundError",
-    r"ImportError",
-)
 
 #: How many bytes of a job log to ask the gateway for. The gateway keeps the LAST
 #: `max_bytes`; the Context Manager then budgets what survives down to the char budget.
@@ -308,6 +299,7 @@ class Investigator(LLMAgent[InvestigationNotes]):
         anchor_patterns: tuple[str, ...] = ANCHOR_PATTERNS,
         max_log_bytes: int = DEFAULT_MAX_LOG_BYTES,
         timeout_s: float | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         super().__init__(
             key="investigator",
@@ -326,6 +318,9 @@ class Investigator(LLMAgent[InvestigationNotes]):
         self.budget = budget if budget is not None else context_manager.default_budget
         self.anchor_patterns = anchor_patterns
         self.max_log_bytes = max_log_bytes
+        # Phase 3. `None` means no store is wired (a hand-built orchestrator): the key is
+        # still computed, and the history is reported unavailable rather than invented.
+        self.memory = memory
 
     async def _call_tool(
         self, tool: str, args: dict[str, Any], errors: list[ToolError]
@@ -337,6 +332,35 @@ class Investigator(LLMAgent[InvestigationNotes]):
         if not result.ok and result.error is not None:
             errors.append(result.error)
         return result
+
+    async def _prior_history(
+        self, job: JobRef, log_text: str, degraded: list[str]
+    ) -> PriorHistory:
+        """The memory prior for this failure, or the degraded shape when it cannot be read.
+
+        The key is computed regardless -- it is pure, and every later writer needs it --
+        and only the lookup is conditional. PLAN.md Phase 3, "memory is a soft
+        dependency": any failure here turns into `PriorHistory(unavailable=True)` (which
+        forces the fail-closed retry count by construction), `degraded += ["memory"]`,
+        and a run that continues. Pending retries of earlier sightings are resolved first
+        (dispatch decision 10) so the prior is computed over what is now known; a probe
+        that fails is data and does not degrade anything.
+        """
+        key = signature_key_for_job(job, log_text)
+        if self.memory is None:
+            return unavailable_history(key)
+        try:
+            hit = await self.memory.lookup(MemoryQuery(key=key))
+            hit = await resolve_pending_outcomes(
+                self.memory, self.gateway, hit,
+                decision=read_only_decision("list_workflow_run_jobs"),
+            )
+        except Exception:  # noqa: BLE001 - a dead cache must never take down triage
+            logger.warning("investigator: memory lookup failed; continuing degraded", exc_info=True)
+            if DEGRADED_MEMORY not in degraded:
+                degraded.append(DEGRADED_MEMORY)
+            return unavailable_history(key)
+        return prior_history_from(hit, key)
 
     async def build_prompt(self, state: RunState) -> AgentPrompt:
         """Run the whole deterministic collection, then render the prompt over it."""
@@ -468,19 +492,16 @@ class Investigator(LLMAgent[InvestigationNotes]):
         if diff_text:
             evidence.append(make_evidence("diff", f"diff:{subject['head_sha']}", diff_text))
 
+        # 5. what memory knows about this failure signature (Phase 3)
+        prior_history = await self._prior_history(job_ref, log_text, degraded)
+
         _collection.set(
             _Collection(
                 job=job_ref,
                 logs=log_excerpts,
                 diff=diff,
                 dependency_changes=dependency_changes,
-                # Memory arrives in Phase 3; until then every run is its own first
-                # sighting and says so, rather than claiming a history it cannot read.
-                # `retries_in_24h` is deliberately NOT set here: `PriorHistory`'s own
-                # `model_validator` makes `unavailable=True` imply the Appendix B.3
-                # fail-closed `999` structurally, so this call site does not have to
-                # remember to. See `PriorHistory._fail_closed_retry_cap_when_unavailable`.
-                prior_history=PriorHistory(signature_id=None, unavailable=True),
+                prior_history=prior_history,
                 cold_start=cold_start,
                 gateway_errors=errors,
                 evidence=evidence,
@@ -493,11 +514,7 @@ class Investigator(LLMAgent[InvestigationNotes]):
             job_summary=render_job(job_ref),
             diff_summary=render_diff_summary(diff),
             dependency_summary=render_dependencies(dependency_changes),
-            prior_history_summary=(
-                "No prior history is available: the memory store is not wired up in "
-                "this phase. Do not treat the absence of history as evidence of "
-                "either flakiness or novelty."
-            ),
+            prior_history_summary=render_prior_history(prior_history),
             tool_catalog=render_catalog(self.gateway),
             context_bundle=bundle.text,
             truncation_note=render_truncation(bundle.truncation),

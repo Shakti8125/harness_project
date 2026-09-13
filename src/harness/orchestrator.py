@@ -28,6 +28,7 @@ are in that output.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import secrets
 import time
@@ -50,6 +51,7 @@ from src.harness.observability import ATTR_DEGRADED_COMPONENT, TraceRecorder
 
 if TYPE_CHECKING:
     from src.harness.agent import Agent
+    from src.harness.memory import MemoryStore
 
 logger = logging.getLogger("harness.orchestrator")
 
@@ -200,6 +202,8 @@ class Orchestrator:
         escalation_channels: Sequence[Literal["log", "db", "webhook"]] = ("log",),
         run_id_factory: Callable[[], RunId] = new_run_id,
         run_budget_s: float = DEFAULT_RUN_BUDGET_S,
+        memory: MemoryStore | None = None,
+        heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S,
     ) -> None:
         """Bind the driver to its stage list and the agents behind it.
 
@@ -219,6 +223,14 @@ class Orchestrator:
         at startup. A non-required one is skipped and recorded as skipped, which is how a
         stage whose agent arrives in a later phase stays declared -- gate and all --
         without pretending to have run.
+
+        ``memory``, when given, receives a heartbeat every ``heartbeat_interval_s`` for as
+        long as ``run()`` is active (Appendix C: "the orchestrator writes ``heartbeat_at``
+        every 15 s while a run is active"). That is the only thing this class does with
+        the store -- claiming the run happens before ``run()`` is called and saving its
+        outcome after, both by whoever drives the orchestrator -- and a heartbeat that
+        fails is logged, never raised: memory is a soft dependency and a run must not die
+        because its liveness record could not be written.
         """
         missing = [
             stage.agent_key
@@ -237,6 +249,8 @@ class Orchestrator:
         self.escalation_channels = list(escalation_channels)
         self.run_id_factory = run_id_factory
         self.run_budget_s = run_budget_s
+        self.memory = memory
+        self.heartbeat_interval_s = heartbeat_interval_s
 
     def _artifact_key(self, stage: StageSpec) -> str:
         return self.artifact_keys.get(stage.name, stage.name)
@@ -266,6 +280,18 @@ class Orchestrator:
             delivered_at=datetime.now(UTC),
         )
 
+    async def _heartbeat_loop(self, run_id: RunId) -> None:
+        """Write ``heartbeat_at`` on an interval until cancelled. Never raises."""
+        assert self.memory is not None
+        while True:
+            try:
+                await self.memory.heartbeat(run_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - liveness bookkeeping must not end the run
+                logger.warning("run %s: heartbeat failed", run_id, exc_info=True)
+            await asyncio.sleep(self.heartbeat_interval_s)
+
     async def run(self, request: RunRequest) -> RunOutcome:
         """Drive every stage for one request and return its outcome.
 
@@ -274,6 +300,20 @@ class Orchestrator:
         returns and therefore the same shape the API serves.
         """
         run_id = self.run_id_factory()
+        heartbeat: asyncio.Task[None] | None = None
+        if self.memory is not None:
+            heartbeat = asyncio.create_task(self._heartbeat_loop(run_id))
+        try:
+            return await self._run(request, run_id)
+        finally:
+            if heartbeat is not None:
+                heartbeat.cancel()
+                # Wait for the cancellation to land so the last heartbeat write cannot
+                # race the caller's `save_run` on the same row.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat
+
+    async def _run(self, request: RunRequest, run_id: RunId) -> RunOutcome:
         created_at = datetime.now(UTC)
         started = time.monotonic()
 

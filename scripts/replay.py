@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import secrets
 import sys
 from pathlib import Path
 from typing import Any
@@ -126,7 +127,7 @@ async def main() -> int:
     args = parser.parse_args()
 
     context = get_app_context()
-    await context.recorder.initialize()
+    await context.initialize()
     settings = context.settings
 
     if args.live:
@@ -164,10 +165,18 @@ async def main() -> int:
         replay_fixture=fixture,
         requested_by="scripts/replay.py",
     )
+    # Claimed under a nonce-suffixed key, like the API's `fresh=true` replay: an operator
+    # re-running a scenario from the command line wants a new run, not a `deduplicated`
+    # answer. The row still records which webhook it came from, and the outcome is saved
+    # so `GET /v1/runs/{id}` and memory both know about it.
+    claim = await context.store.claim_run(
+        f"{request.idempotency_key}#fresh:{secrets.token_hex(4)}", INTEGRATION
+    )
     try:
-        outcome = await context.build_orchestrator_for(gateway).run(request)
+        outcome = await context.build_orchestrator_for(gateway, run_id=claim.run_id).run(request)
     finally:
         await gateway.aclose()
+    await context.store.save_run(outcome)
 
     if args.json:
         print(json.dumps(outcome.model_dump(mode="json"), indent=2))

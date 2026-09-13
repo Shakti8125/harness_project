@@ -35,7 +35,7 @@ try:
 except ImportError:  # Not a ZeroGPU Space. See the handshake block at the bottom.
     spaces = None
 
-SCENARIOS = ["real_regression"]
+SCENARIOS = ["real_regression", "flaky_test", "infra_timeout", "cold_start"]
 
 #: The port a Space serves on. A literal, not an environment read: `tests/unit/
 #: test_no_env_access.py` walks the whole repo and `src/settings.py` is the only module
@@ -149,8 +149,10 @@ The REST API is the real artifact and is live on this same URL:
         )
         run = gr.Button("Diagnose", variant="primary", scale=1)
     gr.Markdown(
-        "_Two model calls per run. The free API tier allows ~10 runs per day, "
-        "after which runs escalate as `rate_limited` rather than failing._"
+        "_Three model calls per run. The free API tier allows ~6 runs per day, "
+        "after which runs escalate as `rate_limited` rather than failing. Memory is "
+        "real but this Space has no persistent disk: replay `flaky_test` four times in "
+        "one sitting to see the fourth run recognise the first three._"
     )
     with gr.Tab("Diagnosis"):
         headline = gr.Markdown()
@@ -193,14 +195,17 @@ if spaces is not None:
 
 def main() -> None:
     """Serve the API and the UI together, on the one port the platform routes to."""
-    # `src/api/main.py`'s lifespan is what creates the `spans` table, and a sub-app mounted
-    # with `Mount` never receives Starlette lifespan events — so mounting `api` under
-    # gradio below would silently skip it. The symptom would not be an error:
+    # `src/api/main.py`'s lifespan is what applies the schema migrations (Phase 3: the
+    # `trace_span`, `run`, `approval`, `escalation` and memory tables), and a sub-app
+    # mounted with `Mount` never receives Starlette lifespan events — so mounting `api`
+    # under gradio below would silently skip it. The symptom would not be an error:
     # `TraceRecorder._persist` catches and logs by design, because tracing must never fail
     # a run. It would be an empty `GET /v1/runs/{id}/trace`, discovered much later. So run
-    # it here, explicitly. `get_app_context()` is `lru_cache`d, so this is the same
-    # recorder the routes use, and it holds no connection between calls — a throwaway
-    # event loop is safe.
+    # it here, explicitly, through the one startup routine the lifespan also calls
+    # (`AppContext.initialize`) — the third hand-call the Phase 3 handoff predicted, folded
+    # into the previous one so a fourth cannot be forgotten. `get_app_context()` is
+    # `lru_cache`d, so this is the same store and recorder the routes use, and neither
+    # holds a connection between calls — a throwaway event loop is safe.
     #
     # `validate_prompt_templates()` belongs here for the same reason and needs the same
     # duplication: `main.py`'s lifespan (see its docstring) runs it for the Docker
@@ -211,7 +216,7 @@ def main() -> None:
     # a Space that cannot load its prompts must fail loudly at boot rather than 500 on the
     # first request with no RFC 9457 body, no `run_id`, and nothing in the trace.
     validate_prompt_templates()
-    asyncio.run(get_app_context().recorder.initialize())
+    asyncio.run(get_app_context().initialize())
 
     # `ssr_mode=False` is load-bearing, not a preference. Left to resolve itself, gradio
     # reads `GRADIO_SSR_MODE` — which a Space sets to `true` — and spawns a Node server on

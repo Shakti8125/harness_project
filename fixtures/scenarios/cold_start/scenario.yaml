@@ -1,0 +1,23 @@
+name: cold_start
+description: >
+  The flaky_test failure (tests/test_scheduler.py::test_job_runs_within_deadline, a
+  wall-clock assertion slipping by 0.2s on a shared runner) on a workflow that has NEVER
+  had a successful run on this branch or the default branch: find_last_successful_run
+  returns an empty list, so there is no baseline, no diff, and "what changed" is unknown.
+  PLAN.md Appendix D: the Diagnostician must not classify real_regression on diff evidence
+  it does not have, and the harness must not take an autonomous action against a repo it
+  has never seen succeed -- the retry is denied by the cold_start clause, not by the cap.
+expected:
+  category: flaky_test
+  min_confidence: 0.70
+  commit: null
+  cites_any_of:
+    - "test_job_runs_within_deadline"
+    - "job took 1.207s"
+    - "DeadlineExceeded"
+  action: retry
+  # Appendix D: `context.cold_start: {eq: false}` is a condition on retry-suspected-flaky,
+  # so auto-retry is disabled on a cold start regardless of the memory count.
+  effect: deny
+  baseline_kind: none
+  cold_start: true

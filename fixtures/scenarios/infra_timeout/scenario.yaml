@@ -16,9 +16,11 @@ expected:
     - "ReadTimeoutError"
     - "No matching distribution found"
   action: retry
-  # Phase 2 label -- same reason as flaky_test: the retry cap fails closed until memory
-  # is real, so the policy denies and the run escalates as policy_denied. Phase 3: allow.
-  effect: deny
+  # Phase 3 label -- same reason as flaky_test: with the memory store real, a first
+  # sighting reads memory.retries_for_signature_24h = 0 and the retry is allowed; the
+  # third inside 24 h is denied by the cap. (Phase 2 labelled this `deny` while the
+  # count was the fail-closed 999.)
+  effect: allow
   baseline_kind: branch_green
   cold_start: false
   # The empty diff is DELIBERATE and must never be "fixed" by adding files: this is the

@@ -92,6 +92,10 @@ async def run_scenario(
 async def test_retry_is_denied_by_the_fail_closed_cap_and_the_run_escalates(
     repo_root: Path, tmp_db_path: Path, name: str
 ) -> None:
+    """Phase 3: `run_scenario` builds the orchestrator with no memory store, which is the
+    shape a hand-built pipeline has -- and the history is then reported unavailable, so
+    the cap still fails closed at 999. The allow path with a real store is
+    `test_memory_e2e.py`."""
     outcome, rec = await run_scenario(repo_root, tmp_db_path, name, ScenarioStubLlm())
 
     assert outcome.status == "escalated"

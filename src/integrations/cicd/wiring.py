@@ -21,6 +21,7 @@ from src.harness.context_manager import ContextManager
 from src.harness.gateway import ToolGateway
 from src.harness.guardrails import PolicyEngine, PolicySpec, load_policy
 from src.harness.llm import LlmClient
+from src.harness.memory import MemoryStore
 from src.harness.observability import TraceRecorder
 from src.harness.orchestrator import (
     GateDecision,
@@ -219,8 +220,14 @@ def build_agents(
     retry_policy: RetryPolicy | None = None,
     timeout_s: float | None = None,
     approval_ttl_h: int = DEFAULT_APPROVAL_TTL_H,
+    memory: MemoryStore | None = None,
 ) -> dict[str, Agent[Any]]:
-    """The three agents, keyed by `StageSpec.agent_key`."""
+    """The three agents, keyed by `StageSpec.agent_key`.
+
+    `memory` (Phase 3) reaches all three: the Investigator reads the prior, the
+    Diagnostician records the verdict, the Remediator records the action. `None` leaves
+    every run reporting its history as unavailable, which fails the retry cap closed.
+    """
     return {
         "remediator": Remediator(
             llm=llm,
@@ -232,6 +239,7 @@ def build_agents(
             approval_ttl_h=approval_ttl_h,
             retry_policy=retry_policy,
             timeout_s=timeout_s,
+            memory=memory,
         ),
         "investigator": Investigator(
             gateway=gateway,
@@ -241,6 +249,7 @@ def build_agents(
             recorder=recorder,
             retry_policy=retry_policy,
             timeout_s=timeout_s,
+            memory=memory,
         ),
         "diagnostician": Diagnostician(
             llm=llm,
@@ -250,6 +259,7 @@ def build_agents(
             confidence_model=confidence_model or build_confidence_model(),
             retry_policy=retry_policy,
             timeout_s=timeout_s,
+            memory=memory,
         ),
     }
 
@@ -270,12 +280,15 @@ def build_orchestrator(
     timeout_s: float | None = None,
     approval_ttl_h: int = DEFAULT_APPROVAL_TTL_H,
     escalation_channels: Sequence[str] = ("log",),
+    memory: MemoryStore | None = None,
 ) -> Orchestrator:
     """Assemble the CI/CD orchestrator from primitives the caller already built.
 
     `engine` is passed in rather than built here for the same reason the recorder and the
     client are: the composition root builds it once at startup (so a malformed policy
     fails the boot, not the first request), and `readyz` reports on that same object.
+    `memory` (Phase 3) is the same kind of singleton and is handed to the agents and, for
+    the heartbeat, to the orchestrator itself.
     """
     return Orchestrator(
         stages=build_stages(escalation_threshold=escalation_threshold),
@@ -292,8 +305,10 @@ def build_orchestrator(
             retry_policy=retry_policy,
             timeout_s=timeout_s,
             approval_ttl_h=approval_ttl_h,
+            memory=memory,
         ),
         recorder=recorder,
         artifact_keys=ARTIFACT_KEYS,
         escalation_channels=list(escalation_channels),  # type: ignore[arg-type]
+        memory=memory,
     )

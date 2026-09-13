@@ -43,10 +43,18 @@ from src.harness.contracts import AgentResult
 from src.harness.gateway import ToolGateway
 from src.harness.guardrails import PolicyDecision, PolicyEngine, PolicySpec
 from src.harness.llm import DEFAULT_REQUEST_TIMEOUT_S, LlmClient
+from src.harness.memory import MemoryStore
 from src.harness.observability import TraceRecorder
 from src.harness.orchestrator import RunState
 from src.harness.recovery import RetryPolicy
 from src.integrations.cicd.agents.diagnostician import BUNDLE_KEY
+from src.integrations.cicd.catalog import side_effect_of
+from src.integrations.cicd.history import (
+    DEGRADED_MEMORY,
+    OUTCOME_PENDING,
+    observation_for,
+    terminal_write_tool,
+)
 from src.integrations.cicd.remediation import (
     EVALUATION_SKIPPED,
     build_facts,
@@ -134,6 +142,7 @@ class Remediator(LLMAgent[RemediationPlan]):
         budget: ContextBudget | None = None,
         retry_policy: RetryPolicy | None = None,
         timeout_s: float | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         super().__init__(
             key="remediator",
@@ -154,6 +163,9 @@ class Remediator(LLMAgent[RemediationPlan]):
         # verdict comes from.
         self.evaluation_verdict = evaluation_verdict
         self.budget = budget if budget is not None else context_manager.default_budget
+        # Phase 3: an executed side-effecting plan is written back to memory as the
+        # observation's action (`record_observation` obligation). `None` records nothing.
+        self.memory = memory
 
     # -- artifacts ----------------------------------------------------------------
     def _diagnosis(self, state: RunState) -> Diagnosis:
@@ -221,6 +233,43 @@ class Remediator(LLMAgent[RemediationPlan]):
         ):
             pass
 
+    async def _record_action(self, state: RunState, output: RemediationResult) -> None:
+        """Rewrite this run's observation with the action that executed (decision 9).
+
+        Only a plan that ran to completion with at least one write is an action; a plan
+        that stopped at a failure escalates `tool_failure` and is not counted as one -- the
+        retry cap must not be consumed by a retry that never happened. Dry-run executions
+        count: the harness decided to act, and the cap is on decisions to act. Same
+        deterministic observation id as the Diagnostician's write, so this is the same row.
+        """
+        if self.memory is None or not output.executed:
+            return
+        if any(not result.ok for result in output.executed):
+            return
+        writes = [r.tool for r in output.executed if side_effect_of(r.tool) != "read"]
+        action = terminal_write_tool(writes)
+        if action is None:
+            return
+        bundle = self._bundle(state)
+        key = bundle.prior_history.key
+        if key is None:
+            return
+        try:
+            await self.memory.record_observation(
+                observation_for(
+                    key=key,
+                    run_id=state.run_id,
+                    diagnosis=self._diagnosis(state),
+                    job=bundle.job,
+                    action_taken=action,
+                    action_outcome=OUTCOME_PENDING,
+                )
+            )
+        except Exception:  # noqa: BLE001 - the action happened; failing to note it must not undo the run
+            logger.warning("remediator: could not record the action in memory", exc_info=True)
+            if DEGRADED_MEMORY not in state.degraded:
+                state.degraded.append(DEGRADED_MEMORY)
+
     async def run(self, state: RunState) -> AgentResult[RemediationResult]:  # type: ignore[override]
         plan_result = await super().run(state)
         if plan_result.output is None:
@@ -283,6 +332,7 @@ class Remediator(LLMAgent[RemediationPlan]):
                     self.gateway, plan, decisions, recorder=self.recorder
                 )
                 output = result_for(plan, decisions, executed=executed)
+                await self._record_action(state, output)
             elif verdict == "await_approval":
                 approval = new_approval(
                     run_id=state.run_id,

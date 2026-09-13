@@ -14,6 +14,12 @@ Two rules this module exists to honour, both from the Phase 0 handoff:
 2. **`settings.log_char_budget` reaches `ContextBudget.total_chars`.** It is threaded
    into the one `ContextManager` every agent shares, so `HARNESS_LOG_CHAR_BUDGET` is a
    real knob rather than a value nothing reads.
+
+And one from Phase 3: **`AppContext.initialize()` is the single startup routine.** It
+applies the schema migrations through both objects that share the SQLite file. The API
+lifespan calls it under Docker; `app.py` hand-calls it on the Space, because a mounted
+sub-app receives no lifespan events (Phase 2 handoff §10). Anything that must happen at
+startup goes in there, so there is one list to keep and two callers of it.
 """
 
 from __future__ import annotations
@@ -24,17 +30,20 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import SecretStr
 
 from src.harness.context_manager import ContextBudget, ContextManager
 from src.harness.contracts import RunId
+from src.harness.errors import ConfigurationError
 from src.harness.gateway import ToolGateway
 from src.harness.guardrails import PolicyEngine
 from src.harness.llm import GeminiClient, LlmClient
+from src.harness.memory import FAULT_SQLITE_LOCKED, MemoryStore, SqliteMemoryStore
 from src.harness.observability import Redactor, SecretRegistry, TraceRecorder
 from src.harness.orchestrator import Orchestrator, new_run_id
+from src.harness.storage import apply_migrations
 from src.integrations.cicd.gateway_github import GitHubToolGateway
 from src.integrations.cicd.gateway_replay import ReplayToolGateway
 from src.integrations.cicd.wiring import build_orchestrator, load_policy_spec
@@ -58,6 +67,44 @@ SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
+#: The escalation channels a run built here delivers on. `db` is real since Phase 3:
+#: `MemoryStore.save_run` files the record on the `escalation` table (dispatch decision 13).
+ESCALATION_CHANNELS: Final[tuple[str, ...]] = ("log", "db")
+
+
+@dataclass(frozen=True)
+class RunContext:
+    """What it takes to build the same gateway a run used.
+
+    Stored beside a pending approval (as opaque JSON on the `approval` row) so the deciding
+    request can execute the plan through the gateway the run would have used. An
+    API-layer notion: the store never reads it.
+    """
+
+    mode: Literal["live", "replay"]
+    repo: str
+    scenario_dir: Path | None
+
+    def to_json(self) -> dict[str, str | None]:
+        return {
+            "mode": self.mode,
+            "repo": self.repo,
+            "scenario_dir": str(self.scenario_dir) if self.scenario_dir is not None else None,
+        }
+
+    @classmethod
+    def from_json(cls, data: dict[str, object]) -> RunContext:
+        mode = data.get("mode")
+        if mode not in ("live", "replay"):
+            raise ValueError(f"approval context names no run mode: {mode!r}")
+        scenario_dir = data.get("scenario_dir")
+        return cls(
+            mode=mode,
+            repo=str(data.get("repo", "")),
+            scenario_dir=Path(str(scenario_dir)) if scenario_dir else None,
+        )
+
+
 @dataclass(frozen=True)
 class AppContext:
     """Everything the routes need, built once at startup."""
@@ -67,12 +114,41 @@ class AppContext:
     context_manager: ContextManager
     llm: LlmClient
     run_semaphore: asyncio.Semaphore
+    #: Phase 3. The one durable store, shared with the recorder's file. Defaulted from
+    #: `settings.database_path` in `__post_init__` so a context assembled by hand (the
+    #: test suite) gets a real store on the same temp file its recorder uses, without
+    #: every fixture having to build one.
+    memory: MemoryStore | None = None
     #: Built once from `policy.yaml` at startup. A malformed policy raises here, so the
     #: process fails to boot rather than serving runs a gateway would refuse nothing for;
     #: `readyz` reports `policy_loaded` off this same object. The default factory loads
     #: the same file, so a context assembled by hand (the test suite does this) enforces
     #: the same policy the composition root does.
     engine: PolicyEngine = field(default_factory=lambda: PolicyEngine(load_policy_spec()))
+
+    def __post_init__(self) -> None:
+        if self.memory is None:
+            object.__setattr__(
+                self, "memory", build_memory_store(self.settings)
+            )
+
+    @property
+    def store(self) -> MemoryStore:
+        """`memory`, narrowed: `__post_init__` guarantees it is set."""
+        assert self.memory is not None
+        return self.memory
+
+    async def initialize(self) -> None:
+        """Everything that must happen once at startup, in order.
+
+        Migrations first, on the file the settings name and on the recorder's (the same
+        file in every real deployment; a hand-built context may split them, and the
+        runner is idempotent). A migration failure raises out of here and the process
+        exits non-zero -- Appendix B.3, fail fast rather than serve a half-migrated
+        schema.
+        """
+        await apply_migrations(self.settings.database_path)
+        await self.recorder.initialize()
 
     def scenario_dir(self, scenario: str) -> Path:
         """Resolve a replay scenario directory, refusing anything outside the root.
@@ -119,6 +195,14 @@ class AppContext:
         """Live mode is opt-in twice: the gateway setting, and the repo allowlist."""
         return self.settings.gateway == "github" and repo in self.settings.allowed_repos
 
+    def gateway_for(self, run_context: RunContext) -> ToolGateway:
+        """The gateway a `RunContext` describes -- the one the run used, rebuilt."""
+        if run_context.mode == "live":
+            return self.build_live_gateway(run_context.repo)
+        if run_context.scenario_dir is None:  # pragma: no cover - replay always names one
+            raise ValueError("a replay run must name a scenario directory")
+        return self.build_replay_gateway(run_context.scenario_dir, run_context.repo)
+
     def build_orchestrator_for(
         self, gateway: ToolGateway, run_id: RunId | None = None
     ) -> Orchestrator:
@@ -148,6 +232,8 @@ class AppContext:
             remediator_model=self.settings.model_remediator or self.settings.gemini_model,
             timeout_s=self.settings.gemini_timeout_s,
             approval_ttl_h=self.settings.approval_ttl_h,
+            escalation_channels=ESCALATION_CHANNELS,
+            memory=self.memory,
         )
         if run_id is not None:
             orchestrator.run_id_factory = lambda: run_id
@@ -160,6 +246,25 @@ class AppContext:
         return self.build_orchestrator_for(
             self.build_replay_gateway(scenario_dir, repo), run_id=run_id
         )
+
+
+def build_memory_store(settings: Settings) -> SqliteMemoryStore:
+    """The one `MemoryStore`, over the same file the recorder writes.
+
+    `HARNESS_FAULT_INJECT=sqlite_locked` makes every store operation fail as if the file
+    were locked -- PLAN.md Phase 3 Verify step 4 -- and is refused outside `env=dev`
+    (Appendix E: "test-only; refused when env != dev"), at construction, so a production
+    process with the variable set fails to boot rather than serving degraded runs.
+    """
+    fault = settings.fault_inject
+    if fault is not None and settings.env != "dev":
+        raise ConfigurationError(
+            "HARNESS_FAULT_INJECT is a development-only setting and is refused when "
+            f"HARNESS_ENV={settings.env!r}"
+        )
+    if fault is not None and fault != FAULT_SQLITE_LOCKED:
+        raise ConfigurationError(f"unknown fault injection {fault!r}")
+    return SqliteMemoryStore(settings.database_path, fault_inject=fault)
 
 
 def build_secret_registry(settings: Settings) -> SecretRegistry:
@@ -207,6 +312,7 @@ def get_app_context() -> AppContext:
         context_manager=context_manager,
         llm=llm,
         run_semaphore=asyncio.Semaphore(settings.max_concurrent_runs),
+        memory=build_memory_store(settings),
         engine=PolicyEngine(load_policy_spec()),
     )
 

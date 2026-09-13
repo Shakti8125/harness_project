@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -334,12 +335,15 @@ def test_async_run_is_accepted_then_readable(client: TestClient) -> None:
     run_id = response.json()["run_id"]
     assert re.fullmatch(r"run_[0-9A-HJKMNP-TV-Z]{26}", run_id)
 
-    # The background task finishes while the client drains; poll the registry directly
-    # rather than sleeping on a wall clock.
-    for _ in range(200):
+    # The background task finishes while the client drains; poll the run rather than
+    # sleeping on a wall clock. A short pause per poll keeps the budget generous without
+    # making the test slow when the run finishes quickly (a stage now includes the
+    # fingerprint scan and the memory writes, and 200 back-to-back polls were not enough).
+    for _ in range(400):
         outcome = client.get(f"/v1/runs/{run_id}").json()
         if outcome["status"] != "in_progress":
             break
+        time.sleep(0.01)
     assert outcome["status"] == "awaiting_approval"
     assert outcome["run_id"] == run_id
     assert outcome["final"]["diagnosis"]["category"] == "real_regression"

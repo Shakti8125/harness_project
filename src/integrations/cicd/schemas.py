@@ -24,6 +24,7 @@ from src.harness.context_manager import TruncationReport
 from src.harness.contracts import RunId
 from src.harness.gateway import ToolCall, ToolError, ToolResult
 from src.harness.guardrails import PolicyDecision
+from src.harness.memory import SignatureKey
 
 _MODEL_CONFIG = ConfigDict(extra="forbid", frozen=True)
 
@@ -99,6 +100,12 @@ class PriorHistory(BaseModel):
     model_config = _MODEL_CONFIG
 
     signature_id: str | None
+    # Phase 3 (A.11 amended, dispatch decision 8): the key the history was looked up under,
+    # always computed by the Investigator whether or not the store answered. It lets the
+    # Diagnostician and Remediator write under the same key without recomputing it, and
+    # lets the approval route re-query memory for a fresh count. `None` only on a bundle
+    # investigated before this phase.
+    key: SignatureKey | None = None
     occurrences: int = 0
     verdict_counts: dict[str, int] = {}
     last_verdict: str | None = None

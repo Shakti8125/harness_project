@@ -29,6 +29,7 @@ from src.integrations.cicd.schemas import (
     FileChange,
     InvestigationNotes,
     JobRef,
+    PriorHistory,
 )
 
 #: Appendix A.1 caps an excerpt at 2000 characters.
@@ -299,6 +300,40 @@ def render_truncation(reports: dict[str, TruncationReport]) -> str:
                 f"line matching an error pattern was kept."
             )
     return "\n".join(lines) or "The evidence below is complete; nothing was trimmed."
+
+
+def render_prior_history(prior: PriorHistory) -> str:
+    """The memory prior, for both prompts. Never a verdict; the instruction travels with it.
+
+    Three shapes: the store could not be read (say so, and say what that does *not*
+    mean); a first-ever sighting (Appendix D: absence of history is not evidence); and a
+    real history, rendered as counts and the deterministic hint.
+    """
+    if prior.unavailable:
+        return (
+            "Prior history is UNAVAILABLE for this run: the memory store could not be read. "
+            "Treat this as no information -- it is not evidence of flakiness or of novelty."
+        )
+    if prior.occurrences == 0:
+        return (
+            "No prior history exists for this failure signature: this is its first sighting. "
+            "Absence of history is NOT evidence that this failure is real; treat it as no "
+            "information."
+        )
+    counts = ", ".join(
+        f"{verdict}: {count}" for verdict, count in sorted(prior.verdict_counts.items())
+    )
+    last_seen = prior.last_seen_at.isoformat() if prior.last_seen_at else "unknown"
+    lines = [
+        f"This failure signature has been seen {prior.occurrences} time(s) before "
+        f"(last: {last_seen}); past verdicts: {counts or 'none'}.",
+        f"Deterministic prior from those counts: {prior.prior_hint}.",
+        f"Automatic retries of this signature in the last 24 h: {prior.retries_in_24h}.",
+        "Prior history is a prior, not evidence. You must still cite something from THIS "
+        "run's log or diff. If this run's evidence contradicts the prior, follow the "
+        "evidence and say so.",
+    ]
+    return "\n".join(lines)
 
 
 def render_investigation_summary(notes: InvestigationNotes | None) -> str:

@@ -823,6 +823,54 @@ curl.exe -s -X POST localhost:8000/v1/replay/flaky_test | jq '{status:.status, d
 > so Verify step 3 here is the first time the cap is exercised against actual counts. If Phase 2
 > moved its own auto-retry demonstration forward, it lands here.
 
+> **Amendment (Phase 3, recorded 2026-09-13 — what was built, and how the Verify block reads
+> against it).** Full reasoning in `docs/progress/phase-3/dispatch.md`.
+>
+> 1. **The live target stays SQLite; the cross-run demo runs locally.** No persistent volume and
+>    no Postgres this phase (both the user's call). On the Space, memory is real within one waking
+>    period and amnesiac across restarts.
+> 2. **`src/harness/storage.py` owns the SQLite file** — connections with the pragmas above,
+>    the migration runner (`migrations/NNN_*.sql`, tracked in `schema_version`, idempotent), and
+>    the B.3 corrupt-file quarantine. It exists so `observability.py` and `memory.py` can share
+>    the file without importing each other. **The recorder now writes `trace_span`**; a legacy
+>    Phase 1 `spans` table is carried over on first migration and dropped.
+> 3. **Fingerprints are computed from anchor lines only**, so the raw log and the budgeted
+>    excerpt agree. Durations are normalised *before* integers (the listed order would leave
+>    `1.207s` as `1.<N>s` and nothing for `<DUR>` to match); `[gwN]` → `<WORKER>` is added.
+>    For a pytest log the subject is the first `FAILED` nodeid and the exception is its first
+>    `E` line (or the summary suffix, or the `path:line: Type` location line for a bare
+>    assertion); otherwise the last `Type: message` line.
+> 4. **The prior's numbers live in the harness, its words in the integration.**
+>    `memory.dominant_verdict(occurrences, verdict_counts)` applies the ≥3 / ≥0.6 rule;
+>    `integrations/cicd/history.py` maps a dominant `flaky_test` plus a `passed_on_retry`
+>    observation to `likely_flaky`, a dominant `real_regression` to `likely_real`. The
+>    `memory_agreement` bonus fires when the dominant verdict equals the category, never on a
+>    degraded read.
+> 5. **`pending` outcomes resolve without a webhook.** At the next sighting the Investigator reads
+>    each pending retry's original bundle back out of the `run` table and probes
+>    `list_workflow_run_jobs(run_id, attempt + 1)`: all `success` → `passed_on_retry`, any
+>    `failure` → `failed_again`, else still pending. The `flaky_test` fixture ships the rerun's
+>    green job list; `infra_timeout` deliberately does not. Phase 5's webhook is the other source.
+> 6. **Who writes:** the Diagnostician `upsert_signature`s and records the observation (verdict,
+>    calibrated confidence, no action) for every diagnosed run; the Remediator re-records the
+>    same row (deterministic id `sha256(signature_id|run_id)`) with `action_taken` = the plan's
+>    terminal write tool and `action_outcome="pending"` once a side-effecting plan executed,
+>    dry-run included. That is the `record_observation` obligation acted on; `annotate_run` is
+>    still recorded, not executed.
+> 7. **The Verify block, as it can honestly be met.** Step 2 passes as written. **Step 3 must
+>    start from a fresh database** (step 2's first two runs already spent the window's two
+>    retries; its own four runs are `allow, allow, deny, deny`). **Step 4's expectation is
+>    `{"status":"escalated","degraded":["memory"]}`** with `escalation.reason ==
+>    "policy_denied"` naming `memory.retries_for_signature_24h: 999`: under Phase 2's
+>    deny-escalates decision and B.3's fail-closed cap, a memory outage produces the diagnosis,
+>    reports the outage, and refuses to act on a cap it cannot verify. `HARNESS_FAULT_INJECT=
+>    sqlite_locked` fails every store call before the B.3 ladder (migrations exempt) and is
+>    refused outside `HARNESS_ENV=dev`.
+> 8. **Memory's soft-dependency rule extends to the API's own use of the store.** A claim that
+>    cannot be made runs the request unclaimed under a minted id (no dedup for that request,
+>    logged); an outcome that cannot be saved is still returned; a read route that needs the
+>    store answers `503 application/problem+json` with `Retry-After`.
+
 ---
 
 ## Phase 4 — Evaluator + Recovery
@@ -1425,6 +1473,29 @@ class RunClaim(BaseModel):
     took_over_from: RunId | None = None
 ```
 
+> **Amendment (Phase 3, 2026-09-13).** Additive, recorded rather than decided silently
+> (`docs/progress/phase-3/dispatch.md` decisions 4, 5, 7):
+>
+> - `MemoryStore` gains the read side the `run` table exists to serve — `get_run(run_id)`,
+>   `list_runs(*, limit, status, cursor) -> (outcomes, next_cursor)` (keyset on `run_id`),
+>   `list_escalations(*, limit) -> [(run_id, EscalationRecord)]` — and the approval side the
+>   `approval` table exists to serve — `save_approval`, `get_approval`, `decide_approval` (single
+>   use, `WHERE state='pending'`) over a harness model `ApprovalRecord{approval_id, run_id, state,
+>   plan: dict, requested_at, expires_at, decided_at?, decided_by?, decision_note?, context: dict}`
+>   whose `plan` and `context` are opaque JSON. The two in-process registries are deleted.
+> - The `approval` table gains `context_json TEXT NOT NULL DEFAULT '{}'`: what the deciding
+>   request needs to rebuild the run's gateway, an API-layer notion carried opaquely.
+> - Three pure helpers: `signature_id_for(key)` (step 5's formula), `observation_id_for(
+>   signature_id, run_id)` (one observation per signature per run, deterministic), and
+>   `dominant_verdict(occurrences, verdict_counts, *, min_occurrences, min_share)` plus
+>   `has_outcome(recent, outcome)` — the numeric half of the flakiness prior.
+> - `SqliteMemoryStore.claim_run` mints the run id (`RunClaim.run_id`); `save_run` for a run
+>   nobody claimed writes the row under `unclaimed:<run_id>`; a superseded row reads back through
+>   `get_run` as `failed` with a `run_timeout` escalation (A.1 has no `superseded` status).
+> - Every method raises `MemoryStoreError` once the B.3 ladder is exhausted; callers degrade.
+> - `Orchestrator(memory=..., heartbeat_interval_s=15)` runs the Appendix C heartbeat for the
+>   duration of `run()`; that is the orchestrator's only use of the store.
+
 ## A.6 Evaluator — `src/harness/evaluator.py`
 
 ```python
@@ -1632,6 +1703,9 @@ class DependencyChange(BaseModel):
 
 class PriorHistory(BaseModel):
     signature_id: str | None
+    key: SignatureKey | None = None   # Phase 3 amendment: the lookup key, always computed by
+                                      # the Investigator (pure), so later writers and the
+                                      # approval-time re-query never recompute it
     occurrences: int = 0
     verdict_counts: dict[str, int] = {}
     last_verdict: str | None = None
@@ -1757,6 +1831,14 @@ route). `detail` passes through the `Redactor`.
 > `extra="forbid"`, and a list of escalations nobody can trace to a run is not useful; and the
 > approval response carries `decisions` because the route re-evaluates policy before executing,
 > and a re-evaluation that refuses must be visible in the response that reports it.
+
+> **Amendment (Phase 3).** `GET /readyz` additionally reports `migrations_applied` (B.3: "readyz
+> fails until they succeed"). `POST /v1/replay/{scenario}?fresh` has its meaning: `fresh=true`
+> (the default) claims under a nonce-suffixed key so every replay re-runs; `fresh=false` claims the
+> webhook's real key and a repeat answers Appendix C's `deduplicated` outcome. `GET /v1/runs`
+> honours `?cursor` with keyset pagination on `run_id`. A store that cannot be reached on a read
+> route answers `503` with `Retry-After`; on the run routes the request degrades and runs
+> unclaimed instead.
 
 `200 RunOutcome` responses are the model dump with one documented exception: raw external content carried in `final` is replaced by its length and sha256 digest at the HTTP boundary — today `final.<artifact>.logs[].excerpt` → `excerpt_length` + `excerpt_sha256` and `final.<artifact>.diff.files[].patch` → `patch_length` + `patch_sha256`. `final` is opaque to the harness, so this substitution lives in the API layer and must be extended by hand when an integration adds a raw-content field. The whole body also passes through the `Redactor`.
 
@@ -2125,7 +2207,7 @@ returns 403 for anything not on it.
 | 0 | **done** — `phase-0-green` | Scaffold, healthz, layering test | `pytest` + `docker compose up` green |
 | 1 | **done** — `phase-1-green` | Investigator + Diagnostician, 1 fixture, deployed, **plus Recovery** | Correct category + ≥1 citation from the public URL |
 | 2 | **built** -- see the Phase 2 status block | Remediator (retry) + Guardrails + approvals, 2 fixtures, live gateway | Regression blocked pending approval; flaky *denied* by the fail-closed cap with the clause named (allow path pinned offline); 90-case deny test green |
-| 3 | | Memory | 4th flaky run shows `occurrences=3`, `likely_flaky`, retry cap bites on the 3rd |
+| 3 | **built** -- see the Phase 3 amendment | Memory | 4th flaky run shows `occurrences=3`, `likely_flaky`, retry cap bites on the 3rd |
 | 4 | | Evaluator + eval harness (Recovery shipped in 1) | Fabricated citation → escalate, no remediation; `eval.py` 4/4 |
 | 5 | | Trace view + real webhook | Redelivery dedupes; secret-leak test green; live run from the demo repo |
 | 6 | | Second adapter sketch | `git diff --stat -- src/harness/` is empty; contract suite green ×3 |

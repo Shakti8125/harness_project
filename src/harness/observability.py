@@ -29,16 +29,17 @@ import json
 import logging
 import re
 import secrets
+import sqlite3
 from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal, Protocol, get_args
 
-import aiosqlite
 from pydantic import BaseModel, ConfigDict, JsonValue
 
 from src.harness.contracts import RunId, TokenUsage
+from src.harness.storage import apply_migrations, connect
 
 logger = logging.getLogger("harness.observability")
 
@@ -69,23 +70,11 @@ Component = Literal[
 
 _COMPONENTS: Final[frozenset[str]] = frozenset(get_args(Component))
 
-_SCHEMA: Final[str] = """
-CREATE TABLE IF NOT EXISTS spans (
-    seq            INTEGER PRIMARY KEY AUTOINCREMENT,
-    span_id        TEXT NOT NULL UNIQUE,
-    parent_span_id TEXT,
-    run_id         TEXT NOT NULL,
-    name           TEXT NOT NULL,
-    component      TEXT NOT NULL,
-    status         TEXT NOT NULL,
-    started_at     TEXT NOT NULL,
-    ended_at       TEXT,
-    duration_ms    INTEGER,
-    attributes     TEXT NOT NULL,
-    error          TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_spans_run_id ON spans (run_id);
-"""
+#: Spans live in `trace_span`, the table PLAN.md Phase 3's `001_init.sql` names. Phase 1
+#: kept a private `spans` table because no migration runner existed; the runner now owns
+#: the whole schema (`src/harness/storage.py`) and carries a legacy `spans` table over on
+#: first contact, so there is exactly one span table (dispatch decision 3).
+_SPAN_TABLE: Final[str] = "trace_span"
 
 # The span a nested `span()` call parents itself to. A ContextVar rather than an
 # attribute because concurrent runs share one recorder instance and asyncio tasks each
@@ -268,9 +257,10 @@ class TraceRecorder:
 
         No connection is held open between calls. Each write opens, writes and closes,
         which costs a file open per span and buys not having to reason about a
-        long-lived connection shared across concurrent runs -- at Phase 1 volumes that
-        trade is obviously right, and PLAN.md's SQLite tuning (WAL, `busy_timeout`)
-        arrives with the memory store in Phase 3.
+        long-lived connection shared across concurrent runs. Every connection comes
+        from `storage.connect`, so PLAN.md's SQLite tuning (WAL, `busy_timeout`,
+        `synchronous=NORMAL`) applies to span writes exactly as it does to the memory
+        store's, which shares the file.
         """
         self.db_path = db_path
         self.redactor = redactor
@@ -297,11 +287,12 @@ class TraceRecorder:
             _current_run_id.reset(token)
 
     async def initialize(self) -> None:
-        """Create the span table. Called once at startup by the composition root."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.executescript(_SCHEMA)
-            await db.commit()
+        """Bring the shared schema up to date. Called once at startup by the composition root.
+
+        The same migration runner the memory store calls; idempotent, so whichever of the
+        two initialises first does the work and the other finds nothing to do.
+        """
+        await apply_migrations(self.db_path)
 
     @asynccontextmanager
     async def span(
@@ -367,11 +358,11 @@ class TraceRecorder:
         error = self.redactor.scrub(handle.error) if handle.error is not None else None
         duration_ms = int((ended_at - started_at).total_seconds() * 1000)
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with connect(self.db_path) as db:
                 await db.execute(
-                    "INSERT INTO spans (span_id, parent_span_id, run_id, name, component,"
-                    " status, started_at, ended_at, duration_ms, attributes, error)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    f"INSERT INTO {_SPAN_TABLE} (span_id, parent_span_id, run_id, name,"
+                    " component, status, started_at, ended_at, duration_ms, attributes_json,"
+                    " error_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         handle.span_id,
                         parent_id,
@@ -379,8 +370,8 @@ class TraceRecorder:
                         name,
                         component,
                         status,
-                        started_at.isoformat(),
-                        ended_at.isoformat(),
+                        started_at.isoformat(timespec="microseconds"),
+                        ended_at.isoformat(timespec="microseconds"),
                         duration_ms,
                         json.dumps(attributes),
                         json.dumps(error) if error is not None else None,
@@ -402,12 +393,16 @@ class TraceRecorder:
         than stored a second time on a run row, so a trace can never disagree with the
         spans it is made of.
         """
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
+        async with connect(self.db_path) as db:
+            db.row_factory = sqlite3.Row
+            # Insertion order, exactly as Phase 1's `seq` column gave: a span is persisted
+            # when its body leaves, so children precede their parent. `started_at` would
+            # read more naturally but ties are routine on a coarse clock, and a stable
+            # order beats a natural one for a reader diffing two traces.
             async with db.execute(
                 "SELECT span_id, parent_span_id, run_id, name, component, status,"
-                " started_at, ended_at, duration_ms, attributes, error"
-                " FROM spans WHERE run_id = ? ORDER BY seq",
+                " started_at, ended_at, duration_ms, attributes_json, error_json"
+                f" FROM {_SPAN_TABLE} WHERE run_id = ? ORDER BY rowid",
                 (run_id,),
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -419,7 +414,7 @@ class TraceRecorder:
         totals = {"prompt": 0, "completion": 0, "thinking": 0, "total": 0}
         degraded: list[str] = []
         for row in rows:
-            attributes = json.loads(row["attributes"])
+            attributes = json.loads(row["attributes_json"])
             spans.append(
                 Span(
                     span_id=row["span_id"],
@@ -434,7 +429,7 @@ class TraceRecorder:
                     ),
                     duration_ms=row["duration_ms"],
                     attributes=attributes,
-                    error=json.loads(row["error"]) if row["error"] else None,
+                    error=json.loads(row["error_json"]) if row["error_json"] else None,
                 )
             )
             # Only `llm` spans are summed. Tokens are consumed by provider calls, and a

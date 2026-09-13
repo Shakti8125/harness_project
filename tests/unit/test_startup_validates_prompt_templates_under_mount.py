@@ -200,10 +200,20 @@ def test_mounted_subapp_lifespan_never_fires_healthz_then_bare_500(
     assert "investigator" not in replay.text.lower()
     assert "FileNotFoundError" not in replay.text
     # A run_id *is* now present -- `replay()` sets `request.state.run_id` right after
-    # minting, before `_execute` can fail, so the catch-all has one to attach. This is
+    # the claim, before `_execute` can fail, so the catch-all has one to attach. This is
     # the inverse of the old assertion (`"run_id" not in replay.text`): the whole point
     # of the fix this round is that a run that failed this deep is still look-up-able.
+    #
+    # Phase 3 put a step in front of the prompts: the route claims a `run` row first,
+    # and the table it needs is created by the migrations the same never-fired lifespan
+    # would have applied. The claim is memory, memory is a soft dependency, so the route
+    # runs the request unclaimed under a locally minted id (`_claim_or_degrade`) and
+    # then fails on the prompts exactly as before -- the third startup step the Phase 2
+    # handoff predicted a mounted sub-app would miss, degrading rather than changing the
+    # failure's shape. The SQLite message must not leak either: it names a table.
     assert re.fullmatch(r"run_[0-9A-HJKMNP-TV-Z]{26}", body["run_id"])
+    assert "no such table" not in replay.text
+    assert "MemoryStoreError" not in replay.text
 
 
 def test_hand_call_before_mount_raises_at_boot_instead_of_reaching_the_route(
@@ -294,8 +304,10 @@ def test_hand_call_then_mount_serves_correctly_with_a_real_prompts_dir(
     monkeypatch.setattr(api_main, "get_app_context", lambda: context)
 
     # app.py's actual order: the hand-call first, raising here (it must not, against the
-    # real directory) before anything else runs.
+    # real directory) before anything else runs; then the startup routine that applies
+    # the migrations (Phase 3) -- also a hand-call on the Space, for the same reason.
     rendering.validate_prompt_templates()
+    asyncio.run(context.initialize())
 
     outer = FastAPI()
     with TestClient(outer, raise_server_exceptions=False) as client:
@@ -335,12 +347,9 @@ def test_app_py_main_hand_calls_validate_prompt_templates_before_launch(
         app_module, "validate_prompt_templates", lambda: calls.append("validate")
     )
 
-    class _FakeRecorder:
-        async def initialize(self) -> None:
-            calls.append("recorder.initialize")
-
     class _FakeContext:
-        recorder = _FakeRecorder()
+        async def initialize(self) -> None:
+            calls.append("context.initialize")
 
     monkeypatch.setattr(app_module, "get_app_context", lambda: _FakeContext())
 

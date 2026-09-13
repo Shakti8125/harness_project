@@ -16,11 +16,10 @@ expected:
     - "job took 1.207s"
     - "DeadlineExceeded"
   action: retry
-  # Phase 2 label. `retry-suspected-flaky` also needs memory.retries_for_signature_24h < 2,
-  # and until the memory store exists (Phase 3) that fact is the fail-closed 999 from
-  # PriorHistory(unavailable=True) -- so the cap denies, honestly, and the run escalates as
-  # policy_denied with the clause named in the trace. Phase 3 flips this to `allow` when
-  # the count is real. See docs/progress/phase-2/dispatch.md decision 2.
-  effect: deny
+  # Phase 3 label. retry-suspected-flaky also needs memory.retries_for_signature_24h < 2;
+  # with the memory store real, a first sighting reads 0 and the retry is allowed. The
+  # third sighting inside 24 h is denied by the cap -- see the Phase 3 Verify block.
+  # (Phase 2 labelled this `deny`, honestly, while the count was the fail-closed 999.)
+  effect: allow
   baseline_kind: branch_green
   cold_start: false

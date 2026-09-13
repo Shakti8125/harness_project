@@ -56,7 +56,7 @@ def test_both_prompt_templates_load_from_a_relocated_cwd(
     monkeypatch.chdir(tmp_path)
     for name in ("investigator", "diagnostician"):
         template = rendering.load_prompt_template(name)
-        assert template.version == "1"
+        assert template.version == "2"  # bumped in Phase 3: the prior-history clause
         assert "$" in template.body  # a string.Template body, not a literal string
 
 

@@ -212,7 +212,7 @@ def client_that_fails_after_run_id_is_minted(
     tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[TestClient]:
     """A real, successful replay run all the way through the orchestrator, with the one
-    remaining step -- `registry.save(outcome)`, called from `_execute` after
+    remaining step -- `store.save_run(outcome)`, called from `_execute` after
     `request.state.run_id` was already set by the route -- replaced with something that
     raises a distinctive `RuntimeError`. This reaches the catch-all with a `run_id`
     genuinely in scope, via a real HTTP round trip, without needing to break the prompts
@@ -239,7 +239,7 @@ def client_that_fails_after_run_id_is_minted(
     async def _raise_after_the_run_completed(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError(EXCEPTION_MARKER)
 
-    monkeypatch.setattr(api_main.registry, "save", _raise_after_the_run_completed)
+    monkeypatch.setattr(context.store, "save_run", _raise_after_the_run_completed)
 
     # raise_server_exceptions=False: the point of this fixture is to see what a real
     # client over the wire gets back (a 500 problem body), not to have the exception

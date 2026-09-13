@@ -14,9 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api import main as api_main
-from src.api.approval_registry import ApprovalRegistry
 from src.api.deps import SECRET_PATTERNS, AppContext, build_secret_registry
-from src.api.run_registry import RunRegistry
 from src.harness.context_manager import ContextBudget, ContextManager
 from src.harness.observability import Redactor, TraceRecorder
 from src.settings import get_settings
@@ -40,9 +38,8 @@ def make_client(
         run_semaphore=asyncio.Semaphore(settings.max_concurrent_runs),
     )
     monkeypatch.setattr(api_main, "get_app_context", lambda: context)
-    # Fresh registries per test: both are process-global by design.
-    monkeypatch.setattr(api_main, "registry", RunRegistry())
-    monkeypatch.setattr(api_main, "approvals", ApprovalRegistry())
+    # Runs and approvals live in the context's own store, over the per-test temp file, so
+    # nothing here is process-global any more (Phase 3).
     return TestClient(api_main.app)
 
 
@@ -220,6 +217,12 @@ def test_expired_approval_is_410(tmp_db_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def test_escalations_lists_the_denied_retry_with_its_run_id(client: TestClient) -> None:
+    """Phase 3: memory is real, so the first two sightings of the flaky test auto-retry
+    and the *third* inside 24 h is the one the cap denies and escalates."""
+    first = client.post("/v1/replay/flaky_test").json()
+    assert first["status"] == "completed"
+    assert first["final"]["remediation"]["status"] == "executed"
+    client.post("/v1/replay/flaky_test")
     flaky = client.post("/v1/replay/flaky_test").json()
     assert flaky["status"] == "escalated"
     assert flaky["escalation"]["reason"] == "policy_denied"
@@ -233,7 +236,10 @@ def test_escalations_lists_the_denied_retry_with_its_run_id(client: TestClient) 
     assert len(mine) == 1
     assert mine[0]["reason"] == "policy_denied"
     assert mine[0]["payload"]["decisions"][0]["tool"] == "rerun_failed_jobs"
-    assert "memory.retries_for_signature_24h: 999" in mine[0]["message"]
+    assert "memory.retries_for_signature_24h: 2" in mine[0]["message"]
+    # Durable, on the `db` channel (dispatch decision 13), and newest first.
+    assert "db" in mine[0]["channels"]
+    assert items[0]["run_id"] == flaky["run_id"]
 
     limited = client.get("/v1/escalations?limit=1").json()
     assert len(limited) <= 1

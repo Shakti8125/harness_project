@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -115,7 +116,7 @@ class QuotingStubLlm:
 
 
 @pytest.fixture
-def client(tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client(tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     settings = get_settings()
     recorder = TraceRecorder(
         db_path=tmp_db_path,
@@ -131,7 +132,11 @@ def client(tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         run_semaphore=asyncio.Semaphore(settings.max_concurrent_runs),
     )
     monkeypatch.setattr(api_main, "get_app_context", lambda: context)
-    return TestClient(api_main.app)
+    # Entered as a context manager so the lifespan runs: since Phase 3 the replay route
+    # claims a `run` row before anything else, and that table is created by the
+    # migrations the lifespan applies.
+    with TestClient(api_main.app) as test_client:
+        yield test_client
 
 
 def test_excerpt_and_patch_are_absent_from_the_real_response(client: TestClient) -> None:
