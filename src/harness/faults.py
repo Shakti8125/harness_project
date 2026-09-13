@@ -3,10 +3,11 @@
 DERIVED, NOT TRANSCRIBED. Appendix E fixes the setting (`fault_inject`, "test-only;
 refused when env != dev") and the Phase 3 and Phase 4 Verify blocks fix the fault names:
 `sqlite_locked` (the store's, `memory.FAULT_SQLITE_LOCKED`), `llm_bad_json:N` and
-`llm_429:N` (this module's), and `diagnostician_fabricate_citation` (the first
-integration's). Nothing here reads the environment: the composition root parses the
-setting through :func:`parse_fault`, refuses it outside `dev` and refuses a name nobody
-registered, and hands each fault to the one component that knows how to fail that way.
+`llm_429:N` (this module's), plus whatever names an integration registers with the
+composition root for its own agents. Nothing here reads the environment: the composition
+root parses the setting through :func:`parse_fault`, refuses it outside `dev` and refuses
+a name nobody registered, and hands each fault to the one component that knows how to
+fail that way.
 
 **The LLM faults never reach the provider.** A fault-injected run must not spend quota
 (Phase 4 handoff §4), so :class:`FaultInjectingLlmClient` answers the first `count`

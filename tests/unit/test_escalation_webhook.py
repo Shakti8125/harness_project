@@ -29,7 +29,12 @@ from src.harness.escalation import (
     webhook_body,
 )
 from src.harness.memory import SqliteMemoryStore
-from src.harness.observability import Redactor, SecretRegistry, TraceRecorder
+from src.harness.observability import (
+    REDACTION_PLACEHOLDER,
+    Redactor,
+    SecretRegistry,
+    TraceRecorder,
+)
 from src.harness.orchestrator import Orchestrator, StageSpec
 from src.settings import get_settings
 
@@ -117,6 +122,27 @@ async def test_failure_after_two_retries_records_delivery_error_without_the_url(
     assert "SECRETPART" not in delivered.delivery_error
     assert "SECRETPART" not in caplog.text
     assert "attempt 3/3" in caplog.text
+
+
+async def test_httpx_request_log_line_never_carries_the_url(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Audit finding 2: httpx logs `HTTP Request: POST <url> "..."` at INFO on its own
+    logger for every request, mock transport included -- and for the webhook the URL is
+    the credential. Captured at INFO on the root logger, which is where
+    `HARNESS_LOG_LEVEL=INFO` would put it."""
+    capture = Capture([500, 200])
+    notifier = WebhookNotifier(URL, client=client_for(capture), backoff_s=0.0)
+    with caplog.at_level(logging.INFO):
+        delivered = await notifier.deliver(RUN_ID, record())
+
+    assert delivered.delivery_error is None
+    httpx_lines = [r for r in caplog.records if r.name == "httpx"]
+    assert httpx_lines, "httpx did log the request -- the scrub, not silence, is the fix"
+    assert all("HTTP Request: POST" in r.getMessage() for r in httpx_lines)
+    assert "SECRETPART" not in caplog.text
+    assert "hooks.example.com" not in caplog.text
+    assert all(REDACTION_PLACEHOLDER in r.getMessage() for r in httpx_lines)
 
 
 async def test_transient_failure_then_success() -> None:

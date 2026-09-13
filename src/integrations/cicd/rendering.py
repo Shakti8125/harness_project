@@ -206,9 +206,20 @@ def render_diff_summary(diff: DiffSummary) -> str:
         )
     lines = [
         f"baseline: {diff.baseline_kind}, base {diff.base_sha} -> head {diff.head_sha}",
-        f"{len(diff.files)} changed file(s)"
-        + (f" of {diff.total_files} (truncated)" if diff.truncated else ""),
     ]
+    # The commits in the range, oldest first: what a `commit_in_range` citation may quote
+    # (the Diagnostician prompt says "as listed here"), and therefore what the checker
+    # verifies against. A bundle without the list (stored before Phase 4) says so rather
+    # than implying the head is the only commit (Phase 4 audit finding 4).
+    if diff.commit_shas:
+        lines.append(f"{len(diff.commit_shas)} commit(s) in range, oldest first:")
+        lines.extend(f"  {sha}" for sha in diff.commit_shas)
+    else:
+        lines.append(f"commit range unknown; head commit {diff.head_sha}")
+    lines.append(
+        f"{len(diff.files)} changed file(s)"
+        + (f" of {diff.total_files} (truncated)" if diff.truncated else "")
+    )
     lines.extend(
         f"  {change.status:8} {change.path} (+{change.additions}/-{change.deletions})"
         for change in diff.files[:MAX_LISTED_FILES]

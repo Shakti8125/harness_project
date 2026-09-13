@@ -317,7 +317,10 @@ def _same_package(a: str, b: str) -> bool:
 
 
 def _versions_in(quote: str) -> list[str]:
-    return [match.group(1) for match in _VERSION.finditer(quote)]
+    # The token class admits `.`, `+` and `-` so `2.9.2-rc1` and `1.0+local` survive;
+    # a trailing one is the sentence's punctuation (`1.10.13->2.9.2`, `to 2.9.2.`), not
+    # the version's (Phase 4 audit finding 3).
+    return [match.group(1).rstrip(".+-") for match in _VERSION.finditer(quote)]
 
 
 class DependencyBumpChecker:

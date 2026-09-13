@@ -327,6 +327,11 @@ def pydantic_bump() -> DependencyChange:
         "pydantic bumped from 1.10.13 to 2.9.2",
         "pydantic",
         "Pydantic 2.9.2",
+        # Audit finding 3: punctuation right after a version must not become part of it.
+        "pydantic 1.10.13->2.9.2",
+        "pydantic bumped from 1.10.13 to 2.9.2.",
+        "pydantic (1.10.13 -> 2.9.2).",
+        "pydantic==2.9.2,",
     ],
 )
 def test_dependency_bump_verified_shapes(quote: str) -> None:
@@ -439,6 +444,24 @@ def test_commit_in_range_unknown_range_is_unverifiable() -> None:
     # A bundle stored before this phase: the range list is empty though the diff was fetched.
     v = CommitInRangeChecker().check(claim("commit_in_range", MID, ""), artifacts(bundle(commit_shas=[])))
     assert v.result == "unverifiable" and v.detail == "commit range unknown"
+
+
+def test_diff_summary_renders_the_commit_range_the_prompt_promises() -> None:
+    """Audit finding 4: the v3 prompt tells the model `commit_in_range` quotes "the full
+    commit sha as listed under 'Diff against the baseline'", so that section must list
+    every sha in the range -- otherwise an intermediate commit can never be cited and the
+    only other sha on show, the base, is refuted."""
+    from src.integrations.cicd.rendering import render_diff_summary
+
+    text = render_diff_summary(bundle().diff)
+    assert "2 commit(s) in range, oldest first:" in text
+    listing = text.split("oldest first:", 1)[1]
+    assert MID in listing and HEAD in listing
+    assert listing.index(MID) < listing.index(HEAD), "oldest first"
+    # A cold start has no range and says so, as before.
+    assert "No green baseline" in render_diff_summary(bundle(baseline_kind="none", files=[]).diff)
+    # A pre-Phase-4 bundle (no list) renders the head alone and says the range is unknown.
+    assert "range unknown" in render_diff_summary(bundle(commit_shas=[]).diff)
 
 
 def test_checkers_derive_availability_when_the_artifact_is_absent() -> None:

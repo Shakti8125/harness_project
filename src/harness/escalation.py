@@ -30,9 +30,16 @@ import httpx
 from pydantic import JsonValue
 
 from src.harness.contracts import EscalationRecord, RunId
-from src.harness.observability import Redactor
+from src.harness.observability import REDACTION_PLACEHOLDER, Redactor
 
 logger = logging.getLogger("harness.escalation")
+
+#: The logger httpx writes `HTTP Request: <method> <url> "..."` to, at INFO, for every
+#: request it sends. For every other client in this codebase the URL is public; for the
+#: webhook it is the credential, so the notifier installs a filter on this logger that
+#: rewrites its own URL wherever it appears (Phase 4 audit finding 2). A filter rather
+#: than a level: the request line stays useful, only the secret leaves it.
+HTTPX_LOGGER: Final[str] = "httpx"
 
 #: Appendix B.4: timeout 5 s, 2 retries (three attempts in total).
 WEBHOOK_TIMEOUT_S: Final[float] = 5.0
@@ -78,6 +85,40 @@ def _describe_failure(exc: BaseException) -> str:
     return f"webhook delivery failed ({type(exc).__name__})"
 
 
+class _ScrubUrl(logging.Filter):
+    """Rewrite one URL to the redaction placeholder in a logger's records.
+
+    httpx passes the URL as a format argument (`record.args`), so both the arguments
+    and a pre-formatted message are scrubbed. Always returns True: the record is kept,
+    minus the secret.
+    """
+
+    def __init__(self, url: str) -> None:
+        super().__init__()
+        self.url = url
+
+    def _scrub(self, value: object) -> object:
+        text = str(value)
+        return text.replace(self.url, REDACTION_PLACEHOLDER) if self.url in text else value
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._scrub(arg) for arg in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: self._scrub(arg) for key, arg in record.args.items()}
+        if isinstance(record.msg, str) and self.url in record.msg:
+            record.msg = record.msg.replace(self.url, REDACTION_PLACEHOLDER)
+        return True
+
+
+def scrub_url_from_httpx_logs(url: str) -> None:
+    """Install (once per URL) the filter that keeps `url` out of httpx's request log."""
+    httpx_logger = logging.getLogger(HTTPX_LOGGER)
+    if any(isinstance(f, _ScrubUrl) and f.url == url for f in httpx_logger.filters):
+        return
+    httpx_logger.addFilter(_ScrubUrl(url))
+
+
 class WebhookNotifier:
     """`EscalationNotifier` over one outbound `POST`, per Appendix B.4."""
 
@@ -97,6 +138,7 @@ class WebhookNotifier:
         self._url = url
         self._redactor = redactor
         self._trace_url_template = trace_url_template
+        scrub_url_from_httpx_logs(url)
         self._timeout_s = timeout_s
         self._retries = retries
         self._backoff_s = backoff_s

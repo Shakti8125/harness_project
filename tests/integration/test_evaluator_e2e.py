@@ -155,6 +155,35 @@ def test_the_verdict_is_remembered_after_the_penalty_not_before(
     assert observation == [("real_regression", pytest.approx(0.65))]
 
 
+def test_a_refuted_verdict_is_never_tallied_even_above_the_gate(
+    tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Audit finding 1: 0.95 - 0.15 = 0.80 clears the confidence threshold, but the
+    evidence gate refused this run -- a refuted verdict is a sighting, never a verdict,
+    whatever its confidence. Three refuted sightings must not build a prior that lifts a
+    fourth over the gate (`memory_agreement` needs >= 3 with a 60% share)."""
+    context = make_context(
+        tmp_db_path, fault=FAULT_FABRICATE_CITATION, llm=ScenarioStubLlm(self_confidence=0.95)
+    )
+    monkeypatch.setattr(api_main, "get_app_context", lambda: context)
+    with TestClient(api_main.app) as client:
+        for _ in range(3):
+            body = replay(client, "real_regression")
+            assert body["escalation"]["reason"] == "evidence_refuted"
+            assert body["final"]["diagnosis"]["final_confidence"] == pytest.approx(0.80)
+            assert not [
+                a for a in body["final"]["diagnosis"]["confidence_adjustments"]
+                if a["name"] == "memory_agreement"
+            ]
+    with sqlite3.connect(tmp_db_path) as db:
+        signature = db.execute(
+            "select occurrences, last_verdict, verdict_counts from failure_signature"
+        ).fetchall()
+        confidences = [r[0] for r in db.execute("select confidence from observation").fetchall()]
+    assert signature == [(3, None, "{}")], "three refuted sightings, no verdict vouched for"
+    assert confidences == [pytest.approx(0.80)] * 3
+
+
 def test_a_verified_diagnosis_is_remembered_with_its_bonus(
     tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

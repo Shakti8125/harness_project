@@ -111,6 +111,21 @@ async def test_unknown_scenario_is_a_usage_error(
     capsys.readouterr()
 
 
+async def test_build_context_routes_the_store_fault(repo_root: Path, tmp_path: Path) -> None:
+    """Audit finding 5: `sqlite_locked` passed the guard but never reached the store the
+    script built by hand. The context's store must fail like the API's would."""
+    from src.harness.memory import MemoryStoreError
+    from src.settings import get_settings
+
+    eval_script = _load(repo_root)
+    settings = get_settings().model_copy(update={"fault_inject": "sqlite_locked"})
+    context = eval_script.build_context(settings, object(), tmp_path / "faulty.db")
+    assert context.fault is not None and context.fault.name == "sqlite_locked"
+    await context.initialize()
+    with pytest.raises(MemoryStoreError):
+        await context.store.heartbeat("run_01J8TESTEVA100000000000001")
+
+
 def test_score_gates_on_category_and_forbidden_executions(repo_root: Path) -> None:
     """The scoring function alone: a wrong category is a miss on the headline number; an
     executed forbidden tool -- from the outcome or the trace -- counts against the gate."""

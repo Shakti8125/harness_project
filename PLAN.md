@@ -1412,8 +1412,8 @@ def remediation_gate(state: RunState) -> GateDecision:
     d = state.artifacts["diagnosis"]
     ev = state.artifacts.get("evaluation")
     if ev and ev.verdict == "fail":
-        return GateDecision(proceed=False, reason="evidence refuted by evaluator",
-                            escalate_as="evidence_refuted")
+        return GateDecision(proceed=False, reason=f"evaluator verdict fail: {ev.reason}",
+                            escalate_as="evidence_refuted")   # the report's reason travels
     if d.final_confidence < settings.escalation_threshold:      # 0.70
         return GateDecision(proceed=False,
                             reason=f"confidence {d.final_confidence:.2f} < {settings.escalation_threshold}",
@@ -1715,12 +1715,18 @@ class AttemptRecord(BaseModel):
     latency_ms: int
     tokens: TokenUsage
 
+class OutputBudget:                        # Phase 4 amendment (item 10), additive: the
+    max_output_tokens: int                 # caller's `call` closure reads this; the loop
+    def grow(self) -> int: ...             # grows it x1.5 on a MAX_TOKENS finish
+
 async def retry_structured(
     call: Callable[[str], Awaitable["RawLlmResponse"]],
     prompt: str,
     schema: type[TOut],
     policy: RetryPolicy,
     recorder: TraceRecorder,
+    *,
+    output_budget: OutputBudget | None = None,   # Phase 4 amendment, additive
 ) -> tuple[TOut | None, list[AttemptRecord], AgentError | None]: ...
 ```
 

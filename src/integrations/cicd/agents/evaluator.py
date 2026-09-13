@@ -130,26 +130,33 @@ class EvidenceEvaluator:
         )
 
     # -- memory (moved here from the Diagnostician; dispatch decision 1) ------------
-    def _counts_as_verdict(self, diagnosis: Diagnosis) -> bool:
+    def _counts_as_verdict(self, diagnosis: Diagnosis, report: EvaluationReport) -> bool:
         """Whether the signature's `verdict_counts` should count this verdict.
 
         The observation row always carries the verdict and its final confidence; this
         decides only the signature's tally, which `dominant_verdict` and the
-        `memory_agreement` bonus read. Three sightings the gate refused must not add up
-        to a prior that lifts a fourth over the same gate (Phase 3 audit finding 4).
+        `memory_agreement` bonus read. A verdict the harness refused to act on must not
+        build the prior: three sightings the gate refused must not add up to a prior that
+        lifts a fourth over the same gate (Phase 3 audit finding 4). Two gates refuse --
+        the confidence threshold, and the evidence gate on a `fail` report, which refuses
+        regardless of confidence ("grounding beats self-belief"; Phase 4 audit finding 1).
         """
+        if report.verdict == "fail":
+            return False
         return (
             self.verdict_threshold is None
             or diagnosis.final_confidence >= self.verdict_threshold
         )
 
-    async def _remember(self, diagnosis: Diagnosis, state: RunState) -> None:
+    async def _remember(
+        self, diagnosis: Diagnosis, report: EvaluationReport, state: RunState
+    ) -> None:
         """Count this sighting and record its verdict (Phase 3 dispatch decision 9, as
         amended by Phase 4 decision 1).
 
         Every evaluated run is remembered, gated or not: the sighting always counts, the
         observation always carries the final confidence, and the verdict joins the
-        signature's tally only when it clears `verdict_threshold`. Any failure degrades
+        signature's tally only when neither gate would refuse it. Any failure degrades
         the run's `memory` component and leaves the diagnosis untouched: memory is a
         soft dependency on the write side exactly as on the read side.
         """
@@ -159,7 +166,7 @@ class EvidenceEvaluator:
         key = bundle.prior_history.key
         if key is None:
             return
-        verdict = diagnosis.category if self._counts_as_verdict(diagnosis) else None
+        verdict = diagnosis.category if self._counts_as_verdict(diagnosis, report) else None
         try:
             await self.memory.upsert_signature(key, verdict, state.run_id)
             await self.memory.record_observation(
@@ -211,7 +218,7 @@ class EvidenceEvaluator:
             span.set_attribute("final_confidence", recalibrated.final_confidence)
             span.set_attribute("status", "ok")
 
-            await self._remember(recalibrated, state)
+            await self._remember(recalibrated, report, state)
 
         return AgentResult[EvaluationReport](
             agent=self.key,

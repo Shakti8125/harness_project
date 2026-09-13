@@ -58,7 +58,6 @@ from src.api.deps import (  # noqa: E402
     FIXTURES_ROOT,
     SECRET_PATTERNS,
     AppContext,
-    build_memory_store,
     build_secret_registry,
 )
 from src.api.main import idempotency_key_for  # noqa: E402
@@ -181,7 +180,12 @@ def score(scenario: str, outcome: RunOutcome, expected: dict[str, Any], forbidde
 
 
 def build_context(settings: Settings, llm: LlmClient, db_path: Path) -> AppContext:
-    """An `AppContext` over `db_path`, the way the API's composition root builds its own."""
+    """An `AppContext` over `db_path`, the way the API's composition root builds its own.
+
+    The store is left to `AppContext.__post_init__`, which builds it over the scoped
+    settings *with* the parsed fault -- so `HARNESS_FAULT_INJECT=sqlite_locked` reaches
+    it exactly as it does in the API (Phase 4 audit finding 5).
+    """
     redactor = Redactor(build_secret_registry(settings), SECRET_PATTERNS)
     scoped = settings.model_copy(update={"database_path": db_path})
     return AppContext(
@@ -190,7 +194,6 @@ def build_context(settings: Settings, llm: LlmClient, db_path: Path) -> AppConte
         context_manager=ContextManager(default_budget=ContextBudget(total_chars=settings.log_char_budget)),
         llm=llm,
         run_semaphore=asyncio.Semaphore(settings.max_concurrent_runs),
-        memory=build_memory_store(scoped, redactor),
     )
 
 
