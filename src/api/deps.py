@@ -42,7 +42,7 @@ from src.harness.guardrails import PolicyEngine
 from src.harness.llm import GeminiClient, LlmClient
 from src.harness.memory import FAULT_SQLITE_LOCKED, MemoryStore, SqliteMemoryStore
 from src.harness.observability import Redactor, SecretRegistry, TraceRecorder
-from src.harness.orchestrator import Orchestrator, new_run_id
+from src.harness.orchestrator import HEARTBEAT_INTERVAL_S, Orchestrator, new_run_id
 from src.harness.storage import apply_migrations
 from src.integrations.cicd.gateway_github import GitHubToolGateway
 from src.integrations.cicd.gateway_replay import ReplayToolGateway
@@ -125,6 +125,10 @@ class AppContext:
     #: the same file, so a context assembled by hand (the test suite does this) enforces
     #: the same policy the composition root does.
     engine: PolicyEngine = field(default_factory=lambda: PolicyEngine(load_policy_spec()))
+    #: Phase 3 fix round (audit finding 2): how often a claimed run's row is heartbeated
+    #: while it waits for a concurrency slot, before the orchestrator's own heartbeat
+    #: takes over. The orchestrator's constant; a knob only so a test can shrink it.
+    heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S
 
     def __post_init__(self) -> None:
         if self.memory is None:

@@ -69,6 +69,8 @@ RATE_LIMIT_MAX_SLEEP_S: Final[float] = 60.0
 SECONDARY_LIMIT_RETRIES: Final[int] = 2
 #: PLAN.md line 222: keep the LAST 20 MB of a job log.
 LOG_DOWNLOAD_CAP_BYTES: Final[int] = 20 * 1024 * 1024
+#: `per_page` on the jobs listing: GitHub's maximum.
+JOBS_PAGE_SIZE: Final[int] = 100
 #: B.2: how much of a body that failed to parse is kept as evidence.
 MALFORMED_EVIDENCE_CHARS: Final[int] = 500
 
@@ -443,9 +445,14 @@ class GitHubToolGateway:
     async def _dispatch(self, tool: str, args: dict[str, Any]) -> dict[str, JsonValue]:
         repo = self.repo
         if tool == "list_workflow_run_jobs":
+            # GitHub's largest page. The rerun probe (`history._probe_rerun`) says "every
+            # job passed" only when `total_count` equals the jobs it saw, so a run with
+            # more jobs than this stays `pending` rather than being judged on one page
+            # (Phase 3 audit finding 5).
             body = await self._get_json(
                 f"/repos/{repo}/actions/runs/{int(args['run_id'])}"
-                f"/attempts/{int(args.get('attempt', 1))}/jobs"
+                f"/attempts/{int(args.get('attempt', 1))}/jobs",
+                params={"per_page": JOBS_PAGE_SIZE},
             )
         elif tool == "get_job_logs":
             raw_cap = args.get("max_bytes")

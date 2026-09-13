@@ -25,6 +25,7 @@ from src.harness.memory import (
     SqliteMemoryStore,
     dominant_verdict,
     has_outcome,
+    is_chain_member,
     observation_id_for,
     signature_id_for,
 )
@@ -245,6 +246,36 @@ async def test_lookback_and_limit(store: SqliteMemoryStore) -> None:
     assert [o.run_id for o in hit.recent] == [ids[1], ids[2]]
 
 
+async def test_upsert_without_a_verdict_counts_the_sighting_only(
+    store: SqliteMemoryStore,
+) -> None:
+    """Audit finding 4: a sighting whose verdict the caller does not vouch for (below the
+    gate) raises `occurrences` and moves `last_seen_at`/`last_run_id`, and leaves
+    `verdict_counts` and `last_verdict` alone -- so three such sightings dilute the
+    dominant share rather than build it."""
+    for run_id in ("run_" + "A" * 26, "run_" + "B" * 26, "run_" + "C" * 26):
+        await store.upsert_signature(KEY, None, run_id)
+    hit = await store.lookup(MemoryQuery(key=KEY))
+    assert hit.record is not None
+    assert hit.record.occurrences == 3
+    assert hit.record.verdict_counts == {}
+    assert hit.record.last_verdict is None
+    assert hit.record.last_run_id == "run_" + "C" * 26
+    assert dominant_verdict(hit.record.occurrences, hit.record.verdict_counts) is None
+
+    # One vouched-for verdict among four sightings is a 25% share: still no prior.
+    await store.upsert_signature(KEY, "flaky_test", "run_" + "D" * 26)
+    hit = await store.lookup(MemoryQuery(key=KEY))
+    assert hit.record is not None
+    assert (hit.record.occurrences, hit.record.verdict_counts) == (4, {"flaky_test": 1})
+    assert hit.record.last_verdict == "flaky_test"
+    assert dominant_verdict(hit.record.occurrences, hit.record.verdict_counts) is None
+    # A later unvouched sighting keeps the last vouched-for verdict.
+    await store.upsert_signature(KEY, None, "run_" + "E" * 26)
+    hit = await store.lookup(MemoryQuery(key=KEY))
+    assert hit.record is not None and hit.record.last_verdict == "flaky_test"
+
+
 # ---------------------------------------------------------------------------
 # Runs: the claim protocol (Appendix C), heartbeat, outcomes, listing
 # ---------------------------------------------------------------------------
@@ -307,6 +338,64 @@ async def test_stale_heartbeat_is_taken_over(store: SqliteMemoryStore, clock: Cl
     clock.advance(seconds=HEARTBEAT_STALE_AFTER_S + 1)
     fourth = await store.claim_run("cicd:k3", "cicd")
     assert fourth.acquired and fourth.took_over_from == takeover.run_id
+
+
+def test_chain_membership_is_the_bare_key_or_a_numbered_takeover() -> None:
+    """Audit finding 1: `<key>#fresh:<nonce>` is not in `<key>`'s chain; `<key>#2` is."""
+    assert is_chain_member("cicd:K", "cicd:K")
+    assert is_chain_member("cicd:K", "cicd:K#2")
+    assert is_chain_member("cicd:K", "cicd:K#10")
+    assert not is_chain_member("cicd:K", "cicd:K#fresh:1a2b3c4d")
+    assert not is_chain_member("cicd:K", "cicd:K#fresh:1a2b3c4d#2")
+    assert not is_chain_member("cicd:K", "cicd:K2")
+    assert not is_chain_member("cicd:K", "cicd:K#")
+    assert not is_chain_member("cicd:K", "cicd:K#2x")
+    # A `_` in the key is a LIKE wildcard; membership is exact regardless.
+    assert not is_chain_member("cicd:a_b", "cicd:aXb#2")
+
+
+async def test_a_fresh_replay_row_never_answers_for_the_real_key(
+    store: SqliteMemoryStore,
+) -> None:
+    """Audit finding 1 (a): a completed `fresh=true` replay, then the real webhook, then a
+    redelivery -- the redelivery must see the real run `in_progress`, not the replay's
+    finished outcome as `deduplicated`."""
+    replay = await store.claim_run("cicd:K#fresh:0badcafe", "cicd")
+    assert replay.acquired
+    await store.save_run(outcome(replay.run_id))
+
+    real = await store.claim_run("cicd:K", "cicd")
+    assert real.acquired and real.took_over_from is None
+
+    redelivery = await store.claim_run("cicd:K", "cicd")
+    assert not redelivery.acquired
+    assert redelivery.run_id == real.run_id, "the replay's row is not the real key's chain"
+    assert redelivery.existing_status == "in_progress"
+    assert redelivery.took_over_from is None
+
+
+async def test_a_stale_fresh_replay_row_is_not_taken_over_by_the_real_key(
+    store: SqliteMemoryStore, clock: Clock
+) -> None:
+    """Audit finding 1 (b): a replay left `in_progress` (process killed) goes stale; the
+    real key's redelivery must hold on its own fresh row rather than take the replay over
+    and start a second concurrent run for one idempotency key."""
+    dead_replay = await store.claim_run("cicd:K#fresh:deadbeef", "cicd")
+    clock.advance(seconds=HEARTBEAT_STALE_AFTER_S + 5)
+
+    real = await store.claim_run("cicd:K", "cicd")
+    assert real.acquired
+    redelivery = await store.claim_run("cicd:K", "cicd")
+    assert not redelivery.acquired
+    assert redelivery.run_id == real.run_id
+    assert redelivery.took_over_from is None
+    # The dead replay row is untouched: still its own key, still in progress.
+    stale = await store.get_run(dead_replay.run_id)
+    assert stale is not None and stale.status == "in_progress"
+
+    # And the replay key's own chain still works: it is stale, so it is taken over.
+    takeover = await store.claim_run("cicd:K#fresh:deadbeef", "cicd")
+    assert takeover.acquired and takeover.took_over_from == dead_replay.run_id
 
 
 async def test_heartbeat_only_touches_in_progress_rows(
@@ -518,3 +607,53 @@ async def test_json_columns_are_scrubbed_before_they_reach_the_file(tmp_db_path:
     excerpt = stored.final["bundle"]["logs"][0]["excerpt"]  # type: ignore[index, call-overload]
     assert excerpt == "token ***REDACTED*** and ***REDACTED***"
     assert (await store.get_approval("apr_leak")).plan == {"plan": {"body": "***REDACTED***"}}  # type: ignore[union-attr]
+
+
+async def test_base64_file_content_is_scrubbed_through_the_encoding(tmp_db_path: Path) -> None:
+    """Audit finding 8: a token inside a drafted file travels as `content_b64`, which no
+    pattern matches. Neither the token nor its base64 spelling reaches the file bytes; a
+    payload with nothing to remove is stored byte-for-byte, so re-executing it is exact."""
+    import base64
+    import re
+
+    from src.harness.observability import Redactor, SecretRegistry
+
+    shaped = "ghp_" + "B" * 36
+    redactor = Redactor(SecretRegistry(), [re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")])
+    store = SqliteMemoryStore(tmp_db_path, redactor=redactor)
+    await store.initialize()
+
+    leaky_b64 = base64.b64encode(f"API_TOKEN={shaped}\n".encode()).decode("ascii")
+    clean_b64 = base64.b64encode(b"print('hello')\n").decode("ascii")
+    record = approval("apr_b64").model_copy(
+        update={
+            "plan": {
+                "tool_calls": [
+                    {"tool": "create_or_update_file", "args": {"content_b64": leaky_b64}},
+                    {"tool": "create_or_update_file", "args": {"content_b64": clean_b64}},
+                ]
+            }
+        }
+    )
+    await store.save_approval(record)
+    run_id = new_run_id()
+    await store.save_run(
+        outcome(run_id).model_copy(update={"final": {"plan": {"content_b64": leaky_b64}}})
+    )
+
+    raw = tmp_db_path.read_bytes()
+    for sidecar in ("-wal", "-shm"):
+        path = tmp_db_path.with_name(tmp_db_path.name + sidecar)
+        if path.exists():
+            raw += path.read_bytes()
+    assert shaped.encode() not in raw
+    assert leaky_b64.encode() not in raw, "the base64 spelling of the token is one decode away"
+    assert clean_b64.encode() in raw, "content with nothing to remove is stored verbatim"
+
+    stored = await store.get_approval("apr_b64")
+    assert stored is not None
+    calls = stored.plan["tool_calls"]
+    assert isinstance(calls, list)
+    scrubbed = base64.b64decode(calls[0]["args"]["content_b64"]).decode()  # type: ignore[index, call-overload]
+    assert scrubbed == "API_TOKEN=***REDACTED***\n"
+    assert calls[1]["args"]["content_b64"] == clean_b64  # type: ignore[index, call-overload]

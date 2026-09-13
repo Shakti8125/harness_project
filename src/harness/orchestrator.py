@@ -32,7 +32,8 @@ import contextlib
 import logging
 import secrets
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, get_args
 
@@ -188,6 +189,41 @@ class RunState(BaseModel):                 # mutable, extra="allow" -- the only 
     stages: list[StageRecord]
 
 
+async def _heartbeat_loop(memory: MemoryStore, run_id: RunId, interval_s: float) -> None:
+    """Write ``heartbeat_at`` on an interval until cancelled. Never raises."""
+    while True:
+        try:
+            await memory.heartbeat(run_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - liveness bookkeeping must not end the run
+            logger.warning("run %s: heartbeat failed", run_id, exc_info=True)
+        await asyncio.sleep(interval_s)
+
+
+@asynccontextmanager
+async def heartbeating(
+    memory: MemoryStore, run_id: RunId, interval_s: float = HEARTBEAT_INTERVAL_S
+) -> AsyncIterator[None]:
+    """Keep ``run_id``'s claim alive for the duration of the block (Appendix C).
+
+    The orchestrator wraps ``run()`` in this; whoever drives the orchestrator wraps
+    whatever it does *between* claiming the run and calling ``run()`` -- the API's wait
+    for a concurrency slot, which can outlast the 120 s staleness window under load and
+    otherwise hands the queued claim to the next redelivery (Phase 3 audit finding 2).
+    A heartbeat that fails is logged, never raised: memory is a soft dependency and a run
+    must not die because its liveness record could not be written. The loop is cancelled
+    *and awaited* on exit so its last write cannot race the caller's ``save_run``.
+    """
+    task = asyncio.create_task(_heartbeat_loop(memory, run_id, interval_s))
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 class Orchestrator:
     """Runs the configured stages for one request and returns its outcome."""
 
@@ -280,18 +316,6 @@ class Orchestrator:
             delivered_at=datetime.now(UTC),
         )
 
-    async def _heartbeat_loop(self, run_id: RunId) -> None:
-        """Write ``heartbeat_at`` on an interval until cancelled. Never raises."""
-        assert self.memory is not None
-        while True:
-            try:
-                await self.memory.heartbeat(run_id)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - liveness bookkeeping must not end the run
-                logger.warning("run %s: heartbeat failed", run_id, exc_info=True)
-            await asyncio.sleep(self.heartbeat_interval_s)
-
     async def run(self, request: RunRequest) -> RunOutcome:
         """Drive every stage for one request and return its outcome.
 
@@ -300,18 +324,10 @@ class Orchestrator:
         returns and therefore the same shape the API serves.
         """
         run_id = self.run_id_factory()
-        heartbeat: asyncio.Task[None] | None = None
-        if self.memory is not None:
-            heartbeat = asyncio.create_task(self._heartbeat_loop(run_id))
-        try:
+        if self.memory is None:
             return await self._run(request, run_id)
-        finally:
-            if heartbeat is not None:
-                heartbeat.cancel()
-                # Wait for the cancellation to land so the last heartbeat write cannot
-                # race the caller's `save_run` on the same row.
-                with contextlib.suppress(asyncio.CancelledError):
-                    await heartbeat
+        async with heartbeating(self.memory, run_id, self.heartbeat_interval_s):
+            return await self._run(request, run_id)
 
     async def _run(self, request: RunRequest, run_id: RunId) -> RunOutcome:
         created_at = datetime.now(UTC)

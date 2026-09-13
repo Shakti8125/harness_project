@@ -158,6 +158,104 @@ def test_infra_fixture_without_pytest_keys_on_the_last_exception(repo_root: Path
     assert "No module named" in anchor.message
 
 
+# Audit finding 6: pytest prints every ERRORS section before the FAILURES sections, so
+# "the first `E` line of the log" is a setup error's whenever there is one. The two logs
+# below differ only by an unrelated fixture error; the failed test is the same.
+_SETUP_ERROR_SECTION = [
+    "==================================== ERRORS ====================================",
+    "_______________ ERROR at setup of test_db_roundtrip _______________",
+    "    import psycopg",
+    "E   ModuleNotFoundError: No module named 'psycopg'",
+    "",
+    "tests/conftest.py:12: ModuleNotFoundError",
+]
+_FAILURE_SECTION = [
+    "=================================== FAILURES ===================================",
+    "__________________________ test_discount_applies __________________________",
+    "    price = apply_discount(100, 0.1)",
+    ">   assert price == 90",
+    "E   assert 91 == 90",
+    "",
+    "tests/test_pricing.py:34: AssertionError",
+]
+
+
+def _pytest_log(*, with_setup_error: bool, summary_suffix: str | None) -> str:
+    failed = "FAILED tests/test_pricing.py::test_discount_applies"
+    if summary_suffix is not None:
+        failed += f" - {summary_suffix}"
+    lines = list(_SETUP_ERROR_SECTION) if with_setup_error else []
+    lines += _FAILURE_SECTION
+    lines += ["=========================== short test summary info ==========================="]
+    if with_setup_error:
+        lines.append(
+            "ERROR tests/test_db.py::test_db_roundtrip"
+            " - ModuleNotFoundError: No module named 'psycopg'"
+        )
+    lines += [failed, ""]
+    return "\n".join(lines)
+
+
+def test_a_setup_error_before_the_failure_does_not_change_the_failures_anchor() -> None:
+    """The failed test's own section, not the log's first `E` line, feeds the fallbacks."""
+    suffix = "assert 91 == 90"
+    with_error = extract_anchor(_pytest_log(with_setup_error=True, summary_suffix=suffix))
+    without = extract_anchor(_pytest_log(with_setup_error=False, summary_suffix=suffix))
+    assert with_error.test_id == without.test_id == "tests/test_pricing.py::test_discount_applies"
+    assert without.exc_type == "AssertionError"
+    assert with_error.exc_type == "AssertionError", "the location line read was the setup error's"
+    assert with_error == without
+
+
+def test_a_bare_failed_line_reads_type_and_message_from_the_tests_own_section() -> None:
+    """Older pytest / a truncated summary: no suffix at all, so both come from the section."""
+    anchor = extract_anchor(_pytest_log(with_setup_error=True, summary_suffix=None))
+    assert anchor.test_id == "tests/test_pricing.py::test_discount_applies"
+    assert anchor.exc_type == "AssertionError"
+    assert anchor.message == "assert 91 == 90"
+    assert "psycopg" not in anchor.message
+
+
+def test_the_signature_survives_an_unrelated_fixture_being_fixed() -> None:
+    """Same failing test, same assertion: one signature, whether or not conftest is broken."""
+    key = lambda text: signature_key_for(  # noqa: E731
+        repo=REPO, workflow_name="CI", job_name="test", log_text=text
+    )
+    broken_fixture = _pytest_log(with_setup_error=True, summary_suffix=None)
+    fixed_fixture = _pytest_log(with_setup_error=False, summary_suffix=None)
+    assert key(broken_fixture) == key(fixed_fixture)
+
+
+def test_a_section_header_is_an_anchor_line() -> None:
+    """The header is the only line that says which test the `E` lines belong to, so the
+    Context Manager must keep it: it is in the anchor set and survives cleaning."""
+    raw = "2026-09-08T10:16:37.5978120Z \x1b[31m\x1b[1m________ test_x ________\x1b[0m"
+    assert clean_line(raw) == "________ test_x ________"
+    assert anchor_lines(raw) == ["________ test_x ________"]
+    header = "_____ ERROR at setup of test_y _____"
+    assert anchor_lines(header) == [header]
+    assert anchor_lines("____") == []
+
+
+def test_a_class_or_parametrized_test_finds_its_own_section() -> None:
+    log = "\n".join(
+        [
+            "_______________ TestPricing.test_discount_applies[10-9] _______________",
+            "E   assert 11 == 9",
+            "tests/test_pricing.py:34: AssertionError",
+            "_______________ TestPricing.test_discount_applies[20-18] _______________",
+            "E   assert 22 == 18",
+            "tests/test_pricing.py:34: AssertionError",
+            "FAILED tests/test_pricing.py::TestPricing::test_discount_applies[20-18]",
+            "FAILED tests/test_pricing.py::TestPricing::test_discount_applies[10-9]",
+            "",
+        ]
+    )
+    anchor = extract_anchor(log)
+    assert anchor.test_id == "tests/test_pricing.py::TestPricing::test_discount_applies[20-18]"
+    assert anchor.message == "assert 22 == 18"
+
+
 def test_empty_log_has_a_fingerprint() -> None:
     anchor = extract_anchor("")
     assert anchor.exc_type == "<none>"

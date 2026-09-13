@@ -41,6 +41,7 @@ from src.harness.contracts import (
     RunRequest,
     TokenUsage,
 )
+from src.harness.gateway import ToolResult
 from src.harness.memory import (
     ApprovalRecord,
     MemoryQuery,
@@ -49,9 +50,11 @@ from src.harness.memory import (
     RunClaim,
 )
 from src.harness.observability import REDACTION_PLACEHOLDER
+from src.harness.orchestrator import heartbeating
 from src.harness.storage import schema_is_current
 from src.integrations.cicd.agents.investigator import parse_subject
 from src.integrations.cicd.history import (
+    action_observation,
     prior_history_from,
     unavailable_history,
 )
@@ -768,9 +771,17 @@ async def _execute(
     """
     gateway = context.gateway_for(run_context)
     try:
-        async with context.run_semaphore:
+        # The claim row was written before this coroutine started, and the orchestrator
+        # only heartbeats once `run()` begins -- so the wait for a slot is heartbeated
+        # here, or a burst that queues a run past the 120 s staleness window hands its
+        # claim to the next redelivery and the failure is triaged twice (audit finding 2).
+        async with heartbeating(context.store, run_id, context.heartbeat_interval_s):
+            await context.run_semaphore.acquire()
+        try:
             orchestrator = context.build_orchestrator_for(gateway, run_id=run_id)
             outcome = await orchestrator.run(request_model)
+        finally:
+            context.run_semaphore.release()
     finally:
         await gateway.aclose()
     try:
@@ -1211,6 +1222,36 @@ async def _fresh_prior_history(memory: MemoryStore, bundle: FailureBundle) -> Pr
         return unavailable_history(key)
 
 
+async def _record_approved_action(
+    context: AppContext,
+    run_id: RunId,
+    bundle: FailureBundle,
+    diagnosis: Diagnosis,
+    executed: list[ToolResult],
+) -> None:
+    """Write the approved plan's action onto the run's observation, as the Remediator would.
+
+    Dispatch decision 9: the action is recorded for every executed write regardless of
+    the YAML obligation, because the retry count must not depend on a policy file. A
+    `require_approval` retry executes *here*, not in the Remediator, and before this
+    existed it never reached `actions_in_window` -- so the 2/24 h cap did not apply to
+    approved retries at all (Phase 3 audit finding 7). Same helper, same deterministic
+    row, same soft-dependency rule: a write that fails is logged, the action stands.
+    """
+    key = bundle.prior_history.key
+    if key is None:
+        return
+    observation = action_observation(
+        key=key, run_id=run_id, diagnosis=diagnosis, job=bundle.job, executed=executed
+    )
+    if observation is None:
+        return
+    try:
+        await context.store.record_observation(observation)
+    except MemoryStoreError:
+        logger.warning("approval: could not record the action in memory", exc_info=True)
+
+
 async def _execute_approved(
     context: AppContext, record: ApprovalRecord
 ) -> tuple[RemediationResult, list[dict[str, Any]]]:
@@ -1254,6 +1295,7 @@ async def _execute_approved(
         finally:
             await gateway.aclose()
         remediation_status: Literal["executed", "denied"] = "executed"
+        await _record_approved_action(context, request.run_id, bundle, diagnosis, executed)
     else:
         remediation_status = "denied"
     remediation = RemediationResult(

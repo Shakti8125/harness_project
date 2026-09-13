@@ -537,3 +537,27 @@ async def test_a_failed_execution_escalates_as_tool_failure(
     assert suspension.escalate_as == "tool_failure"
     assert "rerun_failed_jobs" in suspension.reason and "not_found" in suspension.reason
     assert suspension.payload["tool"] == "rerun_failed_jobs"
+
+
+def test_the_wiring_hands_the_gate_threshold_to_the_diagnostician(
+    repo_root: Path, tmp_db_path: Path
+) -> None:
+    """Phase 3 audit finding 4: the Diagnostician tallies a verdict only when it clears
+    the same threshold the remediation gate is built from. Two numbers spelled once in
+    `build_orchestrator`; this pins that they stay the same number."""
+    orchestrator = build_orchestrator(
+        gateway=ReplayToolGateway(
+            scenario_dir=scenario_dir(repo_root, "flaky_test"), repo=REPO,
+            forbidden=load_forbidden(), dry_run=True,
+        ),
+        context_manager=ContextManager(default_budget=ContextBudget(total_chars=120_000)),
+        llm=ScenarioStubLlm(),
+        recorder=recorder(tmp_db_path),
+        engine=PolicyEngine(load_policy_spec()),
+        escalation_threshold=0.83,
+        investigator_model="stub",
+        diagnostician_model="stub",
+        remediator_model="stub",
+    )
+    diagnostician = orchestrator.agents["diagnostician"]
+    assert getattr(diagnostician, "verdict_threshold", None) == 0.83

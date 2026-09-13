@@ -40,6 +40,7 @@ sys.path.insert(0, str(ROOT))
 from src.api.deps import FIXTURES_ROOT, get_app_context  # noqa: E402
 from src.api.main import idempotency_key_for  # noqa: E402
 from src.harness.contracts import RunOutcome, RunRequest  # noqa: E402
+from src.harness.memory import MemoryStoreError  # noqa: E402
 from src.integrations.cicd.agents.investigator import parse_subject  # noqa: E402
 from src.integrations.cicd.wiring import INTEGRATION  # noqa: E402
 
@@ -168,20 +169,30 @@ async def main() -> int:
     # Claimed under a nonce-suffixed key, like the API's `fresh=true` replay: an operator
     # re-running a scenario from the command line wants a new run, not a `deduplicated`
     # answer. The row still records which webhook it came from, and the outcome is saved
-    # so `GET /v1/runs/{id}` and memory both know about it.
-    claim = await context.store.claim_run(
-        f"{request.idempotency_key}#fresh:{secrets.token_hex(4)}", INTEGRATION
-    )
+    # so `GET /v1/runs/{id}` and memory both know about it. Both store calls degrade the
+    # way the API's do (PLAN.md Phase 3 amendment 8): a store that cannot be reached
+    # costs the row, never the run or its printed outcome (audit finding 9).
+    run_id = None
     try:
-        outcome = await context.build_orchestrator_for(gateway, run_id=claim.run_id).run(request)
+        claim = await context.store.claim_run(
+            f"{request.idempotency_key}#fresh:{secrets.token_hex(4)}", INTEGRATION
+        )
+        run_id = claim.run_id
+    except MemoryStoreError:
+        print("memory store unavailable: running unclaimed", file=sys.stderr)
+    try:
+        outcome = await context.build_orchestrator_for(gateway, run_id=run_id).run(request)
     finally:
         await gateway.aclose()
-    await context.store.save_run(outcome)
 
     if args.json:
         print(json.dumps(outcome.model_dump(mode="json"), indent=2))
     else:
         print_outcome(outcome)
+    try:
+        await context.store.save_run(outcome)
+    except MemoryStoreError:
+        print(f"memory store unavailable: outcome {outcome.run_id} not recorded", file=sys.stderr)
     await print_gateway_spans(outcome.run_id)
     return 0 if outcome.status in ("completed", "awaiting_approval", "escalated") else 1
 

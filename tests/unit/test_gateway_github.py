@@ -88,6 +88,9 @@ async def test_list_workflow_run_jobs(gateway: GitHubToolGateway, respx_mock: re
     sent = route.calls[0].request
     assert sent.headers["authorization"].startswith("Bearer ")
     assert sent.headers["x-github-api-version"] == "2022-11-28"
+    # Phase 3 audit finding 5: the rerun probe judges "every job passed" from this list,
+    # so it asks for GitHub's largest page rather than the 30-job default.
+    assert sent.url.params["per_page"] == "100"
 
 
 @respx.mock

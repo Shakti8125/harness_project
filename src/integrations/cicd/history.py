@@ -28,7 +28,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Final, Literal
 
-from src.harness.gateway import ToolCall, ToolGateway
+from src.harness.gateway import ToolCall, ToolGateway, ToolResult
 from src.harness.guardrails import PolicyDecision
 from src.harness.memory import (
     MemoryHit,
@@ -36,10 +36,10 @@ from src.harness.memory import (
     Observation,
     SignatureKey,
     dominant_verdict,
-    has_outcome,
     observation_id_for,
     signature_id_for,
 )
+from src.integrations.cicd.catalog import side_effect_of
 from src.integrations.cicd.fingerprint import signature_key_for
 from src.integrations.cicd.rendering import new_call_id
 from src.integrations.cicd.schemas import Diagnosis, FailureBundle, JobRef, PriorHistory
@@ -58,8 +58,10 @@ FLAKY_VERDICT: Final[str] = "flaky_test"
 REAL_VERDICT: Final[str] = "real_regression"
 
 ActionOutcome = Literal["passed_on_retry", "failed_again", "pending"]
-OUTCOME_PASSED: Final[ActionOutcome] = "passed_on_retry"
-OUTCOME_FAILED: Final[ActionOutcome] = "failed_again"
+#: An outcome that answers the question; `pending` does not.
+ResolvedOutcome = Literal["passed_on_retry", "failed_again"]
+OUTCOME_PASSED: Final[Literal["passed_on_retry"]] = "passed_on_retry"
+OUTCOME_FAILED: Final[Literal["failed_again"]] = "failed_again"
 OUTCOME_PENDING: Final[ActionOutcome] = "pending"
 
 #: How many recent observations `PriorHistory.sample_run_ids` names.
@@ -82,18 +84,39 @@ def signature_key_for_job(job: JobRef, log_text: str) -> SignatureKey:
     )
 
 
+def last_retry_outcome(recent: Sequence[Observation]) -> ResolvedOutcome | None:
+    """What the newest *resolved* retry of this signature did, if any was resolved.
+
+    `recent` is newest first. A `pending` retry says nothing yet and is skipped; the first
+    `passed_on_retry` / `failed_again` met is the most recent rerun the harness knows the
+    result of. That one outcome is what "has this been seen to pass on a rerun" means:
+    a pass from a month ago does not outrank a rerun that failed yesterday (PLAN.md Open
+    Risk 7's self-correction; Phase 3 audit finding 3).
+    """
+    for obs in recent:
+        if obs.action_taken != RETRY_TOOL:
+            continue
+        if obs.action_outcome == OUTCOME_PASSED:
+            return OUTCOME_PASSED
+        if obs.action_outcome == OUTCOME_FAILED:
+            return OUTCOME_FAILED
+    return None
+
+
 def prior_hint_for(hit: MemoryHit) -> PriorHint:
     """PLAN.md's flakiness prior, words over the harness's numbers.
 
-    `likely_flaky` needs the dominant verdict to be `flaky_test` *and* at least one prior
-    retry to have passed -- a signature that was only ever labelled flaky, and never seen
-    to pass on a rerun, stays `unknown`. `likely_real` needs a dominant `real_regression`.
+    `likely_flaky` needs the dominant verdict to be `flaky_test` *and* the most recent
+    resolved retry to have passed -- a signature that was only ever labelled flaky, and
+    never seen to pass on a rerun, stays `unknown`, and so does one whose last rerun
+    failed again, however many earlier reruns passed. `likely_real` needs a dominant
+    `real_regression`.
     """
     record = hit.record
     dominant = (
         dominant_verdict(record.occurrences, record.verdict_counts) if record is not None else None
     )
-    if dominant == FLAKY_VERDICT and has_outcome(hit.recent, OUTCOME_PASSED):
+    if dominant == FLAKY_VERDICT and last_retry_outcome(hit.recent) == OUTCOME_PASSED:
         return "likely_flaky"
     if dominant == REAL_VERDICT:
         return "likely_real"
@@ -112,6 +135,7 @@ def prior_history_from(hit: MemoryHit, key: SignatureKey) -> PriorHistory:
         last_seen_at=record.last_seen_at if record is not None else None,
         prior_hint=prior_hint_for(hit),
         retries_in_24h=hit.actions_in_window.get(RETRY_TOOL, 0),
+        last_retry_outcome=last_retry_outcome(hit.recent),
         sample_run_ids=[obs.run_id for obs in hit.recent[:SAMPLE_RUN_IDS]],
         unavailable=False,
     )
@@ -133,6 +157,11 @@ def memory_agrees(prior: PriorHistory, category: str) -> bool:
     applied" is half of what the soft-dependency decision promises.
     """
     if prior.unavailable:
+        return False
+    if prior.last_retry_outcome == OUTCOME_FAILED:
+        # The last thing the harness did on this prior was retry, and the rerun failed:
+        # the history is contradicted by its own most recent action, whatever the counts
+        # still say. No bonus until a rerun passes again (audit finding 3).
         return False
     return dominant_verdict(prior.occurrences, prior.verdict_counts) == category
 
@@ -169,6 +198,40 @@ def terminal_write_tool(executed_tools: Sequence[str]) -> str | None:
     then `open_pull_request`, and the last of those is the effect a reader cares about.
     """
     return executed_tools[-1] if executed_tools else None
+
+
+def action_observation(
+    *,
+    key: SignatureKey,
+    run_id: str,
+    diagnosis: Diagnosis,
+    job: JobRef,
+    executed: Sequence[ToolResult],
+) -> Observation | None:
+    """The observation an executed plan rewrites (dispatch decision 9), or `None`.
+
+    Only a plan that ran to completion with at least one write is an action; a plan
+    that stopped at a failure escalates `tool_failure` and is not counted as one -- the
+    retry cap must not be consumed by a retry that never happened. Dry-run executions
+    count: the harness decided to act, and the cap is on decisions to act. Spelled once
+    here because two paths execute plans -- the Remediator in-run, and the approval route
+    later -- and the count the cap reads must not depend on which one did (Phase 3 audit
+    finding 7).
+    """
+    if not executed or any(not result.ok for result in executed):
+        return None
+    writes = [result.tool for result in executed if side_effect_of(result.tool) != "read"]
+    action = terminal_write_tool(writes)
+    if action is None:
+        return None
+    return observation_for(
+        key=key,
+        run_id=run_id,
+        diagnosis=diagnosis,
+        job=job,
+        action_taken=action,
+        action_outcome=OUTCOME_PENDING,
+    )
 
 
 async def resolve_pending_outcomes(
@@ -250,6 +313,12 @@ async def _probe_rerun(
     }
     if "failure" in conclusions:
         return OUTCOME_FAILED
+    total: Any = result.data.get("total_count")
+    if isinstance(total, int) and total > len(jobs):
+        # A page, not the run: the jobs we did not see may include the one that failed,
+        # and "every job passed" must be said of every job (audit finding 5). One failure
+        # on the page is still a failure; a clean page of an unfinished list is nothing.
+        return None
     if conclusions == {"success"}:
         return OUTCOME_PASSED
     return None

@@ -112,6 +112,12 @@ class PriorHistory(BaseModel):
     last_seen_at: datetime | None = None
     prior_hint: Literal["likely_flaky", "likely_real", "unknown"] = "unknown"
     retries_in_24h: int = 0
+    # Phase 3 fix round (audit finding 3): what the most recent *resolved* automatic retry
+    # of this signature did. `None` when no rerun has been resolved yet. The prompts say
+    # memory reports "whether an automatic retry of it passed"; this is that report, and
+    # a `failed_again` here withholds the `memory_agreement` bonus and the
+    # `likely_flaky` hint until a rerun passes again.
+    last_retry_outcome: Literal["passed_on_retry", "failed_again"] | None = None
     sample_run_ids: list[str] = []
     unavailable: bool = False
 

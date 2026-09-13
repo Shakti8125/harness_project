@@ -120,6 +120,7 @@ class Diagnostician(LLMAgent[Diagnosis]):
         anchor_patterns: tuple[str, ...] = ANCHOR_PATTERNS,
         timeout_s: float | None = None,
         memory: MemoryStore | None = None,
+        verdict_threshold: float | None = None,
     ) -> None:
         super().__init__(
             key="diagnostician",
@@ -138,6 +139,12 @@ class Diagnostician(LLMAgent[Diagnosis]):
         # Phase 3: where the verdict is born is where it is remembered. `None` (a
         # hand-built orchestrator) records nothing and says nothing.
         self.memory = memory
+        # Phase 3 fix round (audit finding 4): the confidence the remediation gate will
+        # demand of this verdict. A verdict below it is remembered as a sighting, not as
+        # a verdict -- the harness would not act on it, so the prior must not be built
+        # from it. `None` counts every verdict, which is only right for a caller with no
+        # gate at all.
+        self.verdict_threshold = verdict_threshold
 
     def _bundle(self, state: RunState) -> FailureBundle:
         bundle = state.artifacts.get(BUNDLE_KEY)
@@ -269,14 +276,28 @@ class Diagnostician(LLMAgent[Diagnosis]):
             update={"output": diagnosis, "confidence": final_confidence}
         )
 
+    def _counts_as_verdict(self, diagnosis: Diagnosis) -> bool:
+        """Whether the signature's `verdict_counts` should count this verdict.
+
+        The observation row always carries the verdict and its calibrated confidence;
+        this decides only the signature's tally, which `dominant_verdict` and the
+        `memory_agreement` bonus read. Three sightings the gate refused must not add up
+        to a prior that lifts a fourth over the same gate (audit finding 4).
+        """
+        return (
+            self.verdict_threshold is None
+            or diagnosis.final_confidence >= self.verdict_threshold
+        )
+
     async def _remember(self, diagnosis: Diagnosis, state: RunState) -> None:
         """Count this sighting and record its verdict (dispatch decision 9).
 
-        Every diagnosed run is remembered, gated or not -- the observation carries the
-        calibrated confidence so a reader can weigh it. Written after calibration, so the
-        stored confidence is the one the gate will read. Any failure degrades the run's
-        `memory` component and leaves the diagnosis untouched: memory is a soft dependency
-        on the write side exactly as on the read side.
+        Every diagnosed run is remembered, gated or not: the sighting always counts, the
+        observation always carries the calibrated confidence, and the verdict joins the
+        signature's tally only when it clears `verdict_threshold`. Written after
+        calibration, so the stored confidence is the one the gate will read. Any failure
+        degrades the run's `memory` component and leaves the diagnosis untouched: memory
+        is a soft dependency on the write side exactly as on the read side.
         """
         if self.memory is None:
             return
@@ -284,8 +305,9 @@ class Diagnostician(LLMAgent[Diagnosis]):
         key = bundle.prior_history.key
         if key is None:
             return
+        verdict = diagnosis.category if self._counts_as_verdict(diagnosis) else None
         try:
-            await self.memory.upsert_signature(key, diagnosis.category, state.run_id)
+            await self.memory.upsert_signature(key, verdict, state.run_id)
             await self.memory.record_observation(
                 observation_for(
                     key=key, run_id=state.run_id, diagnosis=diagnosis, job=bundle.job

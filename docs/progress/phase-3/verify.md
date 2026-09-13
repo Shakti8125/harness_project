@@ -1,6 +1,7 @@
 # Phase 3 — Verify block, literal expected vs actual
 
-Run 2026-09-13 against `66208d0` (the build commit), locally: `uv run uvicorn
+Run 2026-09-13 against `66208d0` (the build commit; not re-run after the audit's fix round --
+`backlog.md`, "Audit provenance", says why the values stand), locally: `uv run uvicorn
 src.api.main:app` on `127.0.0.1:8000` over a **fresh** `./data/harness.db` (the previous
 file was backed up first), with the real Gemini key from `.env`. The Phase 2 Docker
 container that was still listening on `0.0.0.0:8000` from two days earlier was stopped

@@ -166,7 +166,9 @@ class MemoryStore(Protocol):
 
     async def lookup(self, q: MemoryQuery) -> MemoryHit: ...
 
-    async def upsert_signature(self, key: SignatureKey, verdict: str, run_id: RunId) -> str: ...
+    async def upsert_signature(
+        self, key: SignatureKey, verdict: str | None, run_id: RunId
+    ) -> str: ...
 
     async def record_observation(self, obs: Observation) -> None: ...
 
@@ -257,6 +259,20 @@ def dominant_verdict(
 def has_outcome(recent: Sequence[Observation], outcome: str) -> bool:
     """True when any observation in `recent` recorded `outcome` for its action."""
     return any(obs.action_outcome == outcome for obs in recent)
+
+
+def is_chain_member(idempotency_key: str, candidate: str) -> bool:
+    """Whether `candidate` is `idempotency_key` itself or one of its takeover rows.
+
+    Appendix C spells a takeover as `<key>#<n>` with `n` the attempt number, and nothing
+    else: a key that merely starts with `<key>#` -- the API's `<key>#fresh:<nonce>` replay
+    claims, or an unrelated key that happens to share the prefix -- is a different run
+    and must never stand in for the chain (audit finding 1).
+    """
+    if candidate == idempotency_key:
+        return True
+    prefix = f"{idempotency_key}#"
+    return candidate.startswith(prefix) and candidate[len(prefix):].isdecimal()
 
 
 # ---------------------------------------------------------------------------
@@ -424,13 +440,23 @@ class SqliteMemoryStore:
         result: MemoryHit = await self._read(op)
         return result
 
-    async def upsert_signature(self, key: SignatureKey, verdict: str, run_id: RunId) -> str:
+    async def upsert_signature(
+        self, key: SignatureKey, verdict: str | None, run_id: RunId
+    ) -> str:
+        """Count one sighting of `key`, and its verdict when the caller vouches for one.
+
+        `verdict=None` records the sighting -- `occurrences`, `last_seen_at`,
+        `last_run_id` -- without a verdict: `verdict_counts` and `last_verdict` are left
+        as they were. That is how a verdict the caller itself would not act on (audit
+        finding 4: one below the confidence gate) dilutes the dominant share instead of
+        building it. The observation row still carries every verdict with its confidence.
+        """
         signature_id = signature_id_for(key)
         now = _ts(self._clock())
 
         async def op(db: Any) -> None:
             async with db.execute(
-                "SELECT occurrences, verdict_counts FROM failure_signature"
+                "SELECT occurrences, verdict_counts, last_verdict FROM failure_signature"
                 " WHERE signature_id = ?",
                 (signature_id,),
             ) as cursor:
@@ -442,17 +468,21 @@ class SqliteMemoryStore:
                     " last_verdict, last_run_id) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
                     (
                         signature_id, key.scope, key.subject_key, key.fingerprint,
-                        now, now, _dumps({verdict: 1}), verdict, run_id,
+                        now, now, _dumps({verdict: 1} if verdict is not None else {}),
+                        verdict, run_id,
                     ),
                 )
                 return
             counts = _loads_counts(row["verdict_counts"])
-            counts[verdict] = counts.get(verdict, 0) + 1
+            last_verdict = row["last_verdict"]
+            if verdict is not None:
+                counts[verdict] = counts.get(verdict, 0) + 1
+                last_verdict = verdict
             await db.execute(
                 "UPDATE failure_signature SET occurrences = ?, verdict_counts = ?,"
                 " last_seen_at = ?, last_verdict = ?, last_run_id = ? WHERE signature_id = ?",
                 (
-                    int(row["occurrences"]) + 1, _dumps(counts), now, verdict, run_id,
+                    int(row["occurrences"]) + 1, _dumps(counts), now, last_verdict, run_id,
                     signature_id,
                 ),
             )
@@ -548,14 +578,21 @@ class SqliteMemoryStore:
                 return RunClaim(
                     acquired=True, run_id=run_id, existing_status=None, existing_outcome=None
                 )
-            # The newest row in the key's takeover chain: the bare key, or `key#n`.
+            # The newest row in the key's takeover chain: the bare key, or `key#n`. The
+            # LIKE over-matches (`_`/`%` are wildcards, and any `key#...` suffix qualifies),
+            # so membership is decided in Python: audit finding 1 was a `key#fresh:<nonce>`
+            # row -- a demo replay -- answering for the real key's chain.
             async with db.execute(
-                "SELECT * FROM run WHERE idempotency_key = ? OR idempotency_key LIKE ?"
-                " ORDER BY attempt DESC LIMIT 1",
+                "SELECT * FROM run WHERE idempotency_key = ? OR idempotency_key LIKE ?",
                 (idempotency_key, f"{idempotency_key}#%"),
             ) as select:
-                existing = await select.fetchone()
-            assert existing is not None  # the conflict proves a row exists
+                candidates = await select.fetchall()
+            chain = [
+                row for row in candidates
+                if is_chain_member(idempotency_key, str(row["idempotency_key"]))
+            ]
+            assert chain  # the conflict proves the bare key's row exists
+            existing = max(chain, key=lambda row: int(row["attempt"]))
             status = str(existing["status"])
             if status == _STATUS_IN_PROGRESS and self._is_stale(existing, now):
                 attempt = int(existing["attempt"]) + 1

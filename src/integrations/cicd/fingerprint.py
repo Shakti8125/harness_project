@@ -56,6 +56,12 @@ ANCHOR_PATTERNS: Final[tuple[str, ...]] = (
     r"Connection refused",
     r"ModuleNotFoundError",
     r"ImportError",
+    # pytest's section header (`____ test_x ____`, `____ ERROR at setup of test_y ____`).
+    # Added in the Phase 3 fix round (audit finding 6): it is the only line that says
+    # which test the `E` lines and location line under it belong to, and pytest prints
+    # the ERRORS sections before the FAILURES ones -- without it, the first `E` line in
+    # a log is the setup error's, not the failed test's, and the fingerprint follows.
+    r"^_{3,}\s.+\s_{3,}$",
 )
 
 #: `<TS>` etc. are the placeholders PLAN.md names. `<WORKER>` is this module's addition.
@@ -85,6 +91,9 @@ _EXCEPTION: Final[re.Pattern[str]] = re.compile(
     r"\s*:\s*(?P<message>.*)$"
 )
 _PYTEST_E_LINE: Final[re.Pattern[str]] = re.compile(r"^E\s+(?P<body>.*)$")
+#: pytest's section header, once cleaned: the title between the underscore rules is the
+#: test's name (`test_x`, `TestX.test_x`, `test_x[param]`) or `ERROR at <phase> of test_x`.
+_SECTION_HEADER: Final[re.Pattern[str]] = re.compile(r"^_{3,}\s+(?P<title>.+?)\s+_{3,}$")
 #: pytest's location line under a failure section: `tests/test_x.py:34: AssertionError`.
 #: The type is here, and only here, when the assertion was a bare `assert a == b`.
 _LOCATION_LINE: Final[re.Pattern[str]] = re.compile(
@@ -158,18 +167,45 @@ def extract_anchor(log_text: str) -> FailureAnchor:
     return FailureAnchor(exc_type="<none>", message="")
 
 
+def _section_for(lines: list[str], test_id: str) -> list[str]:
+    """The anchor lines under the failure section headed with `test_id`'s name.
+
+    pytest heads each failure section `____ <name> ____` where `<name>` is the nodeid's
+    last component (`test_x`, `TestX.test_x`, `test_x[param]`); an error section is headed
+    `____ ERROR at setup of <name> ____` and is not a failure section. When no header
+    matches (`--tb=line`, or a header trimmed by the log budget) the whole log is the
+    section, which is the pre-fix behaviour and still right whenever the log holds one
+    failure.
+    """
+    name = test_id.rsplit("::", 1)[-1]
+    start: int | None = None
+    for index, line in enumerate(lines):
+        header = _SECTION_HEADER.match(line)
+        if header is None:
+            continue
+        if start is not None:
+            return lines[start:index]
+        title = header.group("title")
+        if title == name or title.endswith("." + name):
+            start = index + 1
+    return lines[start:] if start is not None else lines
+
+
 def _pytest_anchor(lines: list[str], test_id: str, summary_rest: str | None) -> FailureAnchor:
     """The first failed test's exception, from the two places pytest can put it.
 
     The summary suffix (`FAILED nodeid - AssertionError: msg`, or just `- assert 91 == 90`
-    for a bare assertion) when present; otherwise the first `E` line, which belongs to the
-    first failed test because pytest prints failure sections in summary order. A bare
-    assertion carries no type on either line -- it sits on the location line
-    (`tests/test_x.py:34: AssertionError`), which is where the fallback reads it.
+    for a bare assertion) when present; otherwise the first `E` line *of that test's own
+    section* -- pytest prints every ERRORS section before the FAILURES ones, so the first
+    `E` line of the log belongs to a setup error whenever there is one (audit finding 6).
+    A bare assertion carries no type on either line -- it sits on the location line
+    (`tests/test_x.py:34: AssertionError`), which is where the fallback reads it, again
+    inside the section.
     """
+    section = _section_for(lines, test_id)
     message = (summary_rest or "").strip()
     if not message:
-        for line in lines:
+        for line in section:
             e_line = _PYTEST_E_LINE.match(line)
             if e_line is not None:
                 message = e_line.group("body").strip()
@@ -177,7 +213,7 @@ def _pytest_anchor(lines: list[str], test_id: str, summary_rest: str | None) -> 
     split = _split_exception(message) if message else None
     if split is not None:
         return FailureAnchor(exc_type=split[0], message=split[1], test_id=test_id)
-    location = next((m for m in map(_LOCATION_LINE.match, lines) if m is not None), None)
+    location = next((m for m in map(_LOCATION_LINE.match, section) if m is not None), None)
     exc_type = location.group("type") if location is not None else "<unknown>"
     return FailureAnchor(exc_type=exc_type, message=message, test_id=test_id)
 

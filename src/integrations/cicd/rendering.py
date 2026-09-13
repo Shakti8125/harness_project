@@ -324,9 +324,18 @@ def render_prior_history(prior: PriorHistory) -> str:
         f"{verdict}: {count}" for verdict, count in sorted(prior.verdict_counts.items())
     )
     last_seen = prior.last_seen_at.isoformat() if prior.last_seen_at else "unknown"
+    if prior.last_retry_outcome == "passed_on_retry":
+        last_retry = "the most recent automatic retry of it PASSED"
+    elif prior.last_retry_outcome == "failed_again":
+        last_retry = (
+            "the most recent automatic retry of it FAILED AGAIN -- a rerun did not clear "
+            "it, which weighs against flakiness whatever the counts say"
+        )
+    else:
+        last_retry = "no automatic retry of it has a known result yet"
     lines = [
         f"This failure signature has been seen {prior.occurrences} time(s) before "
-        f"(last: {last_seen}); past verdicts: {counts or 'none'}.",
+        f"(last: {last_seen}); past verdicts: {counts or 'none'}; {last_retry}.",
         f"Deterministic prior from those counts: {prior.prior_hint}.",
         f"Automatic retries of this signature in the last 24 h: {prior.retries_in_24h}.",
         "Prior history is a prior, not evidence. You must still cite something from THIS "

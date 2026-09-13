@@ -24,6 +24,8 @@ knowledge. They are injected via ``patterns``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextvars
 import json
 import logging
@@ -183,6 +185,12 @@ class SecretRegistry:
         return self._by_value.get(value)
 
 
+#: A string that is nothing but base64 (4-char groups, optional padding) and long enough
+#: to be worth decoding: 16 characters is 12 bytes, under any credential this codebase
+#: registers or pattern-matches, so nothing shorter can hide one.
+_BASE64_TEXT: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
+
+
 class Redactor:
     """Removes registered secrets and pattern-matched credentials from any JSON value."""
 
@@ -198,7 +206,29 @@ class Redactor:
                 value = value.replace(secret, REDACTION_PLACEHOLDER)
         for pattern in self._patterns:
             value = pattern.sub(REDACTION_PLACEHOLDER, value)
+        if _BASE64_TEXT.fullmatch(value):
+            value = self._scrub_base64(value)
         return value
+
+    def _scrub_base64(self, value: str) -> str:
+        """Scrub *through* a base64 encoding, re-encoding only if something was removed.
+
+        A file body an agent drafted travels as base64 (`content_b64`), and a token
+        inside it is invisible to every pattern above while being one decode away from
+        anyone holding the trace or the database file (Phase 3 audit finding 8). Nothing
+        here knows that field name: any string that is entirely base64 and decodes to
+        UTF-8 text gets the same scrub as plain text. A payload with nothing to remove is
+        returned byte-for-byte, so an encoding that is later executed is unchanged unless
+        it carried a credential -- which is exactly the case where changing it is right.
+        """
+        try:
+            decoded = base64.b64decode(value, validate=True).decode("utf-8")
+        except (binascii.Error, ValueError):
+            return value
+        scrubbed = self._scrub_str(decoded)
+        if scrubbed == decoded:
+            return value
+        return base64.b64encode(scrubbed.encode("utf-8")).decode("ascii")
 
     def scrub(self, value: JsonValue) -> JsonValue:     # recursive over dict/list/str
         if isinstance(value, str):

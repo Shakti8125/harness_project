@@ -870,6 +870,37 @@ curl.exe -s -X POST localhost:8000/v1/replay/flaky_test | jq '{status:.status, d
 >    cannot be made runs the request unclaimed under a minted id (no dedup for that request,
 >    logged); an outcome that cannot be saved is still returned; a read route that needs the
 >    store answers `503 application/problem+json` with `Retry-After`.
+>
+> **Fix round (audit `docs/progress/phase-3/review.md`, same day).** What the ten findings
+> changed at contract level; the rest is in `backlog.md`.
+>
+> 9. **A takeover chain is `<key>` and `<key>#<digits>`, nothing else.** The claim's chain
+>    lookup decides membership exactly (`memory.is_chain_member`); the API's `<key>#fresh:<nonce>`
+>    replay rows share the prefix and are not in the chain (finding 1).
+> 10. **The claim is heartbeated from the moment it is written.** `orchestrator.heartbeating(
+>     memory, run_id, interval_s)` is the one heartbeat loop; the orchestrator wraps `run()` in it
+>     and the API wraps its wait for a concurrency slot in it, so a queued run cannot go stale
+>     (finding 2).
+> 11. **The most recent resolved retry outranks the counts.** `PriorHistory.last_retry_outcome`
+>     (A.11, additive) carries it; `likely_flaky` needs it to be `passed_on_retry`, the
+>     `memory_agreement` bonus is withheld while it is `failed_again`, and the rendered prior says
+>     which. Open Risk 7's self-correction now exists (finding 3).
+> 12. **`upsert_signature(key, verdict | None, run_id)`.** A `None` verdict counts the sighting
+>     without tallying a verdict. The Diagnostician passes `None` for a verdict below the
+>     remediation gate's threshold (`build_agents(escalation_threshold=...)`), so refused verdicts
+>     dilute the dominant share instead of building it; the observation row still carries every
+>     verdict with its confidence (finding 4).
+> 13. **A rerun is judged on all of its jobs.** The GitHub gateway asks for `per_page=100` and the
+>     probe stays `pending` when `total_count` exceeds the jobs it saw (finding 5).
+> 14. **pytest's section header is an anchor line** (`^_{3,}\s.+\s_{3,}$`), and the fingerprint's
+>     fallbacks read only the failed test's own section (finding 6).
+> 15. **`history.action_observation` is the one rule for what counts as an action**, used by the
+>     Remediator in-run and by the approval route after an approved execution (finding 7).
+> 16. **The `Redactor` scrubs through base64.** A string that is entirely base64 and decodes to
+>     UTF-8 text is scrubbed as text and re-encoded only if something was removed, so `content_b64`
+>     at rest (and everywhere else the redactor runs) cannot hide a credential (finding 8).
+> 17. **`scripts/replay.py` degrades like the API** -- unclaimed on a failed claim, outcome printed
+>     before a failed save is reported (finding 9).
 
 ---
 
@@ -1495,6 +1526,10 @@ class RunClaim(BaseModel):
 > - Every method raises `MemoryStoreError` once the B.3 ladder is exhausted; callers degrade.
 > - `Orchestrator(memory=..., heartbeat_interval_s=15)` runs the Appendix C heartbeat for the
 >   duration of `run()`; that is the orchestrator's only use of the store.
+> - Fix round: `upsert_signature`'s `verdict` is `str | None` (`None` = a sighting without a
+>   tallied verdict); `is_chain_member(key, candidate)` is the takeover-chain rule; the heartbeat
+>   loop is the module-level `orchestrator.heartbeating(memory, run_id, interval_s)` context
+>   manager so a caller can keep a claim alive *before* `run()`.
 
 ## A.6 Evaluator — `src/harness/evaluator.py`
 
@@ -1716,6 +1751,9 @@ class PriorHistory(BaseModel):
                                 # since a caller cannot both know the count and declare the
                                 # history unreadable. Enforced on construction,
                                 # model_validate and model_copy alike.
+    last_retry_outcome: Literal["passed_on_retry","failed_again"] | None = None
+                                # Phase 3 fix round (finding 3): the newest RESOLVED retry's
+                                # result; failed_again withholds likely_flaky and the bonus
     sample_run_ids: list[str] = []
     unavailable: bool = False
 

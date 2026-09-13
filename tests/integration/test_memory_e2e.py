@@ -9,6 +9,7 @@ per-test temp file.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -20,7 +21,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api import main as api_main
-from src.api.deps import SECRET_PATTERNS, AppContext, build_secret_registry
+from src.api.deps import (
+    FIXTURES_ROOT,
+    SECRET_PATTERNS,
+    AppContext,
+    RunContext,
+    build_secret_registry,
+)
 from src.harness.context_manager import ContextBudget, ContextManager
 from src.harness.contracts import RunRequest
 from src.harness.guardrails import Condition, PolicyEngine
@@ -34,6 +41,7 @@ from src.harness.memory import (
 )
 from src.harness.observability import Redactor, TraceRecorder
 from src.harness.orchestrator import Orchestrator, StageSpec
+from src.integrations.cicd.history import RETRY_TOOL
 from src.integrations.cicd.wiring import load_policy_spec
 from src.settings import get_settings
 from tests.stubs import ScenarioStubLlm
@@ -45,6 +53,8 @@ def make_context(
     memory: MemoryStore | None = None,
     engine: PolicyEngine | None = None,
     llm: Any | None = None,
+    run_semaphore: asyncio.Semaphore | None = None,
+    heartbeat_interval_s: float | None = None,
 ) -> AppContext:
     settings = get_settings()
     kwargs: dict[str, Any] = {}
@@ -52,6 +62,8 @@ def make_context(
         kwargs["memory"] = memory
     if engine is not None:
         kwargs["engine"] = engine
+    if heartbeat_interval_s is not None:
+        kwargs["heartbeat_interval_s"] = heartbeat_interval_s
     return AppContext(
         settings=settings,
         recorder=TraceRecorder(
@@ -62,7 +74,7 @@ def make_context(
             default_budget=ContextBudget(total_chars=settings.log_char_budget)
         ),
         llm=llm or ScenarioStubLlm(),
-        run_semaphore=asyncio.Semaphore(settings.max_concurrent_runs),
+        run_semaphore=run_semaphore or asyncio.Semaphore(settings.max_concurrent_runs),
         **kwargs,
     )
 
@@ -260,7 +272,9 @@ def test_a_write_failure_after_diagnosis_degrades_but_keeps_the_diagnosis(
     tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class ReadOnlyStore(SqliteMemoryStore):
-        async def upsert_signature(self, key: SignatureKey, verdict: str, run_id: str) -> str:
+        async def upsert_signature(
+            self, key: SignatureKey, verdict: str | None, run_id: str
+        ) -> str:
             raise RuntimeError("write side is broken")
 
     store = ReadOnlyStore(tmp_db_path)
@@ -522,3 +536,220 @@ async def test_the_orchestrator_heartbeats_while_a_run_is_active(tmp_db_path: Pa
     beats_after = len(spy.beats)
     await asyncio.sleep(0.05)
     assert len(spy.beats) == beats_after, "the heartbeat task is cancelled with the run"
+
+
+async def test_a_queued_run_keeps_its_claim_alive(
+    tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch, repo_root: Path
+) -> None:
+    """Audit finding 2: the claim is written in the route, the orchestrator heartbeats only
+    once `run()` starts, and between the two sits the wait for a concurrency slot. A burst
+    that queues a run past the staleness window must not hand its claim to the next
+    redelivery -- the queued original would still run, and the failure would be triaged
+    twice. Here every slot is taken, the staleness window is 150 ms, and the redelivery
+    arrives 400 ms later."""
+    store = SqliteMemoryStore(tmp_db_path, stale_after_s=0.15)
+    await store.initialize()
+    semaphore = asyncio.Semaphore(1)
+    context = make_context(
+        tmp_db_path, memory=store, run_semaphore=semaphore, heartbeat_interval_s=0.02
+    )
+    monkeypatch.setattr(api_main, "get_app_context", lambda: context)
+    webhook = json.loads(
+        (repo_root / "fixtures/scenarios/flaky_test/webhook.json").read_text("utf-8")
+    )
+    request = RunRequest(
+        integration="cicd", subject=webhook, idempotency_key="cicd:queued",
+        mode="replay", replay_fixture="flaky_test", requested_by="test",
+    )
+    run_context = RunContext(
+        mode="replay", repo="octo-org/harness-demo-repo",
+        scenario_dir=FIXTURES_ROOT / "flaky_test",
+    )
+
+    await semaphore.acquire()  # someone else holds the only slot
+    claim = await store.claim_run("cicd:queued", "cicd")
+    assert claim.acquired
+    queued = asyncio.create_task(
+        api_main._execute(context, request, run_context, claim.run_id)
+    )
+    try:
+        await asyncio.sleep(0.4)
+        redelivery = await store.claim_run("cicd:queued", "cicd")
+        assert not redelivery.acquired, "the queued run's claim went stale while it waited"
+        assert redelivery.run_id == claim.run_id
+        assert redelivery.existing_status == "in_progress"
+        assert redelivery.took_over_from is None
+    finally:
+        queued.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await queued
+        semaphore.release()
+
+
+# ---------------------------------------------------------------------------
+# Audit finding 3: a rerun that failed again is read by the next sighting
+# ---------------------------------------------------------------------------
+
+
+def test_a_failed_rerun_withholds_the_flaky_prior_and_the_bonus(
+    client: TestClient, context: AppContext
+) -> None:
+    """Two sightings execute their retries; then the newest retry the harness knows of
+    failed again. The third sighting must read that -- no `likely_flaky`, no +0.10, and the
+    prompt says the rerun failed -- although the counts still say flaky three times."""
+    first = replay(client)
+    second = replay(client)
+    assert first["final"]["remediation"]["status"] == "executed"
+    assert second["final"]["remediation"]["status"] == "executed"
+    key = SignatureKey.model_validate(second["final"]["bundle"]["prior_history"]["key"])
+
+    seeded_run = "run_01J8FA1EDAGA1N000000000000"
+
+    async def a_rerun_failed_again() -> None:
+        sid = await context.store.upsert_signature(key, "flaky_test", seeded_run)
+        await context.store.record_observation(
+            Observation(
+                observation_id=observation_id_for(sid, seeded_run),
+                signature_id=sid,
+                run_id=seeded_run,
+                occurred_at=datetime.now(UTC),
+                verdict="flaky_test",
+                confidence=0.95,
+                action_taken=RETRY_TOOL,
+                action_outcome="failed_again",
+                commit_sha=None,
+            )
+        )
+
+    asyncio.run(a_rerun_failed_again())
+
+    third = replay(client)
+    prior = third["final"]["bundle"]["prior_history"]
+    assert prior["occurrences"] == 3 and prior["verdict_counts"] == {"flaky_test": 3}
+    assert prior["last_retry_outcome"] == "failed_again"
+    assert prior["prior_hint"] == "unknown"
+    assert not [
+        a for a in third["final"]["diagnosis"]["confidence_adjustments"]
+        if a["name"] == "memory_agreement"
+    ], "the counts agree with the verdict, the last rerun does not"
+    stub = api_main.get_app_context().llm
+    diagnostician_prompts = [p for p in stub.prompts if "You are the Diagnostician" in p]
+    assert "most recent automatic retry of it FAILED AGAIN" in diagnostician_prompts[-1]
+
+    # The older, resolved passes are still on record; they just no longer outrank the failure.
+    async def outcomes() -> set[str | None]:
+        hit = await context.store.lookup(MemoryQuery(key=key))
+        return {o.action_outcome for o in hit.recent}
+
+    assert "passed_on_retry" in asyncio.run(outcomes())
+
+
+# ---------------------------------------------------------------------------
+# Audit finding 4: verdicts the gate refused do not build the prior
+# ---------------------------------------------------------------------------
+
+
+def test_three_gated_verdicts_do_not_lift_a_fourth_over_the_gate(
+    tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three sightings at a confidence the harness declined to act on, then a fourth just
+    under the gate: without the fix the three refused verdicts made a `flaky_test` prior,
+    the bonus lifted the fourth to 0.75, and a retry executed on the strength of verdicts
+    the harness itself would not act on."""
+    stub = ScenarioStubLlm(self_confidence=0.45)
+    ctx = make_context(tmp_db_path, llm=stub)
+    monkeypatch.setattr(api_main, "get_app_context", lambda: ctx)
+    with TestClient(api_main.app) as client:
+        for _ in range(3):
+            gated = replay(client)
+            assert gated["status"] == "escalated"
+            assert gated["escalation"]["reason"] == "low_confidence"
+            assert gated["final"]["diagnosis"]["final_confidence"] < 0.70
+
+        with sqlite3.connect(tmp_db_path) as db:
+            rows = db.execute(
+                "select occurrences, last_verdict, verdict_counts from failure_signature"
+            ).fetchall()
+        assert rows == [(3, None, "{}")], "sightings counted, verdicts not vouched for"
+
+        stub.self_confidence = 0.65  # +0.10 would clear the gate and the rule's 0.75
+        fourth = replay(client)
+    diagnosis = fourth["final"]["diagnosis"]
+    assert 0.60 <= diagnosis["final_confidence"] < 0.70, diagnosis["final_confidence"]
+    assert not [
+        a for a in diagnosis["confidence_adjustments"] if a["name"] == "memory_agreement"
+    ]
+    assert fourth["final"]["bundle"]["prior_history"]["prior_hint"] == "unknown"
+    assert fourth["status"] == "escalated"
+    assert fourth["escalation"]["reason"] == "low_confidence"
+    # Every sighting is on record with its confidence, gated or not.
+    with sqlite3.connect(tmp_db_path) as db:
+        confidences = [r[0] for r in db.execute("select confidence from observation").fetchall()]
+    assert len(confidences) == 4 and all(c < 0.70 for c in confidences)
+
+
+# ---------------------------------------------------------------------------
+# Audit finding 7: an approved plan's write is recorded like an automatic one
+# ---------------------------------------------------------------------------
+
+
+def _engine_requiring_approval_for_retries() -> PolicyEngine:
+    """The shipped policy with `retry-suspected-flaky` flipped to `require_approval` -- the
+    reviewer's scenario for finding 7, and a flip an operator could make in `policy.yaml`."""
+    spec = load_policy_spec()
+    rules = [
+        rule.model_copy(update={"effect": "require_approval"})
+        if rule.id == "retry-suspected-flaky" else rule
+        for rule in spec.rules
+    ]
+    return PolicyEngine(spec.model_copy(update={"rules": rules}))
+
+
+def test_an_approved_retry_is_recorded_and_counted_by_the_cap(
+    tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With retries behind approval, the write executes in the approval route, not the
+    Remediator; dispatch decision 9's "every executed write is recorded" must hold there
+    too, or the flip switches the 2/24 h cap off: every approved retry would execute and
+    `actions_in_window` would stay 0."""
+    ctx = make_context(tmp_db_path, engine=_engine_requiring_approval_for_retries())
+    monkeypatch.setattr(api_main, "get_app_context", lambda: ctx)
+    with TestClient(api_main.app) as client:
+        first = replay(client)
+        assert first["status"] == "awaiting_approval"
+        key = SignatureKey.model_validate(first["final"]["bundle"]["prior_history"]["key"])
+
+        async def hit() -> Any:
+            return await ctx.store.lookup(MemoryQuery(key=key))
+
+        before = asyncio.run(hit())
+        assert [(o.run_id, o.action_taken) for o in before.recent] == [(first["run_id"], None)]
+        assert before.actions_in_window == {}
+
+        def approve(body: dict[str, Any]) -> dict[str, Any]:
+            approval_id = body["final"]["remediation"]["pending_approval"]["approval_id"]
+            decided = client.post(
+                f"/v1/approvals/{approval_id}", json={"decision": "approve", "actor": "reviewer"}
+            )
+            assert decided.status_code == 200, decided.text
+            payload: dict[str, Any] = decided.json()
+            return payload
+
+        approved = approve(first)
+        assert [r["tool"] for r in approved["executed"]] == ["rerun_failed_jobs"]
+        after = asyncio.run(hit())
+        assert [(o.run_id, o.action_taken, o.action_outcome) for o in after.recent] == [
+            (first["run_id"], "rerun_failed_jobs", "pending")
+        ]
+        assert after.actions_in_window == {"rerun_failed_jobs": 1}
+
+        # A second approved retry is the window's second; the third sighting is capped.
+        second = replay(client)
+        assert second["status"] == "awaiting_approval"
+        assert second["final"]["bundle"]["prior_history"]["retries_in_24h"] == 1
+        approve(second)
+        third = replay(client)
+        assert third["final"]["bundle"]["prior_history"]["retries_in_24h"] == 2
+        assert third["status"] == "escalated"
+        assert third["escalation"]["reason"] == "policy_denied"
+        assert "memory.retries_for_signature_24h: 2" in third["escalation"]["message"]

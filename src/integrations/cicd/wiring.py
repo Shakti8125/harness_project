@@ -221,12 +221,15 @@ def build_agents(
     timeout_s: float | None = None,
     approval_ttl_h: int = DEFAULT_APPROVAL_TTL_H,
     memory: MemoryStore | None = None,
+    escalation_threshold: float | None = None,
 ) -> dict[str, Agent[Any]]:
     """The three agents, keyed by `StageSpec.agent_key`.
 
     `memory` (Phase 3) reaches all three: the Investigator reads the prior, the
     Diagnostician records the verdict, the Remediator records the action. `None` leaves
     every run reporting its history as unavailable, which fails the retry cap closed.
+    `escalation_threshold` is the same number the remediation gate is built from, handed
+    to the Diagnostician so a verdict the gate will refuse is not tallied as a verdict.
     """
     return {
         "remediator": Remediator(
@@ -260,6 +263,7 @@ def build_agents(
             retry_policy=retry_policy,
             timeout_s=timeout_s,
             memory=memory,
+            verdict_threshold=escalation_threshold,
         ),
     }
 
@@ -306,6 +310,7 @@ def build_orchestrator(
             timeout_s=timeout_s,
             approval_ttl_h=approval_ttl_h,
             memory=memory,
+            escalation_threshold=escalation_threshold,
         ),
         recorder=recorder,
         artifact_keys=ARTIFACT_KEYS,
