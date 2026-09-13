@@ -77,3 +77,30 @@ pre-existing tests that failed on the new build before their expectations were u
 (`ruff`/`pytest` at the first full run, before any test edit) are the ones listed above, and
 each failure was the phase's own change — a fourth stage, `+0.05` on verified citations,
 `skipped` leaving the policy — not a regression. No pre-existing test was deleted.
+
+## The fix round (`e580aad`), coordinator-verified
+
+`review.md` (FIX FIRST, five findings) was answered the same day. Per the standing rule of
+one independent audit per phase, this round is **coordinator-verified, not re-audited**;
+what it contains and how each fix was proven, so a later reader can weigh it:
+
+| Finding | Fix | Test, and the failure it produced on the unfixed tree |
+|---|---|---|
+| 1 (medium) a `fail` report still tallied a signature verdict above 0.70 | `EvidenceEvaluator._counts_as_verdict(diagnosis, report)` returns False on `report.verdict == "fail"` | `test_evaluator_e2e.py::test_a_refuted_verdict_is_never_tallied_even_above_the_gate` — `failure_signature` read `(3, 'real_regression', '{"real_regression": 3}')`; now `(3, None, "{}")` |
+| 2 (medium) httpx logs the webhook URL at INFO | `escalation._ScrubUrl` filter on the `httpx` logger, installed once per URL by the notifier | `test_escalation_webhook.py::test_httpx_request_log_line_never_carries_the_url` — `SECRETPART` and the host appeared in caplog at INFO; now the request line carries `***REDACTED***` |
+| 3 (medium) trailing punctuation refuted true `dependency_bump` claims | `_versions_in` strips `.+-` off the token's tail | `test_claim_checkers.py::test_dependency_bump_verified_shapes[pydantic 1.10.13->2.9.2]` and `[... to 2.9.2.]` — both `refuted` ("not 1.10.13-, 2.9.2"); now `verified` (+2 more shapes that already passed, kept as coverage) |
+| 4 (low) the v3 prompt promised a commit list the rendering never showed | `render_diff_summary` lists `commit_shas` oldest first, or says the range is unknown | `test_claim_checkers.py::test_diff_summary_renders_the_commit_range_the_prompt_promises` — the intermediate sha was absent from the rendering |
+| 5 (low) `scripts/eval.py` built its store before the fault was parsed | `build_context` leaves the store to `AppContext.__post_init__` | `test_eval_script.py::test_build_context_routes_the_store_fault` — `heartbeat` succeeded on a store that should have failed; now raises `MemoryStoreError` after the B.3 ladder |
+
+The proof is by ordering rather than by stash this time: the eight tests were written and
+run first, against the tree with no fix applied (`6 failed, 9 passed` — the two extra
+`dependency_bump` shapes passed already), then the fixes were applied and the same
+selection ran green. Both runs are in the session log; `git stash` was not needed because
+no source file had uncommitted edits when the tests were written.
+
+Also in the round: PLAN.md A.8 now shows `OutputBudget` and the `output_budget` keyword
+(the audit's contract-drift item), A.2's illustrative gate reason matches the code, and
+`faults.py`'s docstring no longer names the integration's fault (residual note).
+
+Gate after the round: ruff clean; `mypy --strict src/harness` clean (17 files); **744
+passed, 2 skipped** (736 + 8).

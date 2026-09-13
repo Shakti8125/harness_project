@@ -1002,6 +1002,26 @@ table + optional outbound webhook); `scripts/eval.py` and the fourth fixture (`d
 > 15. **`hallucination` is not a fixture.** The refuted-citation path is the fault injection on
 >     `real_regression`; the fourth fixture is `dependency_break` (pydantic 1.10.13 → 2.9.2, an
 >     import-time `PydanticImportError`, `open-fix-pr` at ≥ 0.85).
+>
+> **Fix round (audit `docs/progress/phase-4/review.md`, same day).** What the five findings
+> changed at contract level; the rest is in `backlog.md`.
+>
+> 16. **A `fail` report never tallies a signature verdict**, whatever the post-penalty
+>     confidence: the evidence gate refuses the run, and a refused verdict is a sighting, not a
+>     verdict (the Phase 3 finding-4 principle, applied to the second gate). Item 2's "the
+>     tally depends on the threshold" reads "on either gate" (finding 1).
+> 17. **The webhook URL is scrubbed from httpx's own request log.** httpx writes every request
+>     URL at INFO on the `httpx` logger; the notifier installs a filter there that rewrites its
+>     URL to the redaction placeholder, so `HARNESS_LOG_LEVEL=INFO` cannot print the credential
+>     (finding 2).
+> 18. **A version token drops trailing punctuation** (`1.10.13->2.9.2`, `to 2.9.2.`) before it
+>     is compared with a `DependencyChange` — the same reason the 0.92 line exists: formatting
+>     must not refute a true claim (finding 3).
+> 19. **"Diff against the baseline" lists the commit range**, oldest first (or says it is
+>     unknown), so the sha the v3 prompt tells the model to quote for `commit_in_range` is one
+>     the model was shown (finding 4).
+> 20. **`scripts/eval.py` builds its store through `AppContext.__post_init__`**, so
+>     `HARNESS_FAULT_INJECT=sqlite_locked` reaches it as it does in the API (finding 5).
 
 ### Evaluator
 
