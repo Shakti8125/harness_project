@@ -41,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 
 from src.harness.contracts import EscalationRecord, RunId, RunOutcome, TokenUsage
 from src.harness.errors import HarnessError
+from src.harness.observability import Redactor
 from src.harness.orchestrator import HEARTBEAT_STALE_AFTER_S, new_run_id
 from src.harness.storage import apply_migrations, connect
 
@@ -292,6 +293,14 @@ class SqliteMemoryStore:
     this object before any loop runs (and the test client runs the app on a different
     loop from the test). One loop per process in production makes this the same thing as
     the plan's "one process-wide lock".
+
+    **Redacted at write time, like the recorder.** `outcome_json` carries the whole
+    `RunOutcome` -- the integration's raw log excerpts and diff patches included -- and
+    `plan_json` carries drafted file contents; the HTTP boundary digests those, the file
+    would otherwise keep them verbatim. With a `redactor`, every JSON column this class
+    writes (`outcome_json`, `plan_json`, `context_json`, the escalation `payload_json`) is
+    scrubbed first, so the same registered secrets and credential shapes that never reach
+    a span never reach the file either. Nothing here decides *what* is a secret.
     """
 
     def __init__(
@@ -303,8 +312,10 @@ class SqliteMemoryStore:
         clock: Callable[[], datetime] | None = None,
         fault_inject: str | None = None,
         retry_backoff_ms: Sequence[int] = WRITE_RETRY_BACKOFF_MS,
+        redactor: Redactor | None = None,
     ) -> None:
         self.db_path = db_path
+        self.redactor = redactor
         self._run_id_factory = run_id_factory
         self._stale_after = timedelta(seconds=stale_after_s)
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -313,6 +324,17 @@ class SqliteMemoryStore:
         self._locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
     # -- plumbing -----------------------------------------------------------------
+    def _dump(self, model: BaseModel) -> str:
+        """The model as JSON text, scrubbed through the redactor when one is configured."""
+        payload: JsonValue = model.model_dump(mode="json")
+        if self.redactor is not None:
+            payload = self.redactor.scrub(payload)
+        return _dumps(payload)
+
+    def _dump_json(self, value: dict[str, JsonValue]) -> str:
+        scrubbed: JsonValue = self.redactor.scrub(value) if self.redactor is not None else value
+        return _dumps(scrubbed)
+
     async def initialize(self) -> None:
         """Apply the migrations. Exempt from fault injection: the process must boot."""
         await apply_migrations(self.db_path)
@@ -492,7 +514,7 @@ class SqliteMemoryStore:
                     outcome.run_id, f"{UNCLAIMED_KEY_PREFIX}{outcome.run_id}",
                     outcome.integration, outcome.status, _ts(outcome.created_at), now,
                     _ts(outcome.completed_at) if outcome.completed_at else None,
-                    outcome.model_dump_json(),
+                    self._dump(outcome),
                 ),
             )
             if outcome.escalation is not None:
@@ -504,7 +526,7 @@ class SqliteMemoryStore:
                     " payload_json = excluded.payload_json, delivered_at = excluded.delivered_at",
                     (
                         record.escalation_id, outcome.run_id, record.reason,
-                        record.model_dump_json(), now, now,
+                        self._dump(record), now, now,
                     ),
                 )
 
@@ -653,10 +675,11 @@ class SqliteMemoryStore:
                 " decided_by = excluded.decided_by, decision_note = excluded.decision_note,"
                 " context_json = excluded.context_json",
                 (
-                    record.approval_id, record.run_id, record.state, _dumps(record.plan),
+                    record.approval_id, record.run_id, record.state,
+                    self._dump_json(record.plan),
                     _ts(record.requested_at), _ts(record.expires_at),
                     _ts(record.decided_at) if record.decided_at else None,
-                    record.decided_by, record.decision_note, _dumps(record.context),
+                    record.decided_by, record.decision_note, self._dump_json(record.context),
                 ),
             )
 

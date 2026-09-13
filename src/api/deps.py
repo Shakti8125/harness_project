@@ -129,7 +129,7 @@ class AppContext:
     def __post_init__(self) -> None:
         if self.memory is None:
             object.__setattr__(
-                self, "memory", build_memory_store(self.settings)
+                self, "memory", build_memory_store(self.settings, self.recorder.redactor)
             )
 
     @property
@@ -248,8 +248,10 @@ class AppContext:
         )
 
 
-def build_memory_store(settings: Settings) -> SqliteMemoryStore:
-    """The one `MemoryStore`, over the same file the recorder writes.
+def build_memory_store(settings: Settings, redactor: Redactor | None = None) -> SqliteMemoryStore:
+    """The one `MemoryStore`, over the same file the recorder writes, scrubbing what it
+    stores through the same `Redactor` the recorder uses (or one built here when a
+    hand-assembled context did not pass its own).
 
     `HARNESS_FAULT_INJECT=sqlite_locked` makes every store operation fail as if the file
     were locked -- PLAN.md Phase 3 Verify step 4 -- and is refused outside `env=dev`
@@ -264,7 +266,11 @@ def build_memory_store(settings: Settings) -> SqliteMemoryStore:
         )
     if fault is not None and fault != FAULT_SQLITE_LOCKED:
         raise ConfigurationError(f"unknown fault injection {fault!r}")
-    return SqliteMemoryStore(settings.database_path, fault_inject=fault)
+    return SqliteMemoryStore(
+        settings.database_path,
+        fault_inject=fault,
+        redactor=redactor or Redactor(build_secret_registry(settings), SECRET_PATTERNS),
+    )
 
 
 def build_secret_registry(settings: Settings) -> SecretRegistry:
@@ -312,7 +318,7 @@ def get_app_context() -> AppContext:
         context_manager=context_manager,
         llm=llm,
         run_semaphore=asyncio.Semaphore(settings.max_concurrent_runs),
-        memory=build_memory_store(settings),
+        memory=build_memory_store(settings, redactor),
         engine=PolicyEngine(load_policy_spec()),
     )
 

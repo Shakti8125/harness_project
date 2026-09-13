@@ -470,3 +470,51 @@ def test_run_id_factory_is_injectable(tmp_db_path: Path) -> None:
     fixed: Callable[[], str] = lambda: "run_01J8ZZZZZZZZZZZZZZZZZZZZZZ"  # noqa: E731
     store = SqliteMemoryStore(tmp_db_path, run_id_factory=fixed)
     assert store._run_id_factory() == "run_01J8ZZZZZZZZZZZZZZZZZZZZZZ"
+
+
+# ---------------------------------------------------------------------------
+# Redacted at write time, like the recorder
+# ---------------------------------------------------------------------------
+
+
+async def test_json_columns_are_scrubbed_before_they_reach_the_file(tmp_db_path: Path) -> None:
+    """A registered secret and a credential-shaped string inside a `RunOutcome`'s `final`,
+    an approval's plan and an escalation payload never reach the raw bytes of the file."""
+    import re
+
+    from src.harness.observability import Redactor, SecretRegistry
+
+    secret = "sentinel-secret-value-9f8e7d6c"
+    shaped = "ghp_" + "A" * 36
+    redactor = Redactor(SecretRegistry([secret]), [re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")])
+    store = SqliteMemoryStore(tmp_db_path, redactor=redactor)
+    await store.initialize()
+
+    run_id = new_run_id()
+    leaky = outcome(run_id, "escalated", escalation=True).model_copy(
+        update={
+            "final": {"bundle": {"logs": [{"excerpt": f"token {secret} and {shaped}"}]}},
+            "escalation": outcome(run_id, escalation=True).escalation.model_copy(  # type: ignore[union-attr]
+                update={"payload": {"detail": shaped}}
+            ),
+        }
+    )
+    await store.save_run(leaky)
+    record = approval("apr_leak").model_copy(
+        update={"plan": {"plan": {"body": secret}}, "context": {"note": shaped}}
+    )
+    await store.save_approval(record)
+
+    raw = tmp_db_path.read_bytes()
+    for sidecar in ("-wal", "-shm"):
+        path = tmp_db_path.with_name(tmp_db_path.name + sidecar)
+        if path.exists():
+            raw += path.read_bytes()
+    assert secret.encode() not in raw
+    assert shaped.encode() not in raw
+
+    stored = await store.get_run(run_id)
+    assert stored is not None
+    excerpt = stored.final["bundle"]["logs"][0]["excerpt"]  # type: ignore[index, call-overload]
+    assert excerpt == "token ***REDACTED*** and ***REDACTED***"
+    assert (await store.get_approval("apr_leak")).plan == {"plan": {"body": "***REDACTED***"}}  # type: ignore[union-attr]
