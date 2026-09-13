@@ -13,15 +13,28 @@ is true about this tree but written down nowhere else.
 
 ## 1. Deploy state
 
-**The Space at <https://shakti-agent-harness.hf.space> still serves `phase-2-green`.** Phase
-3 was not pushed: deploying is outward-facing and the user was asked, not assumed. Until
-that push lands, every Phase 3 behaviour (memory, the claim protocol, the `run`/`approval`
-tables, `readyz.migrations_applied`, `cold_start`) exists locally and in the Docker image
-only. What was verified live is in `docs/progress/phase-3/verify.md`: a local uvicorn on
-`127.0.0.1:8000` over a fresh `./data/harness.db`, and `docker compose up --build` on the
-same volume (image ships `001_init.sql`, `readyz` reports the migration).
+The Space at <https://shakti-agent-harness.hf.space> serves the `phase-3-green` tree, pushed
+2026-09-13 on the user's instruction as a fast-forward of the Phase 3 commits
+(`afc621b..a644c90`, plus this docs commit). The new build answered `readyz` about 45 s after
+the push (the old container kept answering `policy_loaded` without `migrations_applied` for
+three polls; poll for the field you changed, not for `200`). Verified live after the push,
+not assumed -- one replay, three model calls, everything else free:
 
-Three things to know before the push:
+| Check | Result |
+|---|---|
+| `GET /healthz` | `{"status":"ok","db":"ok","version":"0.1.0"}` |
+| `GET /readyz` | `migrations_applied: true` alongside `db_writable`, `gemini_key_present`, `policy_loaded` |
+| `GET /v1/runs`, `GET /v1/escalations` on the fresh container | `{"items":[],"next_cursor":null}` and `[]` -- no volume, so nothing survived the rebuild |
+| `POST /v1/replay/flaky_test?fresh=false` | `completed` in 30 s; `prior_history` empty (`occurrences: 0`, hint `unknown`, first sighting on this container); `flaky_test` at 0.92; plan `retry_job`, `retry-suspected-flaky` allowed it (`retries_in_24h: 0`), executed dry-run (`rerun_requested: false, dry_run: true`) -- Phase 2's same replay was `policy_denied`, which is the memory rule working |
+| Same `POST` again, same key | `deduplicated` in 2 s, `original_run_id` = the run above, zero model calls -- the Appendix C claim on the live store |
+| `GET /v1/runs` | one row, `completed` |
+| `GET /v1/runs/{id}/trace` | 13 spans (`run`, `agent.run`, `llm.attempt`, `prompt.render`, `policy.decide`, `remediation.plan`, `remediation.execute`); the local Verify's denied run had 12 -- the one more is the executed retry |
+| Served bodies (both replays, run, trace, list, escalations) | 29 kB, zero credential-shaped matches |
+| `POST /v1/approvals/apr_nope`, `GET /v1/runs/run_01J8NOPE…` | `404 application/problem+json` |
+
+The local `docs/progress/phase-3/verify.md` remains the record for steps 2--4 (the cap
+sequence, the outage step, the fault-injected recovery); the Space has one run of memory in
+it until its next restart. Three things to know about the deployment:
 
 - **The Space has no persistent volume** (Phase 3 dispatch decision 1, the user's call).
   Memory is real within one waking period and gone across restarts; `GET /v1/escalations`
@@ -35,8 +48,9 @@ Three things to know before the push:
   the same split.
 
 The exposure story is unchanged: no authentication anywhere, writes inert on the Space
-(`HARNESS_GATEWAY=replay`, `HARNESS_DRY_RUN=true`, no allowlisted repo). Ask before changing
-any of that or before deploying.
+(`HARNESS_GATEWAY=replay`, `HARNESS_DRY_RUN=true`, no allowlisted repo) -- the executed
+`rerun_failed_jobs` above touched nothing real. Ask before changing any of that or before
+deploying.
 
 **Quota is the demo's binding constraint.** Three model calls per replay; the free tier's
 20/day is about six replays. Phase 3's live Verify spent 15 in one day. Everything
