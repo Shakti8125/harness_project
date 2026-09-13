@@ -924,6 +924,85 @@ table + optional outbound webhook); `scripts/eval.py` and the fourth fixture (`d
 > Also from Phase 1: `evaluation.verdict` reaching a real value here is what lets Phase 2's
 > `open-fix-pr` rule drop `skipped` from its `when` clause (see that phase's amendment 2).
 
+> **Amendment (Phase 4, recorded 2026-09-14 — what was built, and how the Verify block reads
+> against it).** Full reasoning in `docs/progress/phase-4/dispatch.md`.
+>
+> 1. **The Evaluator is a fourth stage, `evaluate`, with a deterministic agent.** Between
+>    `diagnose` and `remediate`; `final` gains `evaluation` (A.1's list, complete now). The
+>    agent (`integrations/cicd/agents/evaluator.py`, key `evaluator`) builds one `Claim` per
+>    `Citation`, runs `harness.evaluator.Evaluator` over `claim_checkers.build_claim_checkers()`,
+>    records one `evaluation.claim` span per verdict, re-calibrates the diagnosis with the
+>    evaluator's row, and writes memory. `evidence_refuted` on `fail` is the gate on `remediate`,
+>    where Phase 1 put it.
+> 2. **Memory is written after evaluation, not by the Diagnostician.** Phase 3's decision 9 is
+>    amended: a verdict the evaluator refutes must not be tallied at its pre-penalty confidence,
+>    so the sighting, the observation and the `verdict_threshold` comparison move to the evaluate
+>    stage and read the post-penalty figure. The Diagnostician no longer takes `memory` or
+>    `verdict_threshold`.
+> 3. **The evaluate stage re-files the diagnosis.** `final_confidence` is one sum clamped once, so
+>    the stage re-calibrates from `self_confidence` with the Diagnostician's signals plus
+>    `evidence_fully_verified` (+0.05, every claim verified) or `evidence_refuted` (−0.15, any
+>    refuted) and replaces `artifacts["diagnosis"]`. `EvaluationReport.confidence_delta` says
+>    what changed.
+> 4. **The verdict rule, read literally.** `skipped` when there are no claims (delta 0;
+>    `no_citations` already prices it); `fail` on any `refuted` (−0.15) or when
+>    `verified/total < 0.5` with `total` every claim, unverifiable included (delta 0 — nothing was
+>    shown fabricated; the gate's reason quotes the report's); `warn` on any `unverifiable`; `pass`
+>    otherwise (+0.05). A run whose only citations name a missing artifact therefore fails on the
+>    share, not on a refutation; the escalation reason is still `evidence_refuted` because A.1's
+>    reason list has no other member for it (backlog).
+> 5. **`warn` downgrades in `remediation.decide_plan` through `guardrails.downgrade_for_warn`**:
+>    `allow` → `require_approval` (`downgraded_from="allow"`, on the `policy.decide` span),
+>    `require_approval` and `deny` unchanged, read tools untouched.
+> 6. **`skipped` leaves `policy.yaml`, `warn` enters it** (Phase 2 amendment 2 closed): both
+>    write rules read `evaluation.verdict: {in: [pass, warn]}`. A diagnosis with no citations
+>    matches neither and is denied by name; `file-ticket` still matches. `EVALUATION_SKIPPED`
+>    remains the fact for a run with no `evaluation` artifact.
+> 7. **The Remediator and the approval route read the run's real verdict** through
+>    `remediation.evaluation_verdict_of` — the live artifact in-run, `final["evaluation"]` at
+>    approval time — so a plan judged under `warn` is judged under `warn` again.
+> 8. **The webhook is `harness/escalation.py::WebhookNotifier`** (a layout addition): B.4's 5 s,
+>    2 retries, exponential backoff, never raises; body `{"text", "run_id", "escalation_id",
+>    "reason", "message", "payload", "trace_url"}` scrubbed through the recorder's `Redactor`;
+>    `delivery_error` built from the exception class and status, never from `str(exc)`, so the
+>    URL — a secret — is never stored or logged. `Orchestrator._escalate` is async and awaits
+>    the configured notifier; the approval route delivers through `AppContext.deliver_escalation`.
+>    `EscalationRecord` gains `delivery_error: str | None = None` (A.1, additive); with a webhook
+>    configured `delivered_at` is the webhook's acceptance time (`None` with `delivery_error`
+>    set on failure), otherwise the log line's as before; `save_run` writes both onto the row.
+>    `HARNESS_ESCALATION_WEBHOOK_URL` set (non-blank) adds `webhook` to the channels.
+> 9. **Fault injection: one parser, one guard, two homes.** `harness/faults.py` parses
+>    `HARNESS_FAULT_INJECT` (`name` or `name:N`); `deps.build_fault` refuses it outside `dev` and
+>    refuses any name outside `KNOWN_FAULTS` (`sqlite_locked`, `llm_bad_json`, `llm_429`,
+>    `diagnostician_fabricate_citation`); a blank value is no fault. `FaultInjectingLlmClient`
+>    is built **per run** and answers the first N requests **per agent** (keyed by the request's
+>    schema) with non-JSON text or `LlmRateLimited(retry_after_s=None)` without calling the
+>    provider. `diagnostician_fabricate_citation` reaches `Diagnostician(fabricate_citation=True)`
+>    through `build_agents` and replaces the model's citations with one `quote_exists` quoting
+>    `AssertionError: expected 42`. `docker-compose.yml` forwards the variable.
+> 10. **`MAX_TOKENS` raises the output budget ×1.5** through `recovery.OutputBudget`, an additive
+>     `retry_structured(output_budget=...)` keyword the `LLMAgent` closure shares with the loop;
+>     capped at 65 536; every `llm.attempt` span records `max_output_tokens`. Without a budget
+>     the Phase 1 "answer more briefly" path stands.
+> 11. **`DiffSummary.commit_shas: list[str] = []`** (A.11, additive) is read off the compare
+>     response's `commits[].sha`; `commit_in_range` checks it plus `head_sha` by prefix, and reads
+>     an empty list as "range unknown" (`unverifiable`), never as "not in range".
+> 12. **The Diagnostician prompt is version 3**: it says what `quote` and `locator` hold per
+>     `claim_kind`, so the checkers parse what the model was told to write.
+> 13. **`scripts/eval.py`** runs in-process, one temporary database per run (first-sighting
+>     labels), `--shared-db` to exercise the cap under concurrency, `--llm stub` from
+>     `tests/stubs.ScenarioStubLlm` (the report's `llm` field says which), `--price-in/--price-out`
+>     for cost (unpriced otherwise, and the report says so). Exit 1 on the gate PLAN names.
+> 14. **The Verify block, as it can honestly be met.** Step 2's `stages` is
+>     `["investigator","diagnostician","evaluator",null]` — the evaluate stage is real and the gated
+>     remediate stage records `agent: null`, as it always has; "no remediator" holds. Step 3's
+>     `attempts: 3` is per-agent (item 9); the `sqlite3` line reads `invalid_output|db` (Phase 3
+>     files the row on the `db` channel; `channels` on the record lists `log`). Step 4's gate runs
+>     under `--llm stub` for free; the README number needs `--llm gemini`.
+> 15. **`hallucination` is not a fixture.** The refuted-citation path is the fault injection on
+>     `real_regression`; the fourth fixture is `dependency_break` (pydantic 1.10.13 → 2.9.2, an
+>     import-time `PydanticImportError`, `open-fix-pr` at ≥ 0.85).
+
 ### Evaluator
 
 The Evaluator runs **between** Diagnostician and Remediator and validates every `Citation` in the
@@ -1264,6 +1343,8 @@ class EscalationRecord(BaseModel):
     payload: dict[str, JsonValue]
     channels: list[Literal["log","db","webhook"]]
     delivered_at: datetime | None
+    delivery_error: str | None = None      # Phase 4 amendment, additive: B.4's "recorded in
+                                           # escalation.delivery_error"; never carries the URL
 
 class RunOutcome(BaseModel):
     run_id: RunId
@@ -1729,6 +1810,9 @@ class DiffSummary(BaseModel):
     files: list[FileChange] = []
     truncated: bool = False                        # GitHub caps compare at 300 files
     total_files: int = 0
+    commit_shas: list[str] = []                    # Phase 4 amendment, additive: the range
+                                                   # `commit_in_range` is checked against;
+                                                   # empty = unknown, never "not in range"
 
 class DependencyChange(BaseModel):
     ecosystem: Literal["pip","npm","go","maven","cargo","other"]
@@ -2246,7 +2330,7 @@ returns 403 for anything not on it.
 | 1 | **done** — `phase-1-green` | Investigator + Diagnostician, 1 fixture, deployed, **plus Recovery** | Correct category + ≥1 citation from the public URL |
 | 2 | **built** -- see the Phase 2 status block | Remediator (retry) + Guardrails + approvals, 2 fixtures, live gateway | Regression blocked pending approval; flaky *denied* by the fail-closed cap with the clause named (allow path pinned offline); 90-case deny test green |
 | 3 | **built** -- see the Phase 3 amendment | Memory | 4th flaky run shows `occurrences=3`, `likely_flaky`, retry cap bites on the 3rd |
-| 4 | | Evaluator + eval harness (Recovery shipped in 1) | Fabricated citation → escalate, no remediation; `eval.py` 4/4 |
+| 4 | **built** -- see the Phase 4 amendment | Evaluator + eval harness (Recovery shipped in 1) | Fabricated citation → escalate, no remediation; `eval.py` 5/5 (stub), live number in `verify.md` |
 | 5 | | Trace view + real webhook | Redelivery dedupes; secret-leak test green; live run from the demo repo |
 | 6 | | Second adapter sketch | `git diff --stat -- src/harness/` is empty; contract suite green ×3 |
 
