@@ -36,18 +36,16 @@ still the next phase's call.
 - `verify.md` is recorded at `dbc63ab`, before the fix round; the fix round changes none of
   the block's expected values (step 2's served body does not depend on the tally; the
   commit list only adds prompt text; the eval's stub run does not use the store fault).
-  Steps 3a and 3c were **not run live** in this session: the provider's daily quota was
-  exhausted mid-block (see below). Both are pinned in-process and must be run live on the
-  post-fix tree before `phase-4-green` is tagged.
+  Steps 3a and 3c were run live on the post-fix tree (`d205151`) once the provider's
+  daily quota reset, and pass; `phase-4-green` is tagged at `5abe6ad`, the commit that
+  records them.
 
 ## Residuals and hazards — real, not findings against a stated contract
 
-- **Verify steps 3a (`llm_bad_json:2`) and 3c (`llm_429:3`) are pending a live re-run**
-  (six model calls: the third attempt of each agent, then the fourth). The fault paths
-  themselves ran as designed in 3a before Gemini answered a real 429; the daily cap resets
-  at midnight Pacific (~12:30 IST), and Phase 3's verify spend counted against the same day.
-  The README accuracy number (`eval.py --runs 1 --llm gemini`, ≤ 15 calls) is a separate
-  day's quota. Neither is a stub-able gap: the stub proves the pipeline, not the model.
+- **The eval's model number covers three of five scenarios** (`verify.md` §4: 3/3 on
+  2026-09-14; `cold_start` and a scored `dependency_break` row are six calls in the next
+  quota window). Not a stub-able gap: the stub proves the pipeline, not the model. Verify
+  3a and 3c, once pending the same cap, were run live on the post-fix tree at 13:15 IST.
 - **A run whose only citations name a missing artifact fails on the share rule and
   escalates `evidence_refuted`** although nothing was refuted (dispatch decision 4, PLAN
   item 4, audit S2). The reason string names the share; the enum does not. The audit
@@ -93,8 +91,8 @@ still the next phase's call.
 - **Stub-mode `estimated_cost_usd_per_run` is 0 and says `unpriced`**; the Gemini client
   reports no cost in `TokenUsage`, so a priced number needs `--price-in/--price-out`.
 - **`annotate_run` is recorded, never executed** (unchanged since Phase 2).
-- **The Space still serves `phase-3-green`.** This phase is not deployed: the coordinator
-  did not change exposure or deploy without being asked (handoff §1, §8).
+- **The Space serves `phase-4-green`** since 2026-09-14 13:19 IST, on the user's
+  instruction; verified live (`verify.md` §"Deploy"). Exposure unchanged.
 - **Quota.** The free tier's ~20 calls/day resets at midnight Pacific, not local midnight;
   count the day on that clock (`data/harness.db` `llm.attempt` spans with
   `tokens.total > 0`) before spending. Fault-injected `llm_bad_json` runs and every stub

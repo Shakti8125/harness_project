@@ -1,11 +1,11 @@
 # Handoff — start of Phase 5 (Trace view + real GitHub webhook)
 
-Written 2026-09-14, at `f7cfc36` on `master`. Phase 4 is built, audited and fixed; it is
-**not yet tagged `phase-4-green`**, because two live Verify steps are pending the provider's
-quota reset (§1). Gate green (744 passed, 2 skipped), one independent audit with five
+Written 2026-09-14 on `master`, at `phase-4-green` (`5abe6ad`) plus the deploy record.
+Phase 4 is closed: gate green (744 passed, 2 skipped), one independent audit with five
 findings — all five closed in a same-day fix round, the fix round coordinator-verified per
 the standing one-audit-per-phase rule (`docs/progress/phase-4/backlog.md`, "Audit
-provenance").
+provenance") — every Verify step run live, the tag on the tree that passed, and the Space
+serving it (§1, §2).
 
 **Read this file first and in full.** It is the index. It does not restate `PLAN.md` or the
 Phase 4 documents — it tells you which parts are load-bearing for Phase 5 and records what
@@ -13,49 +13,58 @@ is true about this tree but written down nowhere else.
 
 ---
 
-## 1. What is unfinished, and what it takes to finish
+## 1. What is unfinished
 
-Three things, all live-quota-bound, in this order:
+One thing, live-quota-bound: **the eval's two remaining scenarios**. The README's model
+number is 3/3 (`real_regression`, `flaky_test`, `infra_timeout`, 2026-09-14) because the
+day's quota was spent on Verify 3a/3c (6), the Space check (3) and those three (9).
+`cold_start` and a *scored* `dependency_break` row are six calls:
 
-1. **Verify steps 3a and 3c** (`docs/progress/phase-4/verify.md`): `HARNESS_FAULT_INJECT=
-   llm_bad_json:2` and `llm_429:3` on `flaky_test`, six model calls in total (the third
-   attempt of each agent, then the fourth). Run under uvicorn per fault value, on the
-   post-fix tree; expected `{"status":"completed","attempts":3}` and `"completed"`. The
-   scratchpad helper that started/stopped uvicorn per fault is not in the repo; the recipe
-   is: set the variable, `uv run uvicorn src.api.main:app --host 127.0.0.1 --port 8000`,
-   poll `/readyz` for `migrations_applied`, `curl`, kill the process that holds the port.
-   Then update `verify.md` and `test-verifier.md`'s verdict line, and **tag
-   `phase-4-green`** on that tree.
-2. **The README accuracy number**: `uv run python scripts/eval.py --runs 1 --llm gemini`
-   — five scenarios, ≤ 15 calls, a day's quota. Record the report in `verify.md` §4 and quote
-   *that* run, not the stub's 25/25, anywhere accuracy is claimed.
-3. **Deploy** — only when asked (§8). The Space still serves `phase-3-green`; a pending
-   approval created there before the deploy is judged under `skipped` and denied by name
-   after it (backlog).
+```
+uv run python scripts/eval.py --runs 1 --llm gemini --scenario cold_start --scenario dependency_break
+```
+
+Record the report in `docs/progress/phase-4/verify.md` §4 beside the first, and update the
+README's table to five scenarios. (`dependency_break` already has one live data point: the
+Space's post-deploy replay, hand-scored against its label in `verify.md`.)
 
 **Quota.** The free tier's ~20 calls/day resets at midnight Pacific (~12:30 IST), not local
-midnight; Phase 3's 15 verify calls, the Space check's 3 and Phase 4's 3 fell in one Pacific
-day and the fourth live call of the Phase 4 block met a real 429. Count the day on that clock
-(`data/harness.db`, `llm.attempt` spans with `tokens.total > 0`). Every `llm_bad_json` run
-and every `--llm stub` run costs nothing.
+midnight; Phase 3's 15 verify calls, the Space check's 3 and Phase 4's first 3 fell in one
+Pacific day and the fourth live call of the Phase 4 block met a real 429. Count the day on
+that clock (`data/harness.db`, `llm.attempt` spans with `tokens.total > 0`). Every
+`llm_bad_json` run and every `--llm stub` run costs nothing. **2026-09-14's Pacific day is
+spent (18 calls) as of 13:30 IST.**
 
 ---
 
 ## 2. Deploy state
 
-Unchanged from the Phase 4 handoff §1: the Space serves `phase-3-green`; no persistent
-volume; migrations by hand-call from `app.py:main()`; `HARNESS_GATEWAY=replay`,
-`HARNESS_DRY_RUN=true`, no allowlisted repo, no authentication. Two Phase 4 additions
-matter for the next deploy:
+The Space at <https://shakti-agent-harness.hf.space> serves `phase-4-green` (`5abe6ad`),
+pushed 2026-09-14 13:16 IST on the user's instruction as a fast-forward `472120b..5abe6ad`
+of `master` to the Space's `main`, followed by the docs commit that records it. The new
+build answered about 2 m 40 s after the push; the old container kept answering meanwhile
+(poll for something only the new build can do — `POST /v1/replay/dependency_break` was
+`404` on the old image — not for `200`). Verified live, not assumed: one `dependency_break`
+replay through the real model (three calls; `awaiting_approval`, three citations all
+verified, the fix PR held), then `healthz`, `readyz`, the run list, the 19-span trace with
+`evaluation.claim` spans, `GET /v1/escalations`, three `problem+json` 404s, and a
+credential-shape scan over 25.7 kB of served bodies — all in `docs/progress/phase-4/
+verify.md` §"Deploy". Unchanged: no persistent volume (the Space's memory is one waking
+period long; `GET /v1/runs` is empty most mornings), migrations by hand-call from
+`app.py:main()`, `HARNESS_GATEWAY=replay`, `HARNESS_DRY_RUN=true`, no allowlisted repo, no
+authentication. Two Phase 4 additions matter for the next deploy:
 
 - **`docker-compose.yml` now forwards `HARNESS_FAULT_INJECT` from the shell**, and thereby
   overrides a value in `.env` with the empty string when the shell does not export it
   (backlog). The `env != dev` refusal is what keeps the variable harmless on a
   `HARNESS_ENV=prod` target; the Space's `.env` says `dev`.
 - **`HARNESS_ESCALATION_WEBHOOK_URL`**, when set, adds `webhook` to every run's channels
-  and the notifier posts to it (B.4). Not set anywhere today. It is a `SecretStr`: registered
-  with the `Redactor`, scrubbed from httpx's own request log by a filter the notifier
-  installs, never in `delivery_error`. Not validated at boot (backlog).
+  and the notifier posts to it (B.4). Not set anywhere today, the Space included. It is a
+  `SecretStr`: registered with the `Redactor`, scrubbed from httpx's own request log by a
+  filter the notifier installs, never in `delivery_error`. Not validated at boot (backlog).
+- **A pending approval created on the Space before this deploy** would be judged under
+  `skipped` and denied by name — moot this time, since the rebuild discarded the old
+  container's state, but true of any persistent deployment.
 
 ---
 
@@ -161,7 +170,7 @@ Documents: `docs/progress/phase-4/{dispatch,verify,test-verifier,review,backlog}
 
 ## 7. Residuals worth knowing (full text in `docs/progress/phase-4/backlog.md`)
 
-- Verify 3a/3c and the live eval number are pending quota (§1).
+- The eval's `cold_start` and scored `dependency_break` rows are pending quota (§1).
 - `WebhookNotifier` worst case ~46 s (per-phase httpx timeout), outside `run_budget_s`.
 - `_SHA` treats a nine-digit job id as a sha candidate; `test_in_log` matches anchor lines
   only; an empty `quote` is refuted, not unverifiable.
@@ -194,16 +203,16 @@ exposure or deploying. New: **never quote a stub-mode eval number as accuracy**;
 
 ## 10. Definition of done for Phase 5
 
-`PLAN.md`'s Phase 5 Verify block. Step 5 is live against the Space and the demo repo and
-needs the deploy the user has not yet been asked about. A phase is done when
-`test-verifier.md` says PASS and `review.md` says SHIP (or, after a fix round, records the
-coordinator's SHIP with its basis); tag `phase-5-green` on the tree that is actually
-finished — and `phase-4-green` first, once §1's live steps are recorded.
+`PLAN.md`'s Phase 5 Verify block. Step 5 is live against the Space and the demo repo; ask
+before deploying, as before. A phase is done when `test-verifier.md` says PASS and
+`review.md` says SHIP (or, after a fix round, records the coordinator's SHIP with its
+basis); tag `phase-5-green` on the tree that is actually finished.
 
 ## 11. Read order for a fresh session
 
 1. This file.
-2. `docs/progress/phase-4/verify.md` §3 (what is pending and why) and `backlog.md`.
+2. `docs/progress/phase-4/verify.md` §4 and §"Deploy" (the live numbers, what is queued)
+   and `backlog.md`.
 3. `PLAN.md` Phase 5, A.9, A.12, B.2, Appendix C, the Phase 4 amendment (items 1–20).
 4. `docs/progress/phase-4/dispatch.md` — the decisions the Phase 4 build was made against.
 5. `src/integrations/cicd/agents/evaluator.py`, `src/integrations/cicd/claim_checkers.py`,

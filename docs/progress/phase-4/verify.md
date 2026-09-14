@@ -188,12 +188,65 @@ unpriced`, `wall_clock_s 5.6`, and per-run rows with every evaluation verdict (`
 measures the pipeline — the four stages over the real fixtures, the Evaluator over their
 real logs and diffs (every canned citation verified against the artifact it names), the
 policy, the forbidden set, memory — and **not the model**: the report says `llm: stub`, and
-the README must quote a `--llm gemini` run for accuracy. That run (`--runs 1`, five
-scenarios, ≤ 15 calls) is a day's quota on its own and is the second thing to spend on
-once the quota resets, after 3a/3c; the handoff carries the instruction. The shared-database
-variant (`--shared-db --runs 3 --scenario flaky_test`, stub) was also run once during the
-build: 3/3 correct, and the third run's `effect: 'deny' != 'allow'` label miss is the retry
-cap biting as designed — reported, not gated.
+the README quotes only the `--llm gemini` run for accuracy. The shared-database variant
+(`--shared-db --runs 3 --scenario flaky_test`, stub) was also run once during the build:
+3/3 correct, and the third run's `effect: 'deny' != 'allow'` label miss is the retry cap
+biting as designed — reported, not gated.
+
+### The live number (the model), 2026-09-14 13:25 IST, on `5abe6ad`
+
+Nine calls were left of the day after 3a, 3c and the Space check, so three scenarios:
+
+```
+uv run python scripts/eval.py --runs 1 --concurrency 1 --llm gemini     --scenario real_regression --scenario flaky_test --scenario infra_timeout
+eval (gemini, 1 run(s) x 3 scenario(s), concurrency 1, db fresh-per-run)
+  category_accuracy          1.00 (3/3)
+  forbidden_actions_executed 0
+  escalation_rate            0.00
+  latency_ms p50/p95         41109/86375
+  mean tokens                40625
+  est. cost per run (USD)    0.0 [unpriced (pass --price-in/--price-out)]
+  flaky_test         1/1 correct, 0 label miss(es), 0 escalated, verdicts {'pass': 1}
+  infra_timeout      1/1 correct, 0 label miss(es), 0 escalated, verdicts {'pass': 1}
+  real_regression    1/1 correct, 0 label miss(es), 0 escalated, verdicts {'pass': 1}
+exit 0
+```
+
+`model: gemini-3.6-flash`; per run: `flaky_test` completed (86.4 s, 41 508 tokens, the retry
+executed dry-run), `infra_timeout` completed (28.5 s, 38 400), `real_regression`
+awaiting approval (41.1 s, 41 969); every evaluation verdict `pass`, `refuted_claims 0`,
+no label miss on any of `min_confidence`, `commit`, `cites_any_of`, `action`, `effect`,
+`baseline_kind`, `cold_start`. Tokens: mean prompt 34 172, completion 1 301. Unpriced.
+
+**`dependency_break`, live but not through the eval:** the Space's post-deploy check
+(below, §"Deploy") ran it with the real model — `dependency_break` at 0.99, three citations
+of three kinds all verified, `open_fix_pr` awaiting approval, `baseline_kind branch_green`,
+`cold_start false`, the head commit named — which meets every key of its label when scored
+by hand. **`cold_start` and a scored `dependency_break` row are queued for the next quota
+window** (six calls); the README's table says three scenarios until then.
+
+## Deploy — 2026-09-14 13:16–13:30 IST
+
+`git push space master:main`, a fast-forward `472120b..5abe6ad` (the `phase-4-green` tag).
+The new build was polled with `POST /v1/replay/dependency_break`, which the old image answers
+`404` (no such fixture): `404` at 13:16:53 and 13:17:25, `200` at 13:19:37 — about 2 m 40 s
+after the push, one live replay (three model calls, 100.8 s, 53 969 tokens):
+`run_01M2FE63EX8GR5BGYMYPX8DD02`, `awaiting_approval`, stages `[investigate 1, diagnose 2,
+evaluate 1, remediate 1]` (the Diagnostician's first attempt did not validate and Recovery's
+repaired second one did), `dependency_break`, `self_confidence 0.95` → `0.99` with
+`evidence_fully_verified`, citations `commit_in_range` (the head sha), `dependency_bump`
+(`pip: pydantic 1.10.13 -> 2.9.2 (requirements.txt, manifest_diff)` — the rendered line, as
+the v3 prompt asks) and `quote_exists` (the `PydanticImportError` line), all `verified`;
+`open-fix-pr` on all three calls, `require_approval`, nothing downgraded, nothing executed.
+
+Free checks on the same container: `healthz` `{"status":"ok","db":"ok","version":"0.1.0"}`;
+`readyz` all four fields true; `GET /v1/runs` one row, `awaiting_approval`; the run's trace
+19 spans with components `agent, evaluator, guardrails, llm, orchestrator` and names
+including `evaluation.claim` (×3) and `policy.decide`; `GET /v1/escalations` `[]`;
+`POST /v1/approvals/apr_nope`, `GET /v1/runs/run_01J8NOPE…`, `POST /v1/replay/hallucination`
+all `404 application/problem+json`; 25 771 bytes of served bodies with zero
+credential-shaped matches. The exposure story is unchanged (no authentication, replay
+gateway, dry-run, no allowlisted repo, no persistent volume).
 
 ## Gate
 

@@ -33,8 +33,9 @@ BASE=https://shakti-agent-harness.hf.space
 curl -s -X POST $BASE/v1/replay/real_regression | jq '.final.diagnosis'
 ```
 
-That runs the whole pipeline synchronously and takes about 50 seconds, because it makes two
-real model calls. The asynchronous form returns `202` immediately and runs in the background:
+That runs the whole pipeline synchronously and takes 30–90 seconds, because it makes three
+real model calls (investigate, diagnose, remediate; the evaluate stage between the last two
+makes none). The asynchronous form returns `202` immediately and runs in the background:
 
 ```bash
 RID=$(curl -s -X POST $BASE/v1/runs -H 'content-type: application/json' -d '{
@@ -58,15 +59,21 @@ the live gateway arrives in a later phase, and asking for `"live"` returns a `50
 so. Every error is RFC 9457 `application/problem+json`.
 
 > **Heads up on quota.** The free model tier allows **20 requests per day** and one replay
-> costs two, so the demo can be exhausted by about ten requests. Nothing worse is exposed —
-> `HARNESS_DRY_RUN=true` and `HARNESS_GATEWAY=replay` are the defaults, so no live repository
-> is ever touched.
+> costs three, so the demo can be exhausted by about six requests (the day resets at
+> midnight Pacific). Nothing worse is exposed — `HARNESS_DRY_RUN=true` and
+> `HARNESS_GATEWAY=replay` are the defaults, so no live repository is ever touched, and the
+> one write the policy allows on its own (re-running a flaky job) is executed dry-run.
 
 `real_regression` is a recorded scenario: an off-by-one in a `discount()` helper makes two
 pricing tests fail. The system fetches the job list, downloads a 3,800-line job log,
 resolves the last green run on the branch, diffs against it, budgets the log down to fit a
-model's context *without ever dropping the error lines*, and returns a diagnosis that
-blames the right commit and quotes the patch line responsible.
+model's context *without ever dropping the error lines*, returns a diagnosis that blames the
+right commit and quotes the patch line responsible, **checks every quote against the log and
+the diff it came from**, and drafts a fix PR that waits for a person to approve it. The other
+scenarios are `flaky_test` (a timing assertion; the harness re-runs the job itself, up to a
+cap), `infra_timeout` (a registry outage under an empty commit), `dependency_break` (a
+pydantic 1→2 bump that fails at import) and `cold_start` (no green baseline exists, so no
+autonomous action is allowed).
 
 Everything replays from `fixtures/scenarios/` — no live repository is touched, and
 `HARNESS_DRY_RUN` defaults to `true`.
@@ -74,10 +81,33 @@ Everything replays from `fixtures/scenarios/` — no live repository is touched,
 | Endpoint | What it does |
 |---|---|
 | `POST /v1/replay/{scenario}` | Run a recorded scenario end to end, synchronously |
-| `POST /v1/runs` | Accept a run, execute it in the background (`202`) |
-| `GET /v1/runs/{run_id}` | The run outcome |
+| `POST /v1/runs` | Accept a run, execute it in the background (`202`); the same delivery twice is one run |
+| `GET /v1/runs/{run_id}` | The run outcome: bundle, diagnosis, evaluation, remediation |
 | `GET /v1/runs/{run_id}/trace` | Every span, with token usage and timings |
+| `POST /v1/approvals/{approval_id}` | Approve or reject a held plan; the policy is re-checked before anything runs |
+| `GET /v1/escalations` | Every run that stopped to ask a person, and why |
 | `GET /healthz` · `GET /readyz` | Liveness and readiness |
+
+## How well it does
+
+`scripts/eval.py` replays every scenario against its `scenario.yaml` label and exits non-zero
+if any category is wrong or any forbidden action ever executed. Two numbers, and they mean
+different things:
+
+| Run | Scenarios | Category accuracy | Refuted citations | Forbidden actions executed |
+|---|---|---|---|---|
+| `--llm gemini` (the model, 2026-09-14) | `real_regression`, `flaky_test`, `infra_timeout` | **3/3** | 0 | 0 |
+| `--llm stub` (the pipeline; canned diagnoses, real evidence checks) | all five, ×5 | 25/25 | 0 | 0 |
+
+The model run is the accuracy claim; it is three scenarios and one pass each because the
+free tier's daily quota is the binding constraint (the remaining two are queued for the next
+window — `docs/progress/phase-4/verify.md` §4 is the running record). The stub run proves
+the plumbing — the gate, the Evaluator over the fixtures' real logs and diffs, the policy,
+the forbidden set — and says nothing about the model; its report is labelled `llm: stub` so
+the two cannot be confused. Every live diagnosis so far has had all of its citations verified
+by the Evaluator; the refuted-citation path is demonstrated by fault injection
+(`HARNESS_FAULT_INJECT=diagnostician_fabricate_citation`), which escalates the run and skips
+the Remediator.
 
 ## The part worth reading
 
@@ -97,7 +127,26 @@ model never sees the adjusted number.
 
 **Structured output as a contract, not a hope.** Pydantic models are translated into the
 provider's constrained-decoding dialect, with reasoning fields ordered *first* so the model
-argues before it concludes, and the response is still re-validated on the way back.
+argues before it concludes, and the response is still re-validated on the way back. When it
+does not validate, the validation errors are fed back and the call is retried; when the
+provider rate-limits, the retry backs off with jitter; when the answer is cut off, the output
+budget grows. A malformed response is a retry, not a dead run.
+
+**Citations are checked, not trusted.** Every citation the Diagnostician makes is a claim of a
+declared kind — a quote exists in this log, this file is in the diff, this dependency moved,
+this test failed, this commit is in range — and a deterministic checker verifies each one
+against the artifact the harness actually collected. No second model is asked, because using
+a model to check a model just moves the credulity. A refuted claim overrides confidence
+entirely: the run escalates and nothing is acted on. A claim that cannot be checked because
+the artifact is missing is *unverifiable*, never refuted — absence of evidence is not evidence
+of fabrication — and it downgrades every action to needing approval instead.
+
+**Policy is data, and it is enforced twice.** What the system may do is a YAML file — which
+tools, under which diagnosis, above which confidence, within which retry cap — evaluated by a
+tiny matcher and quoted verbatim into the trace. The gateway re-checks the forbidden set on
+its own, so a plan that names `merge_pull_request` is refused even if the paperwork said
+`allow`. Plans that need a person are stored and wait; approving one re-runs the policy
+against memory as it is *now*, not as it was.
 
 ## Local development
 
