@@ -84,9 +84,15 @@ Everything replays from `fixtures/scenarios/` — no live repository is touched,
 | `POST /v1/runs` | Accept a run, execute it in the background (`202`); the same delivery twice is one run |
 | `GET /v1/runs/{run_id}` | The run outcome: bundle, diagnosis, evaluation, remediation |
 | `GET /v1/runs/{run_id}/trace` | Every span, with token usage and timings |
+| `GET /runs/{run_id}/view` | The same run as one page: a waterfall of every span and a card per stage — confidence with each adjustment itemised, every citation beside its verify verdict, the policy rule quoted from `policy.yaml` |
+| `POST /webhooks/github` | GitHub's `workflow_run` delivery: HMAC-verified over the raw bytes, filtered to completed failures, keyed so a redelivery is the same run (`202`, then background) |
 | `POST /v1/approvals/{approval_id}` | Approve or reject a held plan; the policy is re-checked before anything runs |
 | `GET /v1/escalations` | Every run that stopped to ask a person, and why |
 | `GET /healthz` · `GET /readyz` | Liveness and readiness |
+
+Open a run's `/view` after a replay: the trail from webhook to decision is one page — which
+log lines were kept, what the model claimed, which claims the Evaluator verified, which rule
+the policy matched, and what would have been written.
 
 ## How well it does
 
@@ -141,6 +147,17 @@ entirely: the run escalates and nothing is acted on. A claim that cannot be chec
 the artifact is missing is *unverifiable*, never refuted — absence of evidence is not evidence
 of fabrication — and it downgrades every action to needing approval instead.
 
+**No secret reaches the trace, by three independent mechanisms.** Every credential in
+`Settings` is a `SecretStr`, so an accidental `repr` prints stars; its resolved value is
+registered with a `Redactor` that rewrites it literally in every span attribute, log line,
+escalation payload, stored row and served body; and a regex set catches the shapes that never
+passed through `Settings` at all — a token a careless workflow echoed into its own CI log.
+`tests/test_no_secret_leak.py` plants sentinel values (one of them *in* a fixture log), runs
+every scenario, a failing escalation webhook, a forged webhook signature and a GitHub error
+body that echoes the token, and asserts zero occurrences across every span row, every
+escalation row, stdout, stderr, the raw bytes of the SQLite file and every JSON and HTML body
+served. It is a gate, and it fails when any one barrier is removed.
+
 **Policy is data, and it is enforced twice.** What the system may do is a YAML file — which
 tools, under which diagnosis, above which confidence, within which retry cap — evaluated by a
 tiny matcher and quoted verbatim into the trace. The gateway re-checks the forbidden set on
@@ -160,5 +177,13 @@ Configuration is environment-driven and validated at boot (`src/settings.py`); `
 lists every key. `HARNESS_GEMINI_API_KEY`, `HARNESS_GITHUB_TOKEN` and
 `HARNESS_GITHUB_WEBHOOK_SECRET` are required — the process refuses to start without them
 rather than failing on the first request.
+
+To drive it from a real repository: `scripts/seed_demo_repo.sh <you>/harness-demo-repo`
+seeds a repository whose four workflows fail the four recorded ways, `HARNESS_GATEWAY=github`
+plus `HARNESS_ALLOWED_REPOS=["<you>/harness-demo-repo"]` opt the service into live mode, a
+`workflow_run` webhook pointed at `/webhooks/github` delivers the failures, and
+`scripts/record_fixture.py` turns any failing run into a new replayable scenario without a
+model call. `scripts/replay.py --post-signed fixtures/scenarios/flaky_test/webhook.json`
+delivers a recorded webhook to a local server the way GitHub would, signature and all.
 
 `PLAN.md` is the normative build plan; `docs/progress/` records each phase's verification.

@@ -99,7 +99,12 @@ the scenario's own comments; none of the four canned scenarios need this.
 The **body of the file is the raw GitHub API response**, exactly as GitHub would return it
 (status-appropriate JSON), not a pre-transformed `FailureBundle`/`DiffSummary`/`JobRef`. That
 transformation is the Investigator's job at replay time; recording the untransformed
-response is what makes `record_fixture.py` a mechanical capture step rather than a rewrite.
+response is what makes `record_fixture.py` a mechanical capture step rather than a rewrite --
+since Phase 5 it *is* that step: `uv run python scripts/record_fixture.py --repo <owner/name>
+--run-id <id> --name <scenario>` drives the Investigator's deterministic collection (no model
+call) over a recording gateway, writes every read under the slug rule above
+(`gateway_replay.fixture_slug_for`), scrubs, and leaves a `scenario.yaml` with the keys the
+recording determines and a commented block for the label.
 
 Worked examples, keyed off the CI/CD tool catalog (PLAN.md lines 1170–1186), using
 `real_regression`'s ids:
@@ -173,12 +178,22 @@ Realism requirements (see `.claude/skills/fixture-new/SKILL.md` for the fuller r
       `find_last_successful_run`/`search_workflow_runs` response body, never by deleting the
       file — see PLAN.md Appendix D).
 - [ ] `scenario.yaml: name` equals the directory name.
+- [ ] The Appendix C key -- `repository.full_name` + `workflow_run.id` + `run_attempt` -- is
+      **unique across scenarios**. `POST /webhooks/github` on a replay deployment matches a
+      delivery to a scenario by that key (Phase 5), and two scenarios sharing one are, by
+      Appendix C's definition, one delivery. `cold_start` is `flaky_test`'s job and log under
+      its own run id (`501234891`) for exactly this reason.
 - [ ] `scenario.yaml: expected.commit` (when set) equals `webhook.json:
       workflow_run.head_sha` and the sha appears in the `compare_commits` recording's
       `commits[].sha`.
 - [ ] No secrets: run `uv run python scripts/scrub_fixtures.py --check` before committing
       (mandatory, not optional, if the fixture was captured with `record_fixture.py` from a
-      real repo — see PLAN.md lines ~1820).
+      real repo — see PLAN.md Appendix E). One exception, by name: `real_regression`'s log
+      carries a deliberately pasted `ghp_…` token (a careless workflow echoing its
+      `Authorization` header) so `tests/test_no_secret_leak.py` can prove the regex barrier
+      catches a credential that never passed through `Settings`. Its value is listed in
+      `scripts/scrub_fixtures.py::PLANTED_SENTINELS`; the scrub leaves it, everything else
+      credential-shaped is rewritten.
 
 ## The six scenarios
 
@@ -188,7 +203,7 @@ Realism requirements (see `.claude/skills/fixture-new/SKILL.md` for the fuller r
 | `flaky_test` | wall-clock deadline test slips on a shared runner; diff touches only formatting code | the retry rule -- denied by the fail-closed cap in Phase 2, allowed once memory is real (Phase 3) | **complete** (Phase 2) |
 | `dependency_break` | `requirements.txt` bumps pydantic 1.10.13 -> 2.9.2 and nothing else; every module fails at collection with `PydanticImportError: BaseSettings has been moved` | `dependency_bump` claim checking; `open-fix-pr` on a dependency category | **complete** (Phase 4) |
 | `infra_timeout` | pypi.org read timeout during install, cascading collection errors, **empty diff** (an empty re-trigger commit) | the empty-diff contradiction penalty; the retry rule for `infra_transient` | **complete** (Phase 2) |
-| `cold_start` | copy of `flaky_test` with `find_last_successful_run` returning an empty list | `baseline_kind: none`, auto-retry disabled | **complete** (Phase 3) |
+| `cold_start` | `flaky_test`'s job and log under its own run id, with `find_last_successful_run` returning an empty list | `baseline_kind: none`, auto-retry disabled | **complete** (Phase 3; own key since Phase 5) |
 | `hallucination` | *not a fixture.* The refuted-citation path is exercised by `HARNESS_FAULT_INJECT=diagnostician_fabricate_citation` on `real_regression` (PLAN.md Phase 4 Verify, step 2): the Diagnostician's citations are replaced after the model answers with one quoting a line no log contains | the Evaluator refuting a fabricated citation, the run escalating `evidence_refuted`, the Remediator never running | **covered by fault injection** (Phase 4) -- a fixture that *steers* a model into fabricating would test the prompt, not the Evaluator |
 
 `infra_timeout`'s empty diff is deliberate and must never be "fixed" by adding files — it is
