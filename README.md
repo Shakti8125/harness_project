@@ -156,7 +156,11 @@ passed through `Settings` at all — a token a careless workflow echoed into its
 every scenario, a failing escalation webhook, a forged webhook signature and a GitHub error
 body that echoes the token, and asserts zero occurrences across every span row, every
 escalation row, stdout, stderr, the raw bytes of the SQLite file and every JSON and HTML body
-served. It is a gate, and it fails when any one barrier is removed.
+served. It is a gate, and it fails when any one barrier is removed. Two rules keep the
+scrub from becoming corruption: the assignment-shaped heuristics (`password=…`) apply to
+plain text only, never through a base64 file body an approval may later commit; and a
+stored plan the scrub *did* alter is refused at execution, not committed with
+`***REDACTED***` in it.
 
 **Policy is data, and it is enforced twice.** What the system may do is a YAML file — which
 tools, under which diagnosis, above which confidence, within which retry cap — evaluated by a

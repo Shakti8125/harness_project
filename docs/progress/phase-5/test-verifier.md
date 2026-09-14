@@ -46,3 +46,47 @@ the `422 errors[].message` test was written asserting the *old* behaviour (a too
 passed, and was flipped together with the `_message_of` widening so the second run proved
 the fix; the leak gate was run once with `deps.SECRET_PATTERNS = ()` and failed on the
 planted token before the record above was taken.
+
+## Fix round -- gate on `9e3b4df`
+
+**PASS**, coordinator-run 2026-09-14 18:05 IST (the audit's fix round; provenance in
+`backlog.md`).
+
+```
+uv run ruff check .                     All checks passed!
+uv run mypy --strict src/harness        Success: no issues found in 17 source files
+uv run mypy src                         Found 8 errors in 4 files   (the same 8)
+uv run pytest -q                        892 passed, 2 skipped in 98s
+```
+
+854 -> 892: 38 new tests, 5 rewritten, 0 removed.
+
+| File | Tests | Pins |
+|---|---|---|
+| `tests/unit/test_baseline.py` | 9 | Appendix D's four (`branch_green`, `default_green`, `head_commit_only`, `none`) plus: `parse_subject` carries `default_branch`; the default branch is not asked twice when it is the failing branch; a failing `get_commit` is a degraded `diff`, not a crash; every baseline call carries `before` |
+| `tests/unit/test_redaction_of_execution_inputs.py` | 8 | the assignment shapes scrubbed in plain text and *not* through base64; a registered token and a vendor shape still scrubbed through base64 with the ordinary lines beside them intact; the heuristic tier is exactly the assignment shape; `carries_redaction` plain / nested / base64 / clean; the audit's `save_approval`/`get_approval` round trip keeps `DB_PASSWORD = …`; `execute_plan` refuses a placeholder-carrying argument (`invalid_args`, not retryable, the branch executed, the PR never reached) and runs a clean plan untouched |
+| `tests/unit/test_log_redaction.py` | 3 | records scrubbed at creation for our logger, a third party's and a `%(key)s` dict; installing twice keeps one factory and the latest redactor; a mismatched format string is left for `logging` |
+| `tests/unit/test_fixture_delivery_keys.py` | 2 | one Appendix C key per recorded scenario; `_delivery_key` on `inf` / `nan` / strings / `None` |
+| `tests/unit/test_seed_script_invariants.py` | 6 | `main` never force-pushed and the re-seed builds on `FETCH_HEAD`; only `demo/*` replaced; the header's `--force` semantics; `--webhook-only` and the printed next step; the secret never echoed; `bash -n` |
+| `tests/unit/test_gateway_github_writes.py` | +6 | labels reconciled on the existing PR (only the missing ones posted), nothing posted when all present, dry run reports `labels_missing`, the label failure names `#9` and its URL; the issue search sends `labels=` and pages to page 2; stops at `ISSUE_SEARCH_MAX_PAGES` and files |
+| `tests/integration/test_webhook_e2e.py` | +4 | the ignore log line carries `not_workflow_run` / `not_completed` and never the header text; `1e400`, `-1e400`, `NaN` in a numeric field are `400` |
+| `tests/test_no_secret_leak.py` | stage 5 | live mode, `HARNESS_DRY_RUN=false`, `infra_timeout` on a third attempt; the rerun `403` echoes the token under `errors[].message`; the run escalates `tool_failure` with the placeholder in the escalation; then the same scans |
+
+Rewritten: `test_open_pull_request_returns_the_open_pr_for_the_same_head` (the existing
+PR gets the labels it lacks); `test_completed_failure_is_accepted` and
+`test_everything_else_is_ignored` (the verdict `code`); `test_recording_replays_like_the_committed_scenario`
+(`commit` is a commented hint); `test_scrub_rewrites_credentials_and_keeps_the_planted_sentinel`
+(the script's own `build_redactor`, which carries the heuristic tier).
+
+## Ordering, for the record
+
+The new tests were run against `deef51e` before any fix: 20 failed, 48 passed across the
+eight importable files, with `test_redaction_of_execution_inputs.py` and
+`test_log_redaction.py` failing at import (`HEURISTIC_SECRET_PATTERNS`,
+`install_log_redaction` did not exist). The four `test_baseline.py` tests that passed on
+the old tree are the ones the old chain already satisfied (`branch_green`, `none`, the
+single-call case, `before`); `default_green`, `head_commit_only`, the degraded-diff edge
+and `parse_subject`'s `default_branch` failed. The leak test's stage 5 was proved to bite
+by running it with the log record factory disabled (a scratch module monkeypatching
+`deps.install_log_redaction` to a no-op): `sentinel(s) found in log records:
+{'ghp_SENTINEL…01': 2}` -- the two lines finding 4 named -- then passes with it on.

@@ -156,3 +156,25 @@ exit 0
 
 Recorded in `test-verifier.md`: ruff clean, `mypy --strict src/harness` clean (17 files),
 `mypy src` at the 8 pre-existing errors, **854 passed, 2 skipped**.
+
+## Fix round (2026-09-14, `9e3b4df`)
+
+The audit's fix round changes none of the block's expected values. What it changes
+about the steps above, so the record stays honest:
+
+- **Step 1**: the component list is unchanged (eight). A replay of `cold_start` now makes
+  one more read (`get_commit`, from the new fixture) and its trace one more
+  `gateway.invoke` span; `baseline_kind` stays `none`, nothing degraded.
+- **Step 2**: `tests/test_no_secret_leak.py` has a fifth stage -- a live-mode write whose
+  `403` echoes the token and escalates `tool_failure` -- so the log-record scan covers the
+  two lines the audit found unscrubbed. With log redaction off it fails on exactly those
+  (`test-verifier.md`, "Ordering"). Still `1 passed`, now in 13.5 s.
+- **Steps 3-4**: unchanged; the in-process twins pass on the fixed tree.
+- **Step 5**: the seed script's `--force` and `--webhook-only` semantics changed
+  (amendment 14); the branch-push scenarios now resolve to `default_green` (amendment
+  12), which is what makes the step's `real_regression` reachable at all.
+
+The stub gate on the fixed tree, 18:02 IST: `eval.py --runs 1 --concurrency 1 --llm stub`
+-> `category_accuracy 1.00 (5/5)`, `forbidden_actions_executed 0`, `cold_start 1/1
+correct, 0 label miss(es), 1 escalated` (`policy_denied` by the cold-start clause, as
+labelled), no degraded component on any row. `scrub_fixtures.py --check`: clean.
