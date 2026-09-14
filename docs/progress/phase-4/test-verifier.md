@@ -1,11 +1,10 @@
 # Phase 4 — gate verdict
 
 **Verdict: PASS** (coordinator-run, as in Phases 2 and 3 — see `dispatch.md`, "How this
-phase is being run"; the audit in `review.md` is the independent pass), **with two live
-Verify steps pending the provider's quota reset** (`verify.md`, steps 3a and 3c — both
-pinned in-process, both to be re-run before the tag).
-
-Recorded 2026-09-14 at `dbc63ab`.
+phase is being run"; the audit in `review.md` is the independent pass). Recorded
+2026-09-14 at `dbc63ab`; the fix round (last section) and the two live Verify steps that
+waited for the provider's quota reset (`verify.md` 3a and 3c, run 13:15 IST on `d205151`)
+close it out with the same verdict.
 
 ## Gate
 

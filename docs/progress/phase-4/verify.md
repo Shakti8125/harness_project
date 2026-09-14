@@ -9,13 +9,17 @@ the real Gemini key from `.env` (`HARNESS_ENV=dev`, `HARNESS_GATEWAY=replay`,
 addressed as `localhost:8000` exactly as the block spells it (it resolved to the uvicorn
 process; the Phase 3 hazard was a container that is gone).
 
-**Live quota spent: 3 model calls** (step 2: two; step 3a: one before the provider itself
-answered 429). The rest of the block is free by construction: `llm_bad_json` answers never
+**Live quota spent: 3 model calls on 2026-09-14 00:35–00:50 IST** (step 2: two; step 3a's
+first attempt: one, before the provider itself answered 429 — the daily cap, see 3a) and
+**6 more at 13:15–13:20 IST**, after the reset, on the post-fix tree `d205151` (3a and 3c,
+three each). The rest of the block is free by construction: `llm_bad_json` answers never
 leave the process, and step 4 ran under `--llm stub`.
 
 The Verify block as amended by this phase's PLAN.md note (item 14): step 2's `stages` list
 carries the evaluate stage and the gated stage's `null`; step 3's `attempts` is per agent;
-the `sqlite3` line reads `invalid_output|db`; step 4's gate is the stub run.
+the `sqlite3` line reads `invalid_output|db`; step 4's gate is the stub run. **Every step
+passes**; 3a and 3c were run on the post-fix tree, the others on the build commit (the fix
+round changes none of their expected values — `backlog.md`, "Audit provenance").
 
 ## Step 1 — a fabricated citation is caught and blocks remediation
 
@@ -75,16 +79,26 @@ the body, run `run_01M2E2MPF9KT5H58VVT8GR6ZRT`:
 
 ## Step 3 — Recovery recovers
 
-### 3a `llm_bad_json:2` — the fault worked; the provider's quota did not (re-run pending)
+### 3a `llm_bad_json:2` — recovers
 
-`POST /v1/replay/flaky_test` (19.5 s):
+Re-run 2026-09-14 13:15 IST on `d205151`, `POST /v1/replay/flaky_test` (54.0 s, three
+model calls, 40 338 tokens):
 
 ```
-{"status": "escalated", "attempts": 4}
+{"status": "completed", "attempts": 3}
 ```
 
-Expected `{"status":"completed","attempts":3}`. What actually happened, from the body and
-the `llm.attempt` spans of `run_01M2E2P2C3P754TPVW5T2J8YA9`:
+**Matches.** `run_01M2FDW8TE445JFZWHE3S7GT2W`: `stages` `[investigate ok 3, diagnose ok 3,
+evaluate ok 1, remediate ok 3]` — every model-backed agent's first two attempts were the
+injected non-JSON answer (zero tokens), the third real; the evaluate stage makes no call.
+The real diagnosis cited four claims, all `verified` (`pass`, +0.05, `final_confidence
+0.90`, `flaky_test`); the retry-suspected-flaky rule allowed the rerun on a first sighting
+and it executed dry-run (`rerun_failed_jobs ok dry_run:true`); `degraded_components: []`.
+
+*The first attempt, 00:45 IST on `dbc63ab`, is kept below because it is how the daily
+cap was discovered.* `POST /v1/replay/flaky_test` (19.5 s): `{"status": "escalated",
+"attempts": 4}`. From the body and the `llm.attempt` spans of
+`run_01M2E2P2C3P754TPVW5T2J8YA9`:
 
 | Stage | Attempts | What each was |
 |---|---|---|
@@ -94,12 +108,12 @@ the `llm.attempt` spans of `run_01M2E2P2C3P754TPVW5T2J8YA9`:
 So the fault did exactly what item 9 says — two junk answers per agent, none reaching the
 provider, the Investigator recovering with `attempts == 3` — and the third attempt of the
 Diagnostician met the free tier's daily cap (Phase 3's 15 verify calls and the Space check's
-3 were made in the same Pacific-time day as today's 3). The `rate_limited` escalation is the
-Phase 1 path working as designed. **This step is re-run once the quota resets; its expected
-values are pinned in-process by
+3 were made in the same Pacific-time day as that night's 3; the cap resets at midnight
+Pacific, ~12:30 IST). The `rate_limited` escalation is the Phase 1 path working as designed.
+The expected values are also pinned in-process by
 `tests/integration/test_evaluator_e2e.py::test_llm_bad_json_2_recovers_with_three_attempts_
 and_one_real_call_per_agent` (`[3, 3, 1, 3]` attempts, three calls to the model behind the
-fault).**
+fault).
 
 ### 3b `llm_bad_json:9` — never recovers, spends nothing
 
@@ -125,12 +139,22 @@ Expected `invalid_output|log` — **matches as amended** (item 14): since Phase 
 filed by `save_run` on the `db` channel and the `channel` column names the row's own
 channel; `log` (and `webhook`, when configured) are on the record's `channels` list.
 
-### 3c `llm_429:3` — pending quota
+### 3c `llm_429:3` — completes on the fourth attempt
 
-Not run: it needs three real calls (the fourth attempt of each agent) and the quota was
-already exhausted at 3a. Pinned in-process by `test_llm_429_3_completes_on_the_fourth_attempt`
-(`[4, 4, 1, 4]` attempts, twelve `llm.attempt` spans of which nine carry an error, three
-calls to the model behind the fault). **Re-run once the quota resets.**
+Run 2026-09-14 13:18 IST on `d205151`, `POST /v1/replay/flaky_test` (92.1 s — three
+agents × three jittered backoffs of up to 0.5, 1 and 2 s, plus the three real calls; three
+model calls, 41 785 tokens):
+
+```
+completed
+```
+
+**Matches.** `run_01M2FDYD030GSGRFJPN4ENFHKA`: `stages` `[investigate ok 4, diagnose ok 4,
+evaluate ok 1, remediate ok 4]`; twelve `llm.attempt` spans on the run, nine carrying
+`LlmRateLimited` (the injected 429s, `retry_after_s` unset so the backoff path, not the
+stated-delay path, was exercised) and three clean; the diagnosis `flaky_test` at 0.99 with
+four claims verified; the retry executed dry-run. Pinned in-process by
+`test_llm_429_3_completes_on_the_fourth_attempt` (`[4, 4, 1, 4]`, 12 spans / 9 errors).
 
 ## Step 4 — the eval harness
 
