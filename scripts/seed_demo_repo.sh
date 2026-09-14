@@ -264,9 +264,17 @@ wait_for_run() {  # workflow branch
   echo "$workflow on $branch: $conclusion"
 }
 
+dispatch() {  # workflow [-f key=value ...]  -- GitHub indexes a new workflow file a few seconds after the push
+  local tries=0
+  until gh workflow run "$@" -R "$REPO" 2>/dev/null; do
+    tries=$((tries + 1))
+    [[ $tries -ge 12 ]] && { echo "could not dispatch $1 after $tries tries" >&2; return 1; }
+    sleep 10
+  done
+}
 sleep 5
-gh workflow run flaky.yml -R "$REPO" -f load=low
-gh workflow run infra.yml -R "$REPO" -f index_url=https://pypi.org/simple
+dispatch flaky.yml -f load=low
+dispatch infra.yml -f index_url=https://pypi.org/simple
 wait_for_run regression.yml main
 wait_for_run dependency.yml main
 wait_for_run flaky.yml main
