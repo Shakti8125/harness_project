@@ -4,6 +4,10 @@ description: >
   wall-clock assertion slipping by 0.2s on a shared runner) on a workflow that has NEVER
   had a successful run on this branch or the default branch: find_last_successful_run
   returns an empty list, so there is no baseline, no diff, and "what changed" is unknown.
+  The branch IS the default branch and the head commit is a history root (the get_commit
+  fixture has parents: [], the way a squashed or force-pushed history looks), so Appendix
+  D's fallbacks -- the default branch's last green, the head commit's own files -- have
+  nothing to offer either: baseline_kind is none, not head_commit_only.
   PLAN.md Appendix D: the Diagnostician must not classify real_regression on diff evidence
   it does not have, and the harness must not take an autonomous action against a repo it
   has never seen succeed -- the retry is denied by the cold_start clause, not by the cap.

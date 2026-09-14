@@ -56,15 +56,14 @@ sys.path.insert(0, str(ROOT))
 
 from src.api.deps import (  # noqa: E402
     FIXTURES_ROOT,
-    SECRET_PATTERNS,
     AppContext,
-    build_secret_registry,
+    build_redactor,
 )
 from src.api.main import idempotency_key_for  # noqa: E402
 from src.harness.context_manager import ContextBudget, ContextManager  # noqa: E402
 from src.harness.contracts import RunOutcome, RunRequest  # noqa: E402
 from src.harness.llm import GeminiClient, LlmClient  # noqa: E402
-from src.harness.observability import Redactor, TraceRecorder  # noqa: E402
+from src.harness.observability import TraceRecorder  # noqa: E402
 from src.integrations.cicd.agents.investigator import parse_subject  # noqa: E402
 from src.integrations.cicd.wiring import INTEGRATION, load_policy_spec  # noqa: E402
 from src.settings import Settings, get_settings  # noqa: E402
@@ -186,7 +185,7 @@ def build_context(settings: Settings, llm: LlmClient, db_path: Path) -> AppConte
     settings *with* the parsed fault -- so `HARNESS_FAULT_INJECT=sqlite_locked` reaches
     it exactly as it does in the API (Phase 4 audit finding 5).
     """
-    redactor = Redactor(build_secret_registry(settings), SECRET_PATTERNS)
+    redactor = build_redactor(settings)
     scoped = settings.model_copy(update={"database_path": db_path})
     return AppContext(
         settings=scoped,

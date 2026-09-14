@@ -32,7 +32,7 @@ import logging
 import re
 import secrets
 import sqlite3
-from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -192,13 +192,31 @@ _BASE64_TEXT: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
 
 
 class Redactor:
-    """Removes registered secrets and pattern-matched credentials from any JSON value."""
+    """Removes registered secrets and pattern-matched credentials from any JSON value.
 
-    def __init__(self, registry: SecretRegistry, patterns: Sequence[re.Pattern[str]]) -> None:
+    Two tiers of pattern. ``patterns`` are credential *shapes* -- a vendor's token prefix,
+    a PEM block -- precise enough to apply everywhere, including through a base64
+    encoding. ``heuristic_patterns`` are *assignment* shapes (``password=…``,
+    ``api_key: …``) that catch a credential a log line echoed but also match the ordinary
+    text of a source file; they apply to plain text only. A base64 body may be an
+    execution input -- a file an agent drafted, stored with an approval and committed
+    later -- and a heuristic that rewrites ``DB_PASSWORD = env.get("DB_PASSWORD")`` inside
+    it is not redaction, it is corruption of what a person approved (Phase 5 audit
+    finding 1).
+    """
+
+    def __init__(
+        self,
+        registry: SecretRegistry,
+        patterns: Sequence[re.Pattern[str]],
+        *,
+        heuristic_patterns: Sequence[re.Pattern[str]] = (),
+    ) -> None:
         self._registry = registry
         self._patterns = tuple(patterns)
+        self._heuristic_patterns = tuple(heuristic_patterns)
 
-    def _scrub_str(self, value: str) -> str:
+    def _scrub_str(self, value: str, *, through_encoding: bool = False) -> str:
         # Longest first: when one registered secret is a substring of another, replacing
         # the shorter one first would leave the tail of the longer one in the output.
         for secret in sorted(self._registry.registered_values(), key=len, reverse=True):
@@ -206,6 +224,9 @@ class Redactor:
                 value = value.replace(secret, REDACTION_PLACEHOLDER)
         for pattern in self._patterns:
             value = pattern.sub(REDACTION_PLACEHOLDER, value)
+        if not through_encoding:
+            for pattern in self._heuristic_patterns:
+                value = pattern.sub(REDACTION_PLACEHOLDER, value)
         if _BASE64_TEXT.fullmatch(value):
             value = self._scrub_base64(value)
         return value
@@ -217,15 +238,17 @@ class Redactor:
         inside it is invisible to every pattern above while being one decode away from
         anyone holding the trace or the database file (Phase 3 audit finding 8). Nothing
         here knows that field name: any string that is entirely base64 and decodes to
-        UTF-8 text gets the same scrub as plain text. A payload with nothing to remove is
-        returned byte-for-byte, so an encoding that is later executed is unchanged unless
-        it carried a credential -- which is exactly the case where changing it is right.
+        UTF-8 text gets the registry and the shape patterns -- not the heuristics, see
+        the class docstring. A payload with nothing to remove is returned byte-for-byte,
+        so an encoding that is later executed is unchanged unless it carried a
+        credential -- which is exactly the case where changing it is right, and
+        :func:`carries_redaction` is how the executor notices that it was.
         """
         try:
             decoded = base64.b64decode(value, validate=True).decode("utf-8")
         except (binascii.Error, ValueError):
             return value
-        scrubbed = self._scrub_str(decoded)
+        scrubbed = self._scrub_str(decoded, through_encoding=True)
         if scrubbed == decoded:
             return value
         return base64.b64encode(scrubbed.encode("utf-8")).decode("ascii")
@@ -240,6 +263,78 @@ class Redactor:
         if isinstance(value, list):
             return [self.scrub(item) for item in value]
         return value
+
+
+def carries_redaction(value: JsonValue) -> bool:
+    """True when ``value`` -- recursively, and through a base64 encoding -- holds the
+    placeholder the :class:`Redactor` writes.
+
+    The question an executor of a *stored* plan asks before running it: a placeholder in
+    a tool argument means the scrub at rest changed the argument, so the plan is no
+    longer the one that was approved. The right answer is to refuse loudly, never to
+    commit ``***REDACTED***`` into a repository as if a person had written it.
+    """
+    if isinstance(value, str):
+        if REDACTION_PLACEHOLDER in value:
+            return True
+        if _BASE64_TEXT.fullmatch(value):
+            try:
+                decoded = base64.b64decode(value, validate=True).decode("utf-8")
+            except (binascii.Error, ValueError):
+                return False
+            return REDACTION_PLACEHOLDER in decoded
+        return False
+    if isinstance(value, dict):
+        return any(carries_redaction(v) for v in value.values())
+    if isinstance(value, list):
+        return any(carries_redaction(item) for item in value)
+    return False
+
+
+# --- log lines are a sink too ----------------------------------------------------------
+#
+# PLAN.md "Secrets never reach the trace", mechanism 2: every string written to a span
+# attribute, a log line, an escalation payload or a stored row goes through the Redactor.
+# Spans, payloads and rows are written by code that holds a Redactor; log lines are
+# written by every module in the process, third parties included, so the scrub has to
+# sit where every record is born: the log record factory. One factory, installed once;
+# the redactor it consults is the most recently installed one (Phase 5 audit finding 4).
+
+_log_redactor: Redactor | None = None
+_base_record_factory: Callable[..., logging.LogRecord] | None = None
+
+
+def _redacting_record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
+    assert _base_record_factory is not None
+    record = _base_record_factory(*args, **kwargs)
+    redactor = _log_redactor
+    if redactor is None:
+        return record
+    try:
+        message = record.getMessage()
+    except (TypeError, ValueError, KeyError):
+        # A format string that does not match its arguments is the caller's bug; leave
+        # the record for `logging` to report through its own `handleError` path.
+        return record
+    record.msg = redactor.scrub(message)
+    record.args = ()
+    return record
+
+
+def install_log_redaction(redactor: Redactor) -> None:
+    """Route every log record in the process through ``redactor`` at creation.
+
+    Idempotent: the factory is wrapped once, and a later call only swaps the redactor it
+    consults (a test builds many contexts; the newest sentinels are the ones that
+    matter). Pre-formats the message so the scrub sees what a handler would print --
+    ``args`` are folded in and cleared. The formatted traceback of ``exc_info`` is
+    produced later by the formatter and is not covered here (backlog).
+    """
+    global _log_redactor, _base_record_factory
+    _log_redactor = redactor
+    if _base_record_factory is None:
+        _base_record_factory = logging.getLogRecordFactory()
+        logging.setLogRecordFactory(_redacting_record_factory)
 
 
 class _LiveSpan:

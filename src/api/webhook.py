@@ -66,12 +66,25 @@ def verify_signature(secret: str, body: bytes, header: str | None) -> bool:
     return hmac.compare_digest(expected.encode("ascii"), match.group(1).lower().encode("ascii"))
 
 
+VerdictCode = Literal[
+    "accepted", "not_json_object", "not_workflow_run", "not_completed", "no_workflow_run",
+    "not_failure",
+]
+
+
 @dataclass(frozen=True)
 class EventVerdict:
-    """What the route does with a delivery, and why -- one line for the log."""
+    """What the route does with a delivery, and why.
+
+    `code` names the rule that fired and is what the log line carries; `reason` quotes
+    the delivery's own values (the event header, the `action`) and is for the problem
+    document a *malformed* delivery gets back. A caller-chosen header value never
+    reaches a log line (Phase 5 audit finding 5; dispatch decision 6).
+    """
 
     outcome: Literal["accept", "ignore", "malformed"]
     reason: str
+    code: VerdictCode
 
 
 def classify_event(event: str | None, payload: object) -> EventVerdict:
@@ -83,18 +96,24 @@ def classify_event(event: str | None, payload: object) -> EventVerdict:
     -- a `204`, so GitHub records a clean delivery and nothing runs.
     """
     if not isinstance(payload, dict):
-        return EventVerdict("malformed", "the body is not a JSON object")
+        return EventVerdict("malformed", "the body is not a JSON object", "not_json_object")
     if event != ACCEPTED_EVENT:
-        return EventVerdict("ignore", f"event {event!r} is not {ACCEPTED_EVENT!r}")
+        return EventVerdict(
+            "ignore", f"event {event!r} is not {ACCEPTED_EVENT!r}", "not_workflow_run"
+        )
     if payload.get("action") != ACCEPTED_ACTION:
-        return EventVerdict("ignore", f"action {payload.get('action')!r} is not 'completed'")
+        return EventVerdict(
+            "ignore", f"action {payload.get('action')!r} is not 'completed'", "not_completed"
+        )
     run = payload.get("workflow_run")
     if not isinstance(run, dict):
-        return EventVerdict("malformed", "the body carries no workflow_run object")
+        return EventVerdict(
+            "malformed", "the body carries no workflow_run object", "no_workflow_run"
+        )
     conclusion = run.get("conclusion")
     if conclusion != ACCEPTED_CONCLUSION:
-        return EventVerdict("ignore", f"conclusion {conclusion!r} is not 'failure'")
-    return EventVerdict("accept", "workflow_run completed with conclusion failure")
+        return EventVerdict("ignore", f"conclusion {conclusion!r} is not 'failure'", "not_failure")
+    return EventVerdict("accept", "workflow_run completed with conclusion failure", "accepted")
 
 
 def delivery_id(header: str | None) -> str | None:

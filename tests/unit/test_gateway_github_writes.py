@@ -234,9 +234,11 @@ def _pull(number: int = 7) -> dict[str, object]:
 
 @respx.mock
 async def test_open_pull_request_returns_the_open_pr_for_the_same_head(respx_mock: respx.MockRouter) -> None:
-    """Appendix C: never two PRs for one signature."""
+    """Appendix C: never two PRs for one signature. The existing PR carries no labels, so
+    the ones requested are applied to it (finding 6's reconcile) -- still no second PR."""
     listing = respx_mock.get(f"{API}/pulls").mock(return_value=httpx.Response(200, json=[_pull(7)]))
     post = respx_mock.post(f"{API}/pulls").mock(return_value=httpx.Response(201, json=_pull(8)))
+    labels = respx_mock.post(f"{API}/issues/7/labels").mock(return_value=httpx.Response(200, json=[]))
     gw = gateway(dry_run=False)
     result = await gw.invoke(
         call("open_pull_request", head=BRANCH, base="main", title="t", body="b", draft=True, labels=["agent-generated"]),
@@ -244,7 +246,7 @@ async def test_open_pull_request_returns_the_open_pr_for_the_same_head(respx_moc
     )
     assert result.ok and result.cached is True
     assert result.data is not None and result.data["number"] == 7 and result.data["already_exists"] is True
-    assert post.call_count == 0
+    assert post.call_count == 0 and labels.call_count == 1
     assert listing.calls[0].request.url.params["head"] == f"octo-org:{BRANCH}"
     assert listing.calls[0].request.url.params["state"] == "open"
     await gw.aclose()
@@ -305,6 +307,81 @@ async def test_open_pull_request_422_with_the_phrase_in_message_is_success(respx
     await gw.aclose()
 
 
+@respx.mock
+async def test_open_pull_request_reconciles_missing_labels_on_the_existing_pr(respx_mock: respx.MockRouter) -> None:
+    """Phase 5 audit finding 6: a label POST that failed after the PR was created left an
+    unlabelled agent PR that no retry ever labelled. The pre-check path now applies the
+    labels the existing PR lacks, so the next attempt completes the obligation."""
+    respx_mock.get(f"{API}/pulls").mock(
+        return_value=httpx.Response(200, json=[{**_pull(7), "labels": [{"name": "needs-review"}]}])
+    )
+    post = respx_mock.post(f"{API}/pulls").mock(return_value=httpx.Response(201, json=_pull(8)))
+    labels = respx_mock.post(f"{API}/issues/7/labels").mock(return_value=httpx.Response(200, json=[]))
+    gw = gateway(dry_run=False)
+    result = await gw.invoke(
+        call("open_pull_request", head=BRANCH, base="main", title="t", body="b", labels=["agent-generated", "needs-review"]),
+        decision("open_pull_request"),
+    )
+    assert result.ok and result.cached is True and post.call_count == 0
+    assert result.data is not None and result.data["already_exists"] is True and result.data["number"] == 7
+    import json
+
+    assert json.loads(labels.calls[0].request.content) == {"labels": ["agent-generated"]}, "only the missing label"
+    assert result.data["labels"] == ["needs-review", "agent-generated"], "the PR's labels as they now stand"
+    assert result.data["labels_applied"] == ["agent-generated"]
+    await gw.aclose()
+
+
+@respx.mock
+async def test_open_pull_request_existing_pr_with_every_label_posts_nothing(respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(f"{API}/pulls").mock(
+        return_value=httpx.Response(200, json=[{**_pull(7), "labels": [{"name": "agent-generated"}]}])
+    )
+    labels = respx_mock.post(f"{API}/issues/7/labels").mock(return_value=httpx.Response(200, json=[]))
+    gw = gateway(dry_run=False)
+    result = await gw.invoke(
+        call("open_pull_request", head=BRANCH, base="main", title="t", body="b", labels=["agent-generated"]),
+        decision("open_pull_request"),
+    )
+    assert result.ok and result.data is not None and result.data["labels_applied"] == []
+    assert labels.call_count == 0
+    await gw.aclose()
+
+
+@respx.mock
+async def test_open_pull_request_dry_run_reports_the_labels_an_existing_pr_lacks(respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(f"{API}/pulls").mock(return_value=httpx.Response(200, json=[_pull(7)]))
+    labels = respx_mock.post(f"{API}/issues/7/labels").mock(return_value=httpx.Response(200, json=[]))
+    gw = gateway(dry_run=True)
+    result = await gw.invoke(
+        call("open_pull_request", head=BRANCH, base="main", title="t", body="b", labels=["agent-generated"]),
+        decision("open_pull_request"),
+    )
+    assert result.ok and result.dry_run and result.data is not None
+    assert result.data["already_exists"] is True and result.data["labels_missing"] == ["agent-generated"]
+    assert labels.call_count == 0
+    await gw.aclose()
+
+
+@respx.mock
+async def test_open_pull_request_label_failure_names_the_pr_it_left_behind(respx_mock: respx.MockRouter) -> None:
+    """The PR exists when the label call fails; the error says which one, so a person and
+    the next attempt's pre-check both find it."""
+    respx_mock.get(f"{API}/pulls").mock(return_value=httpx.Response(200, json=[]))
+    respx_mock.post(f"{API}/pulls").mock(return_value=httpx.Response(201, json=_pull(9)))
+    respx_mock.post(f"{API}/issues/9/labels").mock(return_value=httpx.Response(403, json={"message": "Resource not accessible by integration"}))
+    gw = gateway(dry_run=False)
+    result = await gw.invoke(
+        call("open_pull_request", head=BRANCH, base="main", title="t", body="b", labels=["agent-generated"]),
+        decision("open_pull_request"),
+    )
+    assert not result.ok and result.error is not None
+    assert result.error.kind == "auth" and result.error.http_status == 403
+    assert "#9" in result.error.message and f"https://github.com/{REPO}/pull/9" in result.error.message
+    assert "agent-generated" in result.error.message
+    await gw.aclose()
+
+
 # ---------------------------------------------------------------------------
 # create_issue
 # ---------------------------------------------------------------------------
@@ -350,6 +427,50 @@ async def test_create_issue_files_a_new_issue_with_the_marker(respx_mock: respx.
     sent = json.loads(post.calls[0].request.content)
     assert sent["body"].endswith(ISSUE_SIGNATURE_MARKER.format(signature_id="sig_abc"))
     assert sent["labels"] == ["agent-triage"]
+    await gw.aclose()
+
+
+@respx.mock
+async def test_create_issue_filters_by_label_and_pages_past_the_first_hundred(respx_mock: respx.MockRouter) -> None:
+    """Phase 5 audit finding 7: one page of 100 open issues, no `labels` filter, so a busy
+    repository's older marked issue was missed and a duplicate filed. The listing now
+    carries the labels (dispatch decision 7) and follows `page=` until a short page."""
+    marker = ISSUE_SIGNATURE_MARKER.format(signature_id="sig_abc")
+    filler = [{"number": n, "html_url": "x", "title": f"issue {n}", "body": "unrelated"} for n in range(100, 200)]
+    listing = respx_mock.get(f"{API}/issues")
+    listing.side_effect = [
+        httpx.Response(200, json=filler),
+        httpx.Response(200, json=[{"number": 4, "html_url": f"https://github.com/{REPO}/issues/4", "title": "old", "body": f"earlier\n\n{marker}"}]),
+    ]
+    comment = respx_mock.post(f"{API}/issues/4/comments").mock(return_value=httpx.Response(201, json={}))
+    post = respx_mock.post(f"{API}/issues").mock(return_value=httpx.Response(201, json={}))
+    gw = gateway(dry_run=False)
+    result = await gw.invoke(
+        call("create_issue", title="t", body="again", labels=["agent-triage", "ci"], signature_id="sig_abc"),
+        decision("create_issue"),
+    )
+    assert result.ok and result.data is not None and result.data["number"] == 4 and result.data["commented"] is True
+    assert comment.call_count == 1 and post.call_count == 0
+    assert listing.call_count == 2
+    first, second = (c.request.url.params for c in listing.calls)
+    assert first["labels"] == "agent-triage,ci" and first["state"] == "open" and first["per_page"] == "100"
+    assert first.get("page", "1") == "1" and second["page"] == "2"
+    await gw.aclose()
+
+
+@respx.mock
+async def test_create_issue_stops_paging_at_the_cap_and_files(respx_mock: respx.MockRouter) -> None:
+    from src.integrations.cicd.gateway_github import ISSUE_SEARCH_MAX_PAGES
+
+    filler = [{"number": n, "html_url": "x", "title": "t", "body": "unrelated"} for n in range(100, 200)]
+    listing = respx_mock.get(f"{API}/issues").mock(return_value=httpx.Response(200, json=filler))
+    post = respx_mock.post(f"{API}/issues").mock(
+        return_value=httpx.Response(201, json={"number": 10, "html_url": f"https://github.com/{REPO}/issues/10"})
+    )
+    gw = gateway(dry_run=False)
+    result = await gw.invoke(call("create_issue", title="t", body="b", labels=["agent-triage"], signature_id="sig_abc"), decision("create_issue"))
+    assert result.ok and result.data is not None and result.data["filed"] is True
+    assert listing.call_count == ISSUE_SEARCH_MAX_PAGES and post.call_count == 1
     await gw.aclose()
 
 

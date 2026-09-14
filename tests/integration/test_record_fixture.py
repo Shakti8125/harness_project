@@ -71,7 +71,7 @@ def mock_github(router: respx.MockRouter) -> None:
         return_value=httpx.Response(200, content=log.encode(), headers={"content-type": "text/plain"})
     )
     router.get(f"{API}/actions/workflows/9001/runs").mock(
-        return_value=httpx.Response(200, json=_fixture("GET_repos-octo-org-harness-demo-repo-actions-workflows-9001-runs.json"))
+        return_value=httpx.Response(200, json=_fixture("GET_repos-octo-org-harness-demo-repo-actions-workflows-9001-runs-branch-main.json"))
     )
     router.get(f"{API}/compare/{BASE}...{HEAD}").mock(
         return_value=httpx.Response(200, json=_fixture(f"GET_repos-octo-org-harness-demo-repo-compare-{BASE}-{HEAD}.json"))
@@ -132,8 +132,13 @@ async def test_recording_replays_like_the_committed_scenario(
     # The label file carries only what the recording determines.
     label = yaml.safe_load((recorded / "scenario.yaml").read_text(encoding="utf-8"))
     assert label["name"] == "recorded_regression"
-    assert label["expected"] == {"commit": HEAD, "baseline_kind": "branch_green", "cold_start": False}
-    assert "# category:" in (recorded / "scenario.yaml").read_text(encoding="utf-8")
+    # Phase 5 audit finding 8: `commit` is `Diagnosis.suspected_commit_sha`, a label the
+    # eval scores -- a recorded flaky or infra scenario with the head sha filled in would
+    # fail the gate on `commit: None != <head>`. It is offered as a commented hint, only.
+    assert label["expected"] == {"baseline_kind": "branch_green", "cold_start": False}
+    yaml_text = (recorded / "scenario.yaml").read_text(encoding="utf-8")
+    assert "# category:" in yaml_text
+    assert f"# commit: {HEAD}" in yaml_text
 
     # And it replays: the same job, the same diff, the same anchors as the committed one.
     ours = await _collect(context, recorded)
@@ -180,8 +185,7 @@ def test_scrub_rewrites_credentials_and_keeps_the_planted_sentinel(tmp_path: Pat
         "api_key=supersecretvalue1234 goes\n"
         "token: *** (already masked, too short to match)\n"
     )
-    redactor = Redactor(build_secret_registry(get_settings()), SECRET_PATTERNS)
-    out = scrub.scrub_text(text, redactor)
+    out = scrub.scrub_text(text, scrub.build_redactor())
     assert f"planted {planted} stays" in out
     assert "ghp_" + "a" * 36 not in out and f"echoed {REDACTION_PLACEHOLDER} goes" in out
     assert "PRIVATE KEY" not in out and "MIIEow" not in out

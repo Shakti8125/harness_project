@@ -92,6 +92,7 @@ class RecordingToolGateway:
         self.out = out
         self.redactor = redactor
         self.recorded: list[Path] = []
+        self.tail_capped_logs: list[int] = []
 
     def catalog(self) -> list[ToolSpec]:
         return self.inner.catalog()
@@ -107,6 +108,11 @@ class RecordingToolGateway:
                 self._write(
                     self.out / "logs" / f"job_{int(args['job_id'])}.txt", content
                 )
+            if result.data.get("head_dropped"):
+                # The live gateway keeps the LAST max_bytes; the recording is that tail,
+                # and a replay of it reads `truncated: false` because the file is short
+                # (Phase 5 audit finding 8). Recorded as a fact about the fixture.
+                self.tail_capped_logs.append(int(args["job_id"]))
             return result
         slug = fixture_slug_for(self.repo, call.tool, args)
         if slug is not None:
@@ -128,7 +134,12 @@ class RecordingToolGateway:
 def scenario_yaml(name: str, subject: dict[str, Any], collected: Any) -> str:
     """`scenario.yaml` with only the keys the recording determines; the label is a
     person's call and is left as a commented block (`fixtures/README.md`: only assert
-    what the scenario genuinely determines)."""
+    what the scenario genuinely determines).
+
+    `commit` is part of the label: it is `Diagnosis.suspected_commit_sha`, which the eval
+    scores, and a flaky or infra failure's honest value is `null` (Phase 5 audit finding
+    8). The head sha is offered as a commented hint for the person filling it in.
+    """
     parsed = parse_subject(subject)
     head = parsed["head_sha"]
     baseline_kind = collected.diff.baseline_kind
@@ -147,8 +158,8 @@ def scenario_yaml(name: str, subject: dict[str, Any], collected: Any) -> str:
         '  #   - "..."\n'
         "  # action: retry | open_fix_pr | open_revert_pr | file_ticket | escalate\n"
         "  # effect: allow | require_approval | deny\n"
+        f"  # commit: {head}   # the head sha -- keep ONLY if the diagnosis should blame it; null for flaky/infra\n"
         "  # --- determined by the recording ---\n"
-        f"  commit: {head}\n"
         f"  baseline_kind: {baseline_kind}\n"
         f"  cold_start: {'true' if cold_start else 'false'}\n"
     )
@@ -198,9 +209,14 @@ async def record(
     finally:
         await gateway.aclose()
 
-    (out / "scenario.yaml").write_text(
-        scenario_yaml(name, subject, collected), encoding="utf-8", newline="\n"
-    )
+    label = scenario_yaml(name, subject, collected)
+    if gateway.tail_capped_logs:
+        label += (
+            "# NOTE: the recorded log(s) for job(s) "
+            f"{gateway.tail_capped_logs} are the LAST {investigator.max_log_bytes} bytes the live\n"
+            "# gateway kept, not the whole artifact; a replay reads them as untruncated.\n"
+        )
+    (out / "scenario.yaml").write_text(label, encoding="utf-8", newline="\n")
     print(f"recorded {name} -> {out}")
     for path in [out / "webhook.json", *gateway.recorded, out / "scenario.yaml"]:
         print(f"  {path.relative_to(out_root)}")

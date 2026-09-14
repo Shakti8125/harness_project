@@ -239,8 +239,78 @@ def test_no_secret_ever_lands_anywhere(
             serve(client, f"/runs/{live_run}/view")
             serve(client, "/v1/escalations")
 
+    # --- 5. live mode, writes on: the token comes back on a write and escalates ------
+    # Phase 5 audit finding 4: the read-path 403 above never escalates, so the two log
+    # lines that carry a `ToolError.message` -- `remediation stopped at …` and
+    # `run … escalated (tool_failure): …` -- were not exercised. This delivery's plan is
+    # a retry, the rerun POST answers 403 echoing the token, and the run escalates.
+    client, context = _client(
+        tmp_db_path, monkeypatch,
+        HARNESS_GATEWAY="github", HARNESS_ALLOWED_REPOS=json.dumps(["octo-org/harness-demo-repo"]),
+        HARNESS_DRY_RUN="false",
+    )
+    with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
+        router.post(url__regex=rf"https://{HOOK_HOST}/.*").mock(return_value=httpx.Response(500))
+        mock_github(router)
+        # `infra_timeout`'s failure (its retry is under the cap in this database, where
+        # the flaky signature has already spent two), as a third attempt that failed
+        # the same way: a new Appendix C key over the same failing job and log.
+        infra = FIXTURES_ROOT / "infra_timeout"
+        router.get(f"{API}/actions/runs/501235102/attempts/3/jobs").mock(
+            return_value=httpx.Response(
+                200,
+                json=json.loads(
+                    (infra / "api" / "GET_repos-octo-org-harness-demo-repo-actions-runs-501235102-attempts-1-jobs.json").read_text(encoding="utf-8")
+                ),
+            )
+        )
+        router.get(f"{API}/actions/jobs/601235102/logs").mock(
+            return_value=httpx.Response(
+                200, content=(infra / "logs" / "job_601235102.txt").read_bytes(),
+                headers={"content-type": "text/plain"},
+            )
+        )
+        router.get(f"{API}/actions/runs/501235102").mock(
+            return_value=httpx.Response(200, json={"id": 501235102, "run_attempt": 3})
+        )
+        router.post(f"{API}/actions/runs/501235102/rerun-failed-jobs").mock(
+            return_value=httpx.Response(
+                403,
+                json={
+                    "message": "Resource not accessible by personal access token",
+                    "errors": [{"message": f"token {GITHUB_TOKEN} lacks actions:write on this repository"}],
+                },
+            )
+        )
+        with client:
+            body = json.loads((infra / "webhook.json").read_text(encoding="utf-8"))
+            body["workflow_run"]["run_attempt"] = 3
+            payload = json.dumps(body).encode("utf-8")
+            accepted = client.post(
+                "/webhooks/github", content=payload,
+                headers={
+                    "Content-Type": "application/json", EVENT_HEADER: "workflow_run",
+                    DELIVERY_HEADER: str(uuid.uuid4()), SIGNATURE_HEADER: sign(WEBHOOK_SECRET, payload),
+                },
+            )
+            assert accepted.status_code == 202, accepted.text
+            write_run = accepted.json()["run_id"]
+            run_ids.append(write_run)
+            for _ in range(600):
+                outcome = serve(client, f"/v1/runs/{write_run}")
+                if outcome and outcome.get("status") != "in_progress":
+                    break
+                import time
+
+                time.sleep(0.01)
+            assert outcome is not None and outcome["status"] == "escalated", outcome
+            assert outcome["escalation"]["reason"] == "tool_failure", json.dumps(outcome["escalation"])[:2000]
+            assert REDACTION_PLACEHOLDER in json.dumps(outcome["escalation"])
+            serve(client, f"/v1/runs/{write_run}/trace")
+            serve(client, "/v1/escalations")
+
     # --- the assertions ----------------------------------------------------------------
-    assert len(run_ids) >= 7
+    assert len(run_ids) >= 8
     with sqlite3.connect(tmp_db_path) as db:
         spans = db.execute(
             "select run_id, name, attributes_json, coalesce(error_json, '') from trace_span"
@@ -249,7 +319,7 @@ def test_no_secret_ever_lands_anywhere(
             "select run_id, reason, payload_json, channel, coalesce(delivery_error, '') from escalation"
         ).fetchall()
         runs = db.execute("select count(*) from run").fetchone()[0]
-    assert len(spans) > 100 and len(escalations) >= 1 and runs >= 7
+    assert len(spans) > 100 and len(escalations) >= 2 and runs >= 8
     for row in spans:
         _assert_clean(f"trace_span {row[0]} {row[1]}", " ".join(str(v) for v in row))
     for row in escalations:

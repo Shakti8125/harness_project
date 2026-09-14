@@ -77,7 +77,9 @@ def _delivery(action: str = "completed", conclusion: str | None = "failure") -> 
 
 def test_completed_failure_is_accepted() -> None:
     verdict = classify_event("workflow_run", _delivery())
-    assert verdict == EventVerdict("accept", "workflow_run completed with conclusion failure")
+    assert verdict == EventVerdict(
+        "accept", "workflow_run completed with conclusion failure", "accepted"
+    )
 
 
 @pytest.mark.parametrize(
@@ -98,6 +100,9 @@ def test_everything_else_is_ignored(
     verdict = classify_event(event, payload)
     assert verdict.outcome == "ignore"
     assert reason_fragment in verdict.reason
+    # The code is what the route logs; it never carries the delivery's own values.
+    assert verdict.code in ("not_workflow_run", "not_completed", "not_failure")
+    assert reason_fragment.strip("'") not in verdict.code
 
 
 @pytest.mark.parametrize("payload", [[], "text", 42, None])

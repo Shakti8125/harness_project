@@ -31,7 +31,8 @@ from typing import Final
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.api.deps import FIXTURES_ROOT, SECRET_PATTERNS, build_secret_registry  # noqa: E402
+from src.api.deps import FIXTURES_ROOT  # noqa: E402
+from src.api.deps import build_redactor as _build_redactor  # noqa: E402
 from src.harness.observability import REDACTION_PLACEHOLDER, Redactor  # noqa: E402
 from src.settings import get_settings  # noqa: E402
 
@@ -49,8 +50,10 @@ TEXT_SUFFIXES: Final[frozenset[str]] = frozenset({".txt", ".json", ".yaml", ".ym
 
 
 def build_redactor() -> Redactor:
-    """The trace's redactor: registered secrets from the settings, plus the pattern set."""
-    return Redactor(build_secret_registry(get_settings()), SECRET_PATTERNS)
+    """The trace's redactor, exactly as the composition root builds it: registered
+    secrets, the credential shapes, the assignment heuristics on plain text -- and a
+    fixture file *is* plain text, so `api_key=` in a recorded log is rewritten."""
+    return _build_redactor(get_settings())
 
 
 def scrub_text(text: str, redactor: Redactor, keep: tuple[str, ...] = PLANTED_SENTINELS) -> str:

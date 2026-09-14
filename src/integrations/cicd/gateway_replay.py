@@ -89,7 +89,12 @@ def fixture_slug_for(repo: str, tool: str, args: dict[str, Any]) -> str | None:
             f"-attempts-{args.get('attempt', 1)}-jobs"
         )
     if tool in ("find_last_successful_run", "search_workflow_runs"):
-        return f"repos-{slug}-actions-workflows-{args['workflow_id']}-runs"
+        # Appendix D's chain asks the same path twice with a different `branch=` query
+        # (the failing branch, then the default branch), and the README's rule for two
+        # recordings of one path is a suffix: `-branch-<name>`, slashes as dashes.
+        base = f"repos-{slug}-actions-workflows-{args['workflow_id']}-runs"
+        branch = str(args.get("branch") or "")
+        return f"{base}-branch-{branch.replace('/', '-')}" if branch else base
     if tool == "compare_commits":
         return f"repos-{slug}-compare-{args['base']}-{args['head']}"
     if tool == "get_commit":

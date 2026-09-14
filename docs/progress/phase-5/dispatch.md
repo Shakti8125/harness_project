@@ -49,6 +49,12 @@ is the same shape `GitHubToolGateway` writes (`tool`, `side_effect`, `rule_id`, 
 `dry_run`, `cached`, `error_kind`), opened *after* the forbidden re-check for a refusal
 (a span is a local write, not an outbound request; the refusal is still on the record).
 
+> *Amended after the audit (review.md, plan drift):* as built, the span is opened
+> *before* the re-check and wraps it, in both gateways -- the parenthetical was the
+> point, the word "after" was not. The refusal still costs zero outbound requests
+> (A.4 step 4, asserted at the transport), and it leaves a span, which is what a
+> refusal-shaped test pins. Recorded in PLAN.md Phase 5 amendment 16; not changed.
+
 ### 3. Memory queries are spans, written by the store
 
 `SqliteMemoryStore(recorder=...)`, optional. Four operations get a span, component

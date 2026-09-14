@@ -222,6 +222,45 @@ def test_other_events_are_204_and_run_nothing(client: TestClient, event: str, mu
     assert client.get("/v1/runs").json()["items"] == []
 
 
+def test_an_ignored_delivery_logs_a_code_not_the_header(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Phase 5 audit finding 5: the `X-GitHub-Event` value and `action` are caller-chosen
+    text; the log line names the ignore rule that fired, never the value."""
+    caplog.set_level("INFO")
+    marker = "ATTACKER-CHOSEN-EVENT-TEXT-7f3a"
+    body = webhook_bytes()
+    response = client.post("/webhooks/github", content=body, headers=headers(body, event=marker))
+    assert response.status_code == 204
+    delivery = json.loads(body)
+    delivery["action"] = f"requested-{marker}"
+    body = json.dumps(delivery).encode()
+    assert client.post("/webhooks/github", content=body, headers=headers(body)).status_code == 204
+    ignored = [r for r in caplog.records if "ignored delivery" in r.getMessage()]
+    assert len(ignored) == 2
+    assert marker not in caplog.text
+    assert "not_workflow_run" in ignored[0].getMessage() and "not_completed" in ignored[1].getMessage()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: {**d, "workflow_run": {**d["workflow_run"], "id": 1e400}},
+        lambda d: {**d, "workflow_run": {**d["workflow_run"], "run_attempt": -1e400}},
+        lambda d: {**d, "workflow_run": {**d["workflow_run"], "id": float("nan")}},
+    ],
+)
+def test_a_numeric_field_that_is_not_an_integer_is_400(client: TestClient, mutate: Any) -> None:
+    """Phase 5 audit finding 9: `1e400` parses as infinity and `int()` of it is an
+    `OverflowError`, which the route documented as a `400` and answered with a `500`."""
+    delivery = mutate(json.loads(webhook_bytes()))
+    body = json.dumps(delivery).encode()
+    response = client.post("/webhooks/github", content=body, headers=headers(body))
+    assert response.status_code == 400, response.text
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert client.get("/v1/runs").json()["items"] == []
+
+
 def test_a_signed_non_json_body_is_400(client: TestClient) -> None:
     body = b"not json"
     response = client.post("/webhooks/github", content=body, headers=headers(body))

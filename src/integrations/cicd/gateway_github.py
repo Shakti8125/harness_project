@@ -74,6 +74,11 @@ SECONDARY_LIMIT_RETRIES: Final[int] = 2
 LOG_DOWNLOAD_CAP_BYTES: Final[int] = 20 * 1024 * 1024
 #: `per_page` on the jobs listing: GitHub's maximum.
 JOBS_PAGE_SIZE: Final[int] = 100
+#: How many pages of open issues `create_issue` reads looking for the one carrying this
+#: signature's marker before it files a new one (Phase 5 audit finding 7). Five pages of
+#: 100, filtered to the labels the agent files with: a repository with more open agent
+#: issues than that has a bigger problem than a duplicate.
+ISSUE_SEARCH_MAX_PAGES: Final[int] = 5
 #: B.2: how much of a body that failed to parse is kept as evidence.
 MALFORMED_EVIDENCE_CHARS: Final[int] = 500
 
@@ -168,9 +173,19 @@ def _obj(body: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _as_str_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
 def _pull_summary(pull: dict[str, Any]) -> dict[str, JsonValue]:
     head = _obj(pull, "head")
     base = _obj(pull, "base")
+    raw_labels = pull.get("labels")
+    labels: list[JsonValue] = [
+        str(label["name"])
+        for label in (raw_labels if isinstance(raw_labels, list) else [])
+        if isinstance(label, dict) and label.get("name")
+    ]
     return {
         "number": int(pull.get("number", 0)),
         "html_url": str(pull.get("html_url", "")),
@@ -178,6 +193,7 @@ def _pull_summary(pull: dict[str, Any]) -> dict[str, JsonValue]:
         "draft": bool(pull.get("draft", False)),
         "head": str(head.get("ref", "")),
         "base": str(base.get("ref", "")),
+        "labels": labels,
     }
 
 
@@ -625,8 +641,26 @@ class GitHubToolGateway:
         labels: list[JsonValue] = [str(label) for label in args.get("labels") or []]
         existing = await self._find_open_pull(head, base)
         if existing is not None:
-            # Appendix C: never two PRs for one signature.
-            return {**existing, "opened": False, "already_exists": True, "dry_run": self.dry_run}
+            # Appendix C: never two PRs for one signature. The labels are reconciled
+            # rather than assumed: a label call that failed after the PR was created
+            # (below) leaves an unlabelled PR, and this pre-check is the retry's only
+            # path to it (Phase 5 audit finding 6).
+            have = [str(label) for label in _as_str_list(existing.get("labels"))]
+            missing: list[JsonValue] = [label for label in labels if label not in have]
+            if self.dry_run:
+                return {
+                    **existing, "opened": False, "already_exists": True,
+                    "labels_missing": missing, "dry_run": True,
+                }
+            if missing:
+                await self._post_json(
+                    f"/repos/{self.repo}/issues/{existing['number']}/labels",
+                    {"labels": missing},
+                )
+            return {
+                **existing, "labels": [*have, *missing], "labels_applied": missing,
+                "opened": False, "already_exists": True, "dry_run": False,
+            }
         if self.dry_run:
             return self._would_have(args, existed=False)
         payload = {
@@ -649,26 +683,51 @@ class GitHubToolGateway:
         if labels:
             # Labels ride on the issue side of a PR. A failure here is reported as the
             # PR's failure: `no_auto_merge`/`label:agent-generated` are obligations, and
-            # an unlabelled agent PR is not the artifact the policy approved.
-            await self._post_json(
-                f"/repos/{self.repo}/issues/{summary['number']}/labels", {"labels": labels}
-            )
+            # an unlabelled agent PR is not the artifact the policy approved. The error
+            # names the PR that now exists, so a person can find it and the next
+            # attempt's pre-check applies the labels it lacks.
+            try:
+                await self._post_json(
+                    f"/repos/{self.repo}/issues/{summary['number']}/labels", {"labels": labels}
+                )
+            except _Failure as failure:
+                raise _Failure(
+                    failure.kind,
+                    f"draft pull request #{summary['number']} was opened "
+                    f"({summary['html_url']}) but labels {labels!r} could not be applied: "
+                    f"{failure.message}",
+                    retryable=failure.retryable,
+                    retry_after_s=failure.retry_after_s,
+                    http_status=failure.http_status,
+                ) from failure
         return {**summary, "labels": labels, "opened": True, "dry_run": False}
 
-    async def _find_marked_issue(self, marker: str) -> dict[str, JsonValue] | None:
-        body = await self._get_json(
-            f"/repos/{self.repo}/issues", {"state": "open", "per_page": JOBS_PAGE_SIZE}
-        )
-        issues = body if isinstance(body, list) else []
-        for issue in issues:
-            if not isinstance(issue, dict) or "pull_request" in issue:
-                continue
-            if marker in str(issue.get("body") or ""):
-                return {
-                    "number": int(issue.get("number", 0)),
-                    "html_url": str(issue.get("html_url", "")),
-                    "title": str(issue.get("title", "")),
-                }
+    async def _find_marked_issue(
+        self, marker: str, labels: list[JsonValue]
+    ) -> dict[str, JsonValue] | None:
+        """The open issue whose body carries `marker`, filtered to the labels the agent
+        files with (dispatch decision 7) and paged past the first hundred (Phase 5 audit
+        finding 7). A label removed by hand from the marked issue hides it from this
+        filter and a second issue is filed; the marker in its body still says why."""
+        params: dict[str, Any] = {"state": "open", "per_page": JOBS_PAGE_SIZE}
+        if labels:
+            params["labels"] = ",".join(str(label) for label in labels)
+        for page in range(1, ISSUE_SEARCH_MAX_PAGES + 1):
+            body = await self._get_json(
+                f"/repos/{self.repo}/issues", {**params, "page": page}
+            )
+            issues = body if isinstance(body, list) else []
+            for issue in issues:
+                if not isinstance(issue, dict) or "pull_request" in issue:
+                    continue
+                if marker in str(issue.get("body") or ""):
+                    return {
+                        "number": int(issue.get("number", 0)),
+                        "html_url": str(issue.get("html_url", "")),
+                        "title": str(issue.get("title", "")),
+                    }
+            if len(issues) < JOBS_PAGE_SIZE:
+                break
         return None
 
     async def _create_issue(self, args: dict[str, Any]) -> dict[str, JsonValue]:
@@ -677,7 +736,7 @@ class GitHubToolGateway:
         labels: list[JsonValue] = [str(label) for label in args.get("labels") or []]
         signature_id = str(args["signature_id"]) if args.get("signature_id") else None
         marker = ISSUE_SIGNATURE_MARKER.format(signature_id=signature_id) if signature_id else None
-        existing = await self._find_marked_issue(marker) if marker else None
+        existing = await self._find_marked_issue(marker, labels) if marker else None
         if existing is not None:
             # Appendix C: comment on the open issue for this signature instead of a second one.
             if self.dry_run:

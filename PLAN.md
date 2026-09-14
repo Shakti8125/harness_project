@@ -1042,7 +1042,8 @@ Any claim whose supporting artifact is missing (e.g. `file_in_diff` when the dif
 fetched) is `unverifiable`, never `refuted` — absence of evidence is not evidence of hallucination.
 
 Verdict: **`fail`** if any `refuted` or `verified/total < 0.5` → Remediator is skipped, run
-escalates with reason `evidence_refuted`. **`warn`** if any `unverifiable` → the run proceeds but
+escalates with reason `evidence_refuted` when a claim was refuted, `evidence_unverifiable` when
+the share rule alone failed (Phase 5 amendment 5). **`warn`** if any `unverifiable` → the run proceeds but
 every effect is downgraded one step (`allow` → `require_approval`, `require_approval` →
 `require_approval`, `deny` stays `deny`). **`pass`** otherwise.
 
@@ -1296,6 +1297,67 @@ curl.exe -s https://shakti-agent-harness.hf.space/v1/runs | jq '.[0] | {status, 
 >     needs the demo repository, a fine-grained PAT, the webhook, and a Space redeploy with
 >     `HARNESS_GATEWAY=github` and an allowlist -- user-gated, and a change to the Space's
 >     exposure. `verify.md` records which steps ran live and when.
+>
+> **Fix round (recorded 2026-09-14, after the independent audit -- `docs/progress/phase-5/
+> review.md`, nine findings; coordinator-verified per the standing one-audit-per-phase rule,
+> `backlog.md` "Audit provenance"):**
+>
+> 11. **The pattern set has two tiers, and an execution input is never rewritten silently**
+>     (finding 1, HIGH). Item 6's "false positive at the boundary" was wrong about the
+>     boundary: the assignment shape ran through the base64 scrub at rest, rewrote ordinary
+>     source lines inside a stored approval's `content_b64` (`DB_PASSWORD = …`,
+>     `Client(api_key=…)`), and `POST /v1/approvals/{id}` committed the rewritten file.
+>     Now `Redactor(registry, patterns, heuristic_patterns=…)`: the credential *shapes*
+>     (vendor prefixes, PEM) apply everywhere, a base64 body included; the assignment
+>     *heuristics* (`deps.HEURISTIC_SECRET_PATTERNS`) apply to plain text only -- log
+>     lines, span attributes, served bodies, fixture files. And `execute_plan` refuses any
+>     tool call whose arguments carry the placeholder (`harness.observability.
+>     carries_redaction`, through base64 too) as `ToolError(kind="invalid_args",
+>     retryable=False)` -- a plan the scrub altered is not the plan a person approved, and
+>     the run escalates `tool_failure` rather than committing `***REDACTED***`.
+> 12. **Appendix D's chain is built** (finding 2, HIGH): `branch_green` → `default_green`
+>     (the same `find_last_successful_run` on `repository.default_branch`, which
+>     `parse_subject` now carries) → `head_commit_only` (`get_commit`; the commit's files
+>     as the diff, its first parent as `base_sha`, `cold_start=True`, and the prompt block
+>     Appendix D specifies rendered above the diff) → `none` (no parent, or `get_commit`
+>     failed -- the latter also a degraded `diff`). `tests/unit/test_baseline.py` is the
+>     suite Appendix D names. Fixture consequences: the replay slug for a workflow-runs
+>     listing carries `-branch-<name>` (Appendix D asks the same path twice with a different
+>     `branch=`; `fixtures/README.md`'s suffix rule), the five recordings are renamed
+>     accordingly, and `cold_start` gains the head commit as a history root
+>     (`parents: []`) so its expectation stays `baseline_kind: none`. The seed script's
+>     branch-push scenarios (`demo/regression`, `demo/dependency`) now resolve to
+>     `default_green` and can be the `real_regression` / `dependency_break` step 5 expects.
+> 13. **Log lines are scrubbed at the record factory** (finding 4, MEDIUM):
+>     `install_log_redaction(redactor)`, installed once by `AppContext.__post_init__`,
+>     pre-formats every log record in the process and passes it through the `Redactor`
+>     -- ours, `httpx`'s, `aiosqlite`'s alike. The leak test's fifth stage is a live-mode
+>     write whose `403` echoes the token and escalates `tool_failure`; with the factory
+>     off it fails on the two log lines the audit named. The formatted traceback of an
+>     `exc_info` is produced later by the formatter and is not covered (backlog).
+> 14. **`seed_demo_repo.sh --force` re-seeds on top of `main`** (finding 3, MEDIUM): the
+>     generated tree becomes one commit whose parent is the fetched `main` (a fast-forward,
+>     never `push --force` on `main`); only the two `demo/*` branches -- the script's own
+>     -- are replaced. `--webhook-only` registers the webhook and touches no ref; the
+>     printed next step uses it. The header states exactly this.
+> 15. **Smaller:** the webhook's ignore log line carries a verdict *code*
+>     (`not_workflow_run`, `not_completed`, `not_failure`), never the header or `action`
+>     value (finding 5); `open_pull_request` reconciles the labels an existing PR lacks on
+>     the pre-check path and, when the label call fails after the PR was created, names the
+>     PR in the error (finding 6); `create_issue`'s marker search sends `labels=` and pages
+>     to `ISSUE_SEARCH_MAX_PAGES` (finding 7); `scenario_yaml` offers `commit:` as a
+>     commented hint -- it is the label `Diagnosis.suspected_commit_sha`, `null` for a
+>     flaky or infra failure -- and notes a tail-capped log (finding 8); `1e400` in a
+>     numeric field is `400`, not `500` (`OverflowError` caught beside `ValueError`, finding
+>     9); `tests/unit/test_fixture_delivery_keys.py` pins one Appendix C key per recorded
+>     scenario. A.4's `create_issue` row now lists `signature_id`; the A.2 gate sample and
+>     the Phase 4 prose say `evidence_unverifiable` where item 5 changed them.
+> 16. **Recorded, not changed:** `ReplayToolGateway.invoke` opens its `gateway.invoke` span
+>     *before* the forbidden re-check, where dispatch decision 2 said after. The span is
+>     local bookkeeping, not an outbound request -- A.4's "before anything else" is about
+>     the wire -- and a refused call *should* leave a span (`tests/unit/
+>     test_gateway_replay_writes.py` pins one). The live gateway does the same. Decision 2
+>     is amended to "the span wraps the re-check; the refusal costs zero requests".
 
 **Deferred:** the second adapter.
 
@@ -1429,8 +1491,8 @@ class EscalationRecord(BaseModel):
     reason: Literal["low_confidence","evidence_refuted","evidence_unverifiable",  # Phase 5
                     "invalid_output","llm_timeout",           # amendment, additive: the
                     "llm_upstream","config_error","policy_denied","tool_failure",  # share-rule
-                    "cold_start_restricted","rate_limited","unknown_category"]     # fail (Phase 4
-                                                                                   # audit S2)
+                    "cold_start_restricted","rate_limited","unknown_category",     # fail (Phase 4
+                    "run_timeout"]                            # audit S2); Phase 3 amendment
     message: str
     payload: dict[str, JsonValue]
     channels: list[Literal["log","db","webhook"]]
@@ -1505,7 +1567,11 @@ def remediation_gate(state: RunState) -> GateDecision:
     ev = state.artifacts.get("evaluation")
     if ev and ev.verdict == "fail":
         return GateDecision(proceed=False, reason=f"evaluator verdict fail: {ev.reason}",
-                            escalate_as="evidence_refuted")   # the report's reason travels
+                            # the report's reason travels; Phase 5 amendment 5: refuted
+                            # claims are `evidence_refuted`, a share-rule failure alone is
+                            # `evidence_unverifiable`
+                            escalate_as="evidence_refuted" if ev.refuted > 0
+                            else "evidence_unverifiable")
     if d.final_confidence < settings.escalation_threshold:      # 0.70
         return GateDecision(proceed=False,
                             reason=f"confidence {d.final_confidence:.2f} < {settings.escalation_threshold}",
@@ -1619,7 +1685,7 @@ class ToolGateway(Protocol):
 | `create_branch` | write | ✓ | `{name: str, from_sha: str}` |
 | `create_or_update_file` | write | ✓ | `{branch, path, content_b64, message, sha?}` |
 | `open_pull_request` | write | ✓ | `{head, base, title, body, draft: true, labels}` |
-| `create_issue` | write | ✓ | `{title, body, labels}` |
+| `create_issue` | write | ✓ | `{title, body, labels, signature_id?}` — `signature_id` set by the harness (Phase 5 amendment 4) |
 | `merge_pull_request` | destructive | ✗ | registered **only** so the deny path is testable |
 
 ## A.5 Memory — `src/harness/memory.py`

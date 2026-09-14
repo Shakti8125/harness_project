@@ -1116,12 +1116,15 @@ async def github_webhook(request: Request) -> Response:
             request, status_code=400, title="Malformed delivery", detail=verdict.reason,
         )
     if verdict.outcome == "ignore":
-        logger.info("webhook: ignored delivery (%s)", verdict.reason)
+        # The code, not the reason: the reason quotes the event header and the
+        # `action`, which a signed caller chooses (Phase 5 audit finding 5).
+        logger.info("webhook: ignored delivery (%s)", verdict.code)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     try:
         parsed = parse_subject(payload)
-    except (TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        # `OverflowError`: a numeric field of `1e400` parses as infinity (finding 9).
         return problem(
             request, status_code=400, title="Malformed delivery",
             detail="The workflow_run object is not shaped like GitHub's.",

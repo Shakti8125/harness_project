@@ -58,7 +58,7 @@ def mock_github(router: respx.MockRouter) -> respx.Route:
     )
     router.get(f"{API}/actions/workflows/9001/runs").mock(
         return_value=httpx.Response(
-            200, json=_fixture("GET_repos-octo-org-harness-demo-repo-actions-workflows-9001-runs.json")
+            200, json=_fixture("GET_repos-octo-org-harness-demo-repo-actions-workflows-9001-runs-branch-main.json")
         )
     )
     router.get(url__regex=rf"{API}/compare/.*").mock(

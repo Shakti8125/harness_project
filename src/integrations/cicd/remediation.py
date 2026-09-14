@@ -42,7 +42,7 @@ from pydantic import BaseModel, JsonValue
 
 from src.harness.contracts import RunId
 from src.harness.evaluator import EvaluationReport
-from src.harness.gateway import ToolCall, ToolGateway, ToolResult
+from src.harness.gateway import ToolCall, ToolError, ToolGateway, ToolResult
 from src.harness.guardrails import (
     FACT_SIDE_EFFECTING_ACTIONS,
     ActionContext,
@@ -50,7 +50,7 @@ from src.harness.guardrails import (
     PolicyEngine,
     downgrade_for_warn,
 )
-from src.harness.observability import TraceRecorder
+from src.harness.observability import TraceRecorder, carries_redaction
 from src.integrations.cicd.catalog import side_effect_of
 from src.integrations.cicd.rendering import new_call_id
 from src.integrations.cicd.schemas import (
@@ -407,7 +407,14 @@ async def execute_plan(
         raise ValueError("one decision per tool call is required")
     results: list[ToolResult] = []
     for call, decision in zip(plan.tool_calls, decisions, strict=True):
-        result = await gateway.invoke(call, decision)
+        if carries_redaction(call.args):
+            # A stored plan is scrubbed at rest; an argument that now carries the
+            # placeholder is not the argument the model wrote or a person approved,
+            # so it is refused here rather than committed as if it were (Phase 5 audit
+            # finding 1). Not retryable: the row will read the same tomorrow.
+            result = _refused_as_altered(call)
+        else:
+            result = await gateway.invoke(call, decision)
         results.append(result)
         if recorder is not None:
             async with recorder.span(
@@ -430,6 +437,24 @@ async def execute_plan(
             )
             break
     return results
+
+
+def _refused_as_altered(call: ToolCall) -> ToolResult:
+    return ToolResult(
+        call_id=call.call_id,
+        tool=call.tool,
+        ok=False,
+        error=ToolError(
+            kind="invalid_args",
+            message=(
+                f"{call.tool!r} was not executed: an argument carries the redaction "
+                "placeholder, so the stored plan is not the plan that was approved (a "
+                "credential was scrubbed from it at rest)"
+            ),
+            retryable=False,
+        ),
+        latency_ms=0,
+    )
 
 
 def result_for(

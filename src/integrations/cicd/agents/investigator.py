@@ -47,7 +47,7 @@ import contextvars
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -208,6 +208,10 @@ _collection: contextvars.ContextVar[_Collection | None] = contextvars.ContextVar
 )
 
 
+def _as_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, list) else []
+
+
 def parse_subject(subject: dict[str, Any]) -> dict[str, Any]:
     """Pull the fields the collector needs out of a `workflow_run` webhook body.
 
@@ -223,6 +227,8 @@ def parse_subject(subject: dict[str, Any]) -> dict[str, Any]:
         "run_attempt": int(run.get("run_attempt", 1)),
         "head_sha": str(run.get("head_sha", "")),
         "branch": str(run.get("head_branch", "")),
+        # Appendix D step 2: the branch the baseline falls back to.
+        "default_branch": str(repository.get("default_branch", "") or ""),
         "workflow_id": int(run.get("workflow_id", 0)),
         "workflow_name": str(run.get("name", "")),
         "event": str(run.get("event", "")),
@@ -416,42 +422,10 @@ class Investigator(LLMAgent[InvestigationNotes]):
         else:
             degraded.append(_DEGRADED_LOGS)
 
-        # 3. the last green run on the same branch, and the diff against it
-        baseline_result = await self._call_tool(
-            "find_last_successful_run",
-            {
-                "workflow_id": subject["workflow_id"],
-                "branch": subject["branch"],
-                "before": subject["head_sha"],
-            },
-            errors,
-        )
-        baseline_runs: list[dict[str, Any]] = []
-        if baseline_result.ok and baseline_result.data is not None:
-            raw_runs = baseline_result.data.get("workflow_runs")
-            if isinstance(raw_runs, list):
-                baseline_runs = [run for run in raw_runs if isinstance(run, dict)]
-        elif not baseline_result.ok:
-            degraded.append(_DEGRADED_BASELINE)
-
-        # Appendix D: cold start is an EMPTY baseline list, not a failed call. The two
-        # are different facts and only one of them is a degraded component.
-        cold_start = not baseline_runs
-        base_sha = str(baseline_runs[0].get("head_sha", "")) if baseline_runs else None
-
-        diff = DiffSummary(
-            baseline_kind="none" if cold_start else "branch_green",
-            base_sha=base_sha,
-            head_sha=subject["head_sha"],
-        )
-        if base_sha:
-            compare_result = await self._call_tool(
-                "compare_commits", {"base": base_sha, "head": subject["head_sha"]}, errors
-            )
-            if compare_result.ok and compare_result.data is not None:
-                diff = diff_from_compare(compare_result.data, base_sha, subject["head_sha"])
-            else:
-                degraded.append(_DEGRADED_DIFF)
+        # 3. the baseline and the diff against it -- Appendix D's chain, in order:
+        #    the last green run on the same branch; else on the default branch; else
+        #    the head commit alone; else nothing (Phase 5 audit finding 2).
+        diff, cold_start = await self._resolve_baseline(subject, errors, degraded)
 
         dependency_changes = parse_dependency_changes(diff.files)
 
@@ -535,6 +509,77 @@ class Investigator(LLMAgent[InvestigationNotes]):
             pass
 
         return AgentPrompt(text=prompt_text, evidence=evidence, degraded=degraded)
+
+    async def _green_run_on(
+        self, subject: dict[str, Any], branch: str, errors: list[ToolError], degraded: list[str]
+    ) -> str | None:
+        """The head sha of the most recent successful run of this workflow on `branch`
+        before the failing one, or `None` when there is none -- or when the call failed,
+        which is a degraded component, not a cold start (the two are different facts)."""
+        result = await self._call_tool(
+            "find_last_successful_run",
+            {
+                "workflow_id": subject["workflow_id"],
+                "branch": branch,
+                "before": subject["head_sha"],
+            },
+            errors,
+        )
+        if not result.ok or result.data is None:
+            if _DEGRADED_BASELINE not in degraded:
+                degraded.append(_DEGRADED_BASELINE)
+            return None
+        raw_runs = result.data.get("workflow_runs")
+        runs = [run for run in _as_list(raw_runs) if isinstance(run, dict)]
+        return (str(runs[0].get("head_sha", "")) or None) if runs else None
+
+    async def _resolve_baseline(
+        self, subject: dict[str, Any], errors: list[ToolError], degraded: list[str]
+    ) -> tuple[DiffSummary, bool]:
+        """Appendix D: `branch_green` -> `default_green` -> `head_commit_only` -> `none`.
+
+        The first two are real baselines (a diff against a run that passed) and not a
+        cold start. The last two are: no green run of this workflow exists on the branch
+        or the default branch, so "what changed" is at best the head commit's own files.
+        `baseline_kind` records which step answered, so nobody has to guess.
+        """
+        head_sha: str = subject["head_sha"]
+        branch: str = subject["branch"]
+        default_branch: str = subject.get("default_branch") or ""
+
+        base_sha = await self._green_run_on(subject, branch, errors, degraded)
+        kind: Literal["branch_green", "default_green"] = "branch_green"
+        if base_sha is None and default_branch and default_branch != branch:
+            base_sha = await self._green_run_on(subject, default_branch, errors, degraded)
+            kind = "default_green"
+
+        if base_sha is not None:
+            compare_result = await self._call_tool(
+                "compare_commits", {"base": base_sha, "head": head_sha}, errors
+            )
+            if compare_result.ok and compare_result.data is not None:
+                diff = diff_from_compare(
+                    compare_result.data, base_sha, head_sha, baseline_kind=kind
+                )
+                return diff, False
+            degraded.append(_DEGRADED_DIFF)
+            return DiffSummary(baseline_kind=kind, base_sha=base_sha, head_sha=head_sha), False
+
+        # Steps 3 and 4: the head commit's own files, if it has a parent; else nothing.
+        commit_result = await self._call_tool("get_commit", {"sha": head_sha}, errors)
+        if not commit_result.ok or commit_result.data is None:
+            degraded.append(_DEGRADED_DIFF)
+            return DiffSummary(baseline_kind="none", base_sha=None, head_sha=head_sha), True
+        parents = [p for p in _as_list(commit_result.data.get("parents")) if isinstance(p, dict)]
+        parent_sha = str(parents[0].get("sha", "")) if parents else ""
+        if not parent_sha:
+            return DiffSummary(baseline_kind="none", base_sha=None, head_sha=head_sha), True
+        # A commit body lists its files the way a compare does; the range is the commit.
+        commit_body = {**commit_result.data, "commits": [{"sha": head_sha}]}
+        diff = diff_from_compare(
+            commit_body, parent_sha, head_sha, baseline_kind="head_commit_only"
+        )
+        return diff, True
 
     async def collect(self, state: RunState) -> _Collection:
         """The deterministic collection alone -- every required read call, the budgeted

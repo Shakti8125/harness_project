@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from string import Template
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from src.harness.context_manager import TruncationReport
 from src.harness.contracts import Evidence
@@ -141,8 +141,15 @@ def parse_datetime(value: Any) -> datetime | None:
         return None
 
 
-def diff_from_compare(data: dict[str, Any], base_sha: str, head_sha: str) -> DiffSummary:
-    """Build a `DiffSummary` from a recorded compare-commits response body."""
+def diff_from_compare(
+    data: dict[str, Any],
+    base_sha: str,
+    head_sha: str,
+    *,
+    baseline_kind: Literal["branch_green", "default_green", "head_commit_only"] = "branch_green",
+) -> DiffSummary:
+    """Build a `DiffSummary` from a compare-commits response body -- or, for
+    `head_commit_only`, from a single commit's body, which lists its files the same way."""
     raw_files = data.get("files")
     files: list[FileChange] = []
     if isinstance(raw_files, list):
@@ -171,7 +178,7 @@ def diff_from_compare(data: dict[str, Any], base_sha: str, head_sha: str) -> Dif
             if isinstance(entry, dict) and isinstance(entry.get("sha"), str)
         ]
     return DiffSummary(
-        baseline_kind="branch_green",
+        baseline_kind=baseline_kind,
         base_sha=base_sha,
         head_sha=head_sha,
         commits_behind=int(data.get("behind_by", 0) or 0),
@@ -200,13 +207,21 @@ def render_diff_summary(diff: DiffSummary) -> str:
     """The index of what changed. The patches themselves go through the context budget."""
     if diff.baseline_kind == "none":
         return (
-            "No green baseline run exists for this branch, so there is no diff to "
-            "compare against. Do not infer a cause from changed files; there are none "
-            "available."
+            "No green baseline run exists for this workflow on this branch or on the "
+            "default branch, so there is no diff to compare against. Do not infer a "
+            "cause from changed files; there are none available."
         )
     lines = [
         f"baseline: {diff.baseline_kind}, base {diff.base_sha} -> head {diff.head_sha}",
     ]
+    if diff.baseline_kind == "head_commit_only":
+        # Appendix D: a cold start with a partial diff. The block the plan specifies.
+        lines.insert(0, (
+            "No green baseline run exists for this workflow on this branch or on the "
+            "default branch; the diff below is the head commit only, so 'what changed' "
+            "is partial. Do NOT classify real_regression on this diff alone; prefer "
+            "config_issue, dependency_break or unknown, and cap self_confidence at 0.70."
+        ))
     # The commits in the range, oldest first: what a `commit_in_range` citation may quote
     # (the Diagnostician prompt says "as listed here"), and therefore what the checker
     # verifies against. A bundle without the list (stored before Phase 4) says so rather

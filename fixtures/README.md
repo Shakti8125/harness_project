@@ -112,9 +112,9 @@ Worked examples, keyed off the CI/CD tool catalog (PLAN.md lines 1170–1186), u
 | Tool | GitHub call | `api/` filename |
 |---|---|---|
 | `list_workflow_run_jobs` | `GET /repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs` | `GET_repos-octo-org-harness-demo-repo-actions-runs-501234567-attempts-1-jobs.json` |
-| `find_last_successful_run` | `GET /repos/{repo}/actions/workflows/{workflow_id}/runs?branch=...&status=success` | `GET_repos-octo-org-harness-demo-repo-actions-workflows-9001-runs.json` |
+| `find_last_successful_run` | `GET /repos/{repo}/actions/workflows/{workflow_id}/runs?branch=...&status=success` | `GET_repos-octo-org-harness-demo-repo-actions-workflows-9001-runs-branch-main.json` -- the `-branch-<name>` suffix (slashes as dashes) because Appendix D's chain asks this path once per branch: the failing branch, then the default branch |
 | `compare_commits` | `GET /repos/{repo}/compare/{base}...{head}` | `GET_repos-octo-org-harness-demo-repo-compare-<base_sha>-<head_sha>.json` |
-| `get_commit` | `GET /repos/{repo}/commits/{sha}` | `GET_repos-<repo-slug>-commits-<sha>.json` (needed only for `baseline_kind: head_commit_only` scenarios) |
+| `get_commit` | `GET /repos/{repo}/commits/{sha}` | `GET_repos-<repo-slug>-commits-<sha>.json` (Appendix D steps 3-4: read whenever no green run exists on the branch or the default branch, so every `head_commit_only` and `none` scenario carries the head commit; `cold_start`'s is a history root with `parents: []`) |
 | `get_file_contents` | `GET /repos/{repo}/contents/{path}?ref={sha}` | `GET_repos-<repo-slug>-contents-<path-with-dashes>.json` (only if the Investigator's dynamic `additional_tool_calls` request it) |
 | `search_workflow_runs` | `GET /repos/{repo}/actions/workflows/{workflow_id}/runs?...` | same shape as `find_last_successful_run`; disambiguate by query if a scenario needs both |
 | `get_job_logs` | `GET /repos/{repo}/actions/jobs/{job_id}/logs` | **no `api/` file** — see below |

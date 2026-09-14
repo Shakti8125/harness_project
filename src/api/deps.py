@@ -50,7 +50,12 @@ from src.harness.gateway import ToolGateway
 from src.harness.guardrails import PolicyEngine
 from src.harness.llm import GeminiClient, LlmClient
 from src.harness.memory import FAULT_SQLITE_LOCKED, MemoryStore, SqliteMemoryStore
-from src.harness.observability import Redactor, SecretRegistry, TraceRecorder
+from src.harness.observability import (
+    Redactor,
+    SecretRegistry,
+    TraceRecorder,
+    install_log_redaction,
+)
 from src.harness.orchestrator import HEARTBEAT_INTERVAL_S, Orchestrator, new_run_id
 from src.harness.storage import apply_migrations
 from src.integrations.cicd.gateway_github import GitHubToolGateway
@@ -72,8 +77,8 @@ FIXTURES_ROOT: Final[Path] = REPO_ROOT / "fixtures" / "scenarios"
 #: PLAN.md keeps it out of `harness/observability.py` deliberately, and the composition
 #: root is where it belongs. Phase 5 completes PLAN's list ("Secrets never reach the
 #: trace", mechanism 3): the PEM header -- widened to take the whole block when its END
-#: line is present, so a pasted key is not left with only its first line redacted -- and
-#: the `api_key=` / `token:` / `password=` assignment shapes.
+#: line is present, so a pasted key is not left with only its first line redacted.
+#: Precise enough to apply everywhere, a base64-encoded file body included.
 SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{22,}"),
@@ -83,8 +88,25 @@ SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?"
     ),
+)
+
+#: The `api_key=` / `token:` / `password=` assignment shapes: what a careless workflow
+#: echoes into its own log. They also match the ordinary text of a source file, so the
+#: `Redactor` applies them to plain text -- log lines, span attributes, served bodies --
+#: and never through a base64 encoding, where the string may be a drafted file that an
+#: approval later commits (Phase 5 audit finding 1; PLAN.md Phase 5 amendment 11).
+HEURISTIC_SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"(?i)(api[_-]?key|token|password)\s*[:=]\s*\S{8,}"),
 )
+
+
+def build_redactor(settings: Settings) -> Redactor:
+    """The one `Redactor` shape every composition site uses: the registered secrets, the
+    credential shapes everywhere, the assignment heuristics on plain text only."""
+    return Redactor(
+        build_secret_registry(settings), SECRET_PATTERNS,
+        heuristic_patterns=HEURISTIC_SECRET_PATTERNS,
+    )
 
 
 #: The escalation channels every run built here delivers on. `db` is real since Phase 3:
@@ -219,6 +241,10 @@ class AppContext:
     notifier: EscalationNotifier | None = None
 
     def __post_init__(self) -> None:
+        # Log lines are a sink like the rows and the bodies: the recorder's Redactor is
+        # installed at the log record factory, once, for every logger in the process
+        # (Phase 5 audit finding 4). A hand-assembled context gets it too.
+        install_log_redaction(self.recorder.redactor)
         if self.fault is None:
             object.__setattr__(self, "fault", build_fault(self.settings))
         if self.memory is None:
@@ -417,7 +443,8 @@ def _delivery_key(subject: dict[str, object]) -> tuple[str, int, int] | None:
             int(run.get("id", 0)),
             int(run.get("run_attempt", 1)),
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # `OverflowError`: `1e400` parses as infinity (Phase 5 audit finding 9).
         return None
 
 
@@ -441,7 +468,7 @@ def build_memory_store(
     return SqliteMemoryStore(
         settings.database_path,
         fault_inject=store_fault,
-        redactor=redactor or Redactor(build_secret_registry(settings), SECRET_PATTERNS),
+        redactor=redactor or build_redactor(settings),
         recorder=recorder,
     )
 
@@ -470,7 +497,7 @@ def get_app_context() -> AppContext:
     accessor: `get_settings()`, never `Settings()` — see this module's docstring.
     """
     settings = get_settings()
-    redactor = Redactor(build_secret_registry(settings), SECRET_PATTERNS)
+    redactor = build_redactor(settings)
     recorder = TraceRecorder(db_path=settings.database_path, redactor=redactor)
 
     context_manager = ContextManager(

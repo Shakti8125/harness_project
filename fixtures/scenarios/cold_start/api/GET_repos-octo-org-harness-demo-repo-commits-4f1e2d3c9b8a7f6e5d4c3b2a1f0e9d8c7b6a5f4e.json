@@ -1,0 +1,173 @@
+{
+  "sha": "4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e",
+  "node_id": "C_kwDOExampleColdStartRoot",
+  "commit": {
+    "author": {
+      "name": "Priya Natarajan",
+      "email": "priya-n@harness-demo-repo.example",
+      "date": "2026-09-08T10:14:55Z"
+    },
+    "committer": {
+      "name": "Priya Natarajan",
+      "email": "priya-n@harness-demo-repo.example",
+      "date": "2026-09-08T10:14:55Z"
+    },
+    "message": "Format currency with thin-space thousands separators\n\nDocs updated to match.",
+    "tree": {
+      "sha": "d8f0c1a2b3e4f5061728394a5b6c7d8e9f0a1b2c",
+      "url": "https://api.github.com/repos/octo-org/harness-demo-repo/git/trees/d8f0c1a2b3e4f5061728394a5b6c7d8e9f0a1b2c"
+    },
+    "url": "https://api.github.com/repos/octo-org/harness-demo-repo/git/commits/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e",
+    "comment_count": 0,
+    "verification": {
+      "verified": false,
+      "reason": "unsigned",
+      "signature": null,
+      "payload": null
+    }
+  },
+  "url": "https://api.github.com/repos/octo-org/harness-demo-repo/commits/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e",
+  "html_url": "https://github.com/octo-org/harness-demo-repo/commit/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e",
+  "comments_url": "https://api.github.com/repos/octo-org/harness-demo-repo/commits/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/comments",
+  "author": {
+    "login": "priya-n",
+    "id": 77345120,
+    "type": "User",
+    "html_url": "https://github.com/priya-n"
+  },
+  "committer": {
+    "login": "priya-n",
+    "id": 77345120,
+    "type": "User",
+    "html_url": "https://github.com/priya-n"
+  },
+  "parents": [],
+  "stats": {
+    "total": 267,
+    "additions": 267,
+    "deletions": 0
+  },
+  "files": [
+    {
+      "sha": "68ed795e889d2e1b01171df7bc653cd0a150e897",
+      "filename": "README.md",
+      "status": "added",
+      "additions": 52,
+      "deletions": 0,
+      "changes": 52,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/README.md",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/README.md",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/README.md?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "d468630fdb66dff86c05d9a33efaca12f08e2c2f",
+      "filename": "requirements.txt",
+      "status": "added",
+      "additions": 1,
+      "deletions": 0,
+      "changes": 1,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/requirements.txt",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/requirements.txt",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/requirements.txt?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "1db2b2950b2d693560435dbfd34e2ad41dbd46dc",
+      "filename": "requirements-dev.txt",
+      "status": "added",
+      "additions": 2,
+      "deletions": 0,
+      "changes": 2,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/requirements-dev.txt",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/requirements-dev.txt",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/requirements-dev.txt?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "756848efa528658376d0cd76bf284c09d2fb0293",
+      "filename": "src/pricing/__init__.py",
+      "status": "added",
+      "additions": 3,
+      "deletions": 0,
+      "changes": 3,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/pricing/__init__.py",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/pricing/__init__.py",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/src/pricing/__init__.py?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "daa4ffa675152846ab1e2636d88ff9aea7d6bf0a",
+      "filename": "src/pricing/discount.py",
+      "status": "added",
+      "additions": 21,
+      "deletions": 0,
+      "changes": 21,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/pricing/discount.py",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/pricing/discount.py",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/src/pricing/discount.py?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "1aa267e25523cc52c3e5a646d8f2af8ce71070a1",
+      "filename": "src/pricing/format.py",
+      "status": "added",
+      "additions": 34,
+      "deletions": 0,
+      "changes": 34,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/pricing/format.py",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/pricing/format.py",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/src/pricing/format.py?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "96d7d21a24b6f796e1e7f3caa9f97cd6809618bd",
+      "filename": "src/config.py",
+      "status": "added",
+      "additions": 18,
+      "deletions": 0,
+      "changes": 18,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/config.py",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/config.py",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/src/config.py?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "4ea9f07d7fc3307aa314aaed150dbd3888515f73",
+      "filename": "src/scheduler.py",
+      "status": "added",
+      "additions": 47,
+      "deletions": 0,
+      "changes": 47,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/scheduler.py",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/src/scheduler.py",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/src/scheduler.py?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "80b1448c6cc483126ef7f315abab4c572122785b",
+      "filename": "tests/test_pricing.py",
+      "status": "added",
+      "additions": 38,
+      "deletions": 0,
+      "changes": 38,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/tests/test_pricing.py",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/tests/test_pricing.py",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/tests/test_pricing.py?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "142ed3dcd252d8dd95121cae9698fbe1eab70d49",
+      "filename": "tests/test_scheduler.py",
+      "status": "added",
+      "additions": 29,
+      "deletions": 0,
+      "changes": 29,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/tests/test_scheduler.py",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/tests/test_scheduler.py",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/tests/test_scheduler.py?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    },
+    {
+      "sha": "24f4cec1ca8744c0691da86add4f9109aa64cd9e",
+      "filename": ".github/workflows/flaky.yml",
+      "status": "added",
+      "additions": 22,
+      "deletions": 0,
+      "changes": 22,
+      "blob_url": "https://github.com/octo-org/harness-demo-repo/blob/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/.github/workflows/flaky.yml",
+      "raw_url": "https://github.com/octo-org/harness-demo-repo/raw/4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e/.github/workflows/flaky.yml",
+      "contents_url": "https://api.github.com/repos/octo-org/harness-demo-repo/contents/.github/workflows/flaky.yml?ref=4f1e2d3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e"
+    }
+  ]
+}
