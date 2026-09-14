@@ -50,8 +50,11 @@ user's call), the notes that matter:
   delivery whose Appendix C key matches a recorded scenario (`403` otherwise). Writes
   stay dry-run under `HARNESS_DRY_RUN=true`, which is the default and what step 5 expects.
 - **The build answers `/readyz` about 2–3 minutes after the push**; poll for something
-  only the new build can do (`GET /runs/<any>/view` is `404 problem+json` on the new
-  image and `404 text/html` on the old one), not for `200`.
+  only the new build can do -- an unsigned `POST /webhooks/github` is `401` with
+  `WWW-Authenticate: HMAC-SHA256` on the new image and `404 application/problem+json`
+  (no such route) on the old one -- not for `200`. (`GET /runs/<any>/view` is
+  `404 application/problem+json` on *both*: the old image's catch-all problem handler
+  answers unknown paths the same way.)
 - Unchanged: no persistent volume, migrations by hand-call from `app.py:main()`, no
   authentication on the read routes, `zero-a10g`, `docker-compose.yml` forwards
   `HARNESS_FAULT_INJECT` from the shell.
