@@ -90,8 +90,8 @@ _CROCKFORD: Final[str] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 DEFAULT_RUN_BUDGET_S: Final[float] = 240.0
 
 EscalationReason = Literal[
-    "low_confidence", "evidence_refuted", "invalid_output", "llm_timeout",
-    "llm_upstream", "config_error", "policy_denied", "tool_failure",
+    "low_confidence", "evidence_refuted", "evidence_unverifiable", "invalid_output",
+    "llm_timeout", "llm_upstream", "config_error", "policy_denied", "tool_failure",
     "cold_start_restricted", "rate_limited", "unknown_category", "run_timeout",
 ]
 
@@ -300,6 +300,31 @@ class Orchestrator:
     def _artifact_key(self, stage: StageSpec) -> str:
         return self.artifact_keys.get(stage.name, stage.name)
 
+    @asynccontextmanager
+    async def _stage_scope(
+        self, recorder: TraceRecorder, state: RunState, stage: StageSpec
+    ) -> AsyncIterator[None]:
+        """One ``stage`` span per stage (Phase 5; PLAN's trace model names it).
+
+        Opened around the gate check and the agent call alike, so a gated stage is a span
+        too -- the waterfall shows where the run stopped and why. The record the loop
+        appends for this stage is copied onto the span on the way out, whichever branch
+        appended it; a stage that appended nothing (the ``skipped`` branch appends, so
+        that is none today) leaves only ``stage`` on the span.
+        """
+        before = len(state.stages)
+        async with recorder.span("stage", "orchestrator", stage=stage.name) as span:
+            try:
+                yield
+            finally:
+                if len(state.stages) > before:
+                    record = state.stages[-1]
+                    span.set_attribute("agent", record.agent)
+                    span.set_attribute("status", record.status)
+                    span.set_attribute("attempts", record.attempts)
+                    span.set_attribute("summary", record.summary)
+                    span.set_tokens(record.tokens)
+
     async def _escalate(
         self,
         *,
@@ -374,23 +399,127 @@ class Orchestrator:
                 run_span.set_attribute("run_id", run_id)
 
                 for stage in self.stages:
-                    if stage.gate is not None:
-                        decision = stage.gate(state)
-                        if not decision.proceed:
+                    async with self._stage_scope(recorder, state, stage):
+                        if stage.gate is not None:
+                            decision = stage.gate(state)
+                            if not decision.proceed:
+                                state.stages.append(
+                                    StageRecord(
+                                        stage=stage.name, agent=None, status="gated",
+                                        started_at=datetime.now(UTC), duration_ms=0, attempts=0,
+                                        tokens=TokenUsage(), summary=decision.reason,
+                                    )
+                                )
+                                if decision.escalate_as is not None:
+                                    reason = decision.escalate_as
+                                    if reason not in _ESCALATION_REASONS:
+                                        # An unrecognised reason is a wiring mistake in the
+                                        # integration's gate, not a reason to lose the escalation.
+                                        logger.warning(
+                                            "gate on stage %r escalated as unknown reason %r",
+                                            stage.name, reason,
+                                        )
+                                        reason = "unknown_category"
+                                    status = "escalated"
+                                    escalation = await self._escalate(
+                                        run_id=run_id,
+                                        reason=reason,  # type: ignore[arg-type]
+                                        message=decision.reason,
+                                        payload={"stage": stage.name, "gate": decision.reason},
+                                    )
+                                break
+
+                        agent = self.agents.get(stage.agent_key)
+                        if agent is None:
+                            # Only reachable for a non-required stage: `__init__` refused to build
+                            # an orchestrator whose required stages had no agent.
                             state.stages.append(
                                 StageRecord(
-                                    stage=stage.name, agent=None, status="gated",
+                                    stage=stage.name, agent=None, status="skipped",
                                     started_at=datetime.now(UTC), duration_ms=0, attempts=0,
-                                    tokens=TokenUsage(), summary=decision.reason,
+                                    tokens=TokenUsage(),
+                                    summary=f"no agent registered for {stage.agent_key!r}",
                                 )
                             )
-                            if decision.escalate_as is not None:
-                                reason = decision.escalate_as
+                            continue
+
+                        stage_started_at = datetime.now(UTC)
+                        stage_started = time.monotonic()
+                        remaining = self.run_budget_s - (time.monotonic() - started)
+                        try:
+                            result = await asyncio.wait_for(agent.run(state), remaining)
+                        except TimeoutError:
+                            # `wait_for` cancels the stage before raising, so the work
+                            # actually stops rather than continuing unobserved behind a
+                            # run that has already returned.
+                            state.stages.append(
+                                StageRecord(
+                                    stage=stage.name,
+                                    agent=None,
+                                    status="timeout",
+                                    started_at=stage_started_at,
+                                    duration_ms=int(
+                                        (time.monotonic() - stage_started) * 1000
+                                    ),
+                                    attempts=0,
+                                    tokens=TokenUsage(),
+                                    summary=(
+                                        f"run budget of {self.run_budget_s:g}s exhausted "
+                                        f"during stage {stage.name!r}"
+                                    ),
+                                )
+                            )
+                            status = "escalated"
+                            escalation = await self._escalate(
+                                run_id=run_id,
+                                reason="run_timeout",
+                                message=(
+                                    f"run exceeded its {self.run_budget_s:g}s budget "
+                                    f"during stage {stage.name!r}"
+                                ),
+                                payload={
+                                    "stage": stage.name,
+                                    "run_budget_s": self.run_budget_s,
+                                },
+                            )
+                            break
+                        state.stages.append(
+                            StageRecord(
+                                stage=stage.name,
+                                agent=result.agent,
+                                status=result.status,
+                                started_at=stage_started_at,
+                                duration_ms=int((time.monotonic() - stage_started) * 1000),
+                                attempts=result.attempts,
+                                tokens=result.tokens,
+                                summary=(
+                                    result.error.message
+                                    if result.error is not None
+                                    else f"{stage.name} produced {stage.output_model.__name__}"
+                                ),
+                            )
+                        )
+
+                        if result.status == "ok" and result.output is not None:
+                            state.artifacts[self._artifact_key(stage)] = result.output
+                            suspension = (
+                                stage.suspend(state) if stage.suspend is not None else None
+                            )
+                            if suspension is None:
+                                continue
+                            # The stage succeeded and its output is filed; what it produced
+                            # says the run must not carry on by itself. Recorded on the
+                            # stage's own record so the stage list reads the same way the
+                            # status does.
+                            state.stages[-1] = state.stages[-1].model_copy(
+                                update={"summary": suspension.reason}
+                            )
+                            if suspension.status == "escalated":
+                                reason = suspension.escalate_as or ""
                                 if reason not in _ESCALATION_REASONS:
-                                    # An unrecognised reason is a wiring mistake in the
-                                    # integration's gate, not a reason to lose the escalation.
                                     logger.warning(
-                                        "gate on stage %r escalated as unknown reason %r",
+                                        "suspend hook on stage %r escalated as unknown "
+                                        "reason %r",
                                         stage.name, reason,
                                     )
                                     reason = "unknown_category"
@@ -398,141 +527,38 @@ class Orchestrator:
                                 escalation = await self._escalate(
                                     run_id=run_id,
                                     reason=reason,  # type: ignore[arg-type]
-                                    message=decision.reason,
-                                    payload={"stage": stage.name, "gate": decision.reason},
+                                    message=suspension.reason,
+                                    payload={"stage": stage.name, **suspension.payload},
+                                )
+                            else:
+                                status = suspension.status
+                                logger.info(
+                                    "run %s suspended after stage %r: %s",
+                                    run_id, stage.name, suspension.reason,
                                 )
                             break
 
-                    agent = self.agents.get(stage.agent_key)
-                    if agent is None:
-                        # Only reachable for a non-required stage: `__init__` refused to build
-                        # an orchestrator whose required stages had no agent.
-                        state.stages.append(
-                            StageRecord(
-                                stage=stage.name, agent=None, status="skipped",
-                                started_at=datetime.now(UTC), duration_ms=0, attempts=0,
-                                tokens=TokenUsage(),
-                                summary=f"no agent registered for {stage.agent_key!r}",
-                            )
-                        )
-                        continue
+                        if not stage.required:
+                            continue
 
-                    stage_started_at = datetime.now(UTC)
-                    stage_started = time.monotonic()
-                    remaining = self.run_budget_s - (time.monotonic() - started)
-                    try:
-                        result = await asyncio.wait_for(agent.run(state), remaining)
-                    except TimeoutError:
-                        # `wait_for` cancels the stage before raising, so the work
-                        # actually stops rather than continuing unobserved behind a
-                        # run that has already returned.
-                        state.stages.append(
-                            StageRecord(
-                                stage=stage.name,
-                                agent=None,
-                                status="timeout",
-                                started_at=stage_started_at,
-                                duration_ms=int(
-                                    (time.monotonic() - stage_started) * 1000
-                                ),
-                                attempts=0,
-                                tokens=TokenUsage(),
-                                summary=(
-                                    f"run budget of {self.run_budget_s:g}s exhausted "
-                                    f"during stage {stage.name!r}"
-                                ),
-                            )
-                        )
-                        status = "escalated"
+                        kind = result.error.kind if result.error is not None else "internal"
+                        # Unpacked via its own binding rather than straight into `status, reason`:
+                        # `reason` is already bound to a plain `str` in the gate branch above, and
+                        # assigning into it here makes that wider type the expected type of the
+                        # lookup, which drags `reason` back to `str` and drops the
+                        # `EscalationReason` check on the argument below.
+                        outcome = _OUTCOME_FOR_ERROR_KIND.get(kind, _DEFAULT_STAGE_OUTCOME)
+                        status = outcome[0]
                         escalation = await self._escalate(
                             run_id=run_id,
-                            reason="run_timeout",
+                            reason=outcome[1],
                             message=(
-                                f"run exceeded its {self.run_budget_s:g}s budget "
-                                f"during stage {stage.name!r}"
+                                result.error.message if result.error is not None
+                                else f"stage {stage.name!r} produced no output"
                             ),
-                            payload={
-                                "stage": stage.name,
-                                "run_budget_s": self.run_budget_s,
-                            },
+                            payload={"stage": stage.name, "agent": result.agent, "kind": kind},
                         )
                         break
-                    state.stages.append(
-                        StageRecord(
-                            stage=stage.name,
-                            agent=result.agent,
-                            status=result.status,
-                            started_at=stage_started_at,
-                            duration_ms=int((time.monotonic() - stage_started) * 1000),
-                            attempts=result.attempts,
-                            tokens=result.tokens,
-                            summary=(
-                                result.error.message
-                                if result.error is not None
-                                else f"{stage.name} produced {stage.output_model.__name__}"
-                            ),
-                        )
-                    )
-
-                    if result.status == "ok" and result.output is not None:
-                        state.artifacts[self._artifact_key(stage)] = result.output
-                        suspension = (
-                            stage.suspend(state) if stage.suspend is not None else None
-                        )
-                        if suspension is None:
-                            continue
-                        # The stage succeeded and its output is filed; what it produced
-                        # says the run must not carry on by itself. Recorded on the
-                        # stage's own record so the stage list reads the same way the
-                        # status does.
-                        state.stages[-1] = state.stages[-1].model_copy(
-                            update={"summary": suspension.reason}
-                        )
-                        if suspension.status == "escalated":
-                            reason = suspension.escalate_as or ""
-                            if reason not in _ESCALATION_REASONS:
-                                logger.warning(
-                                    "suspend hook on stage %r escalated as unknown "
-                                    "reason %r",
-                                    stage.name, reason,
-                                )
-                                reason = "unknown_category"
-                            status = "escalated"
-                            escalation = await self._escalate(
-                                run_id=run_id,
-                                reason=reason,  # type: ignore[arg-type]
-                                message=suspension.reason,
-                                payload={"stage": stage.name, **suspension.payload},
-                            )
-                        else:
-                            status = suspension.status
-                            logger.info(
-                                "run %s suspended after stage %r: %s",
-                                run_id, stage.name, suspension.reason,
-                            )
-                        break
-
-                    if not stage.required:
-                        continue
-
-                    kind = result.error.kind if result.error is not None else "internal"
-                    # Unpacked via its own binding rather than straight into `status, reason`:
-                    # `reason` is already bound to a plain `str` in the gate branch above, and
-                    # assigning into it here makes that wider type the expected type of the
-                    # lookup, which drags `reason` back to `str` and drops the
-                    # `EscalationReason` check on the argument below.
-                    outcome = _OUTCOME_FOR_ERROR_KIND.get(kind, _DEFAULT_STAGE_OUTCOME)
-                    status = outcome[0]
-                    escalation = await self._escalate(
-                        run_id=run_id,
-                        reason=outcome[1],
-                        message=(
-                            result.error.message if result.error is not None
-                            else f"stage {stage.name!r} produced no output"
-                        ),
-                        payload={"stage": stage.name, "agent": result.agent, "kind": kind},
-                    )
-                    break
 
                 run_span.set_attribute("status", status)
                 if state.degraded:

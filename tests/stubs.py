@@ -163,15 +163,18 @@ def remediation_plan(
 SCENARIO_RUN_IDS = {
     "real_regression": "501234567",
     "flaky_test": "501234890",
+    "cold_start": "501234891",
     "infra_timeout": "501235102",
     "dependency_break": "501235417",
 }
 
 DEPENDENCY_BREAK_HEAD = "c3d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4"
 
-#: `cold_start` is `flaky_test`'s failure on a workflow with no green run, so it shares
-#: that scenario's run id and the stub answers it with the flaky diagnosis -- which is
-#: also its label.
+#: `cold_start` is `flaky_test`'s failure on a workflow with no green run: the same job,
+#: the same log, its own run id (Phase 5: a webhook delivery is keyed on the run id, so two
+#: scenarios cannot share one), and the stub answers it with the flaky diagnosis -- which
+#: is also its label.
+STUB_ALIASES = {"cold_start": "flaky_test"}
 
 
 def scenario_of(prompt: str) -> str:
@@ -182,6 +185,7 @@ def scenario_of(prompt: str) -> str:
 
 
 def notes_for(scenario: str) -> dict[str, Any]:
+    scenario = STUB_ALIASES.get(scenario, scenario)
     observations = {
         "real_regression": [
             "tests/test_pricing.py::test_discount_applies fails with assert 91 == 90",
@@ -211,6 +215,7 @@ def notes_for(scenario: str) -> dict[str, Any]:
 
 
 def diagnosis_for(scenario: str, self_confidence: float = 0.92) -> dict[str, Any]:
+    scenario = STUB_ALIASES.get(scenario, scenario)
     if scenario == "real_regression":
         return {
             "reasoning": "The log shows assert 91 == 90 and the diff changes only discount().",
@@ -290,6 +295,7 @@ def diagnosis_for(scenario: str, self_confidence: float = 0.92) -> dict[str, Any
 PLAN_ACTION_FOR_SCENARIO = {
     "real_regression": "open_fix_pr",
     "flaky_test": "retry_job",
+    "cold_start": "retry_job",
     "infra_timeout": "retry_job",
     "dependency_break": "open_fix_pr",
 }

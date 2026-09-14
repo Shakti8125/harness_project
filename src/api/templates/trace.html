@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run {{ run.run_id }} · Agent Harness</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1c2330; --muted: #5b6573; --line: #dfe3e8;
+    --ok: #1f8a4c; --warn: #b7791f; --bad: #c53030; --info: #2b6cb0; --accent: #4c51bf;
+    --orchestrator: #4c51bf; --agent: #2b6cb0; --llm: #805ad5; --gateway: #2c7a7b;
+    --guardrails: #b7791f; --evaluator: #c05621; --memory: #6b46c1; --context_manager: #319795;
+    --api: #718096;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; }
+  h2 { font-size: 15px; margin: 0 0 10px; font-weight: 600; letter-spacing: .01em; }
+  h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); text-transform: uppercase;
+       letter-spacing: .06em; font-weight: 600; }
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { font-size: 12.5px; }
+  pre { margin: 6px 0; padding: 10px 12px; background: #f1f3f6; border: 1px solid var(--line);
+        border-radius: 6px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  a { color: var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+          padding: 16px 18px; margin: 0 0 16px; }
+  .header { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; }
+  .header .stat { color: var(--muted); }
+  .header .stat b { color: var(--ink); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px;
+          font-weight: 600; border: 1px solid transparent; }
+  .pill.ok, .pill.completed, .pill.verified, .pill.pass, .pill.allow, .pill.executed
+    { color: var(--ok); background: #e8f5ec; }
+  .pill.warn, .pill.awaiting_approval, .pill.require_approval, .pill.unverifiable, .pill.gated,
+  .pill.pending, .pill.skipped, .pill.no_action, .pill.rejected, .pill.deduplicated
+    { color: var(--warn); background: #fbf1df; }
+  .pill.error, .pill.escalated, .pill.failed, .pill.refuted, .pill.fail, .pill.deny, .pill.denied,
+  .pill.timeout, .pill.invalid_output
+    { color: var(--bad); background: #fbe5e5; }
+  .pill.in_progress, .pill.info { color: var(--info); background: #e6f0fa; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px 24px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 13px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-word; }
+  ul.plain { margin: 4px 0; padding-left: 18px; }
+  /* waterfall */
+  .wf { font-size: 12.5px; }
+  .wf .row { display: grid; grid-template-columns: minmax(280px, 34%) 1fr 72px; gap: 8px;
+             align-items: center; padding: 2px 0; border-bottom: 1px solid #eef0f3; }
+  .wf .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wf .name .dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+                   margin-right: 6px; vertical-align: -1px; }
+  .wf .attrs { color: var(--muted); font-size: 11.5px; margin-left: 15px; white-space: nowrap;
+               overflow: hidden; text-overflow: ellipsis; }
+  .wf .track { position: relative; height: 14px; background: #eef0f3; border-radius: 3px; }
+  .wf .bar { position: absolute; top: 0; height: 100%; border-radius: 3px; opacity: .85; }
+  .wf .bar.error { outline: 2px solid var(--bad); }
+  .wf .dur { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .wf .err { color: var(--bad); font-size: 11.5px; margin-left: 15px; }
+  .c-orchestrator { background: var(--orchestrator); } .c-agent { background: var(--agent); }
+  .c-llm { background: var(--llm); } .c-gateway { background: var(--gateway); }
+  .c-guardrails { background: var(--guardrails); } .c-evaluator { background: var(--evaluator); }
+  .c-memory { background: var(--memory); } .c-context_manager { background: var(--context_manager); }
+  .c-api { background: var(--api); }
+  .legend span { margin-right: 14px; font-size: 12px; color: var(--muted); }
+  .legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+  /* cards */
+  .cite { border-left: 3px solid var(--line); padding: 4px 10px; margin: 8px 0; }
+  .cite.verified { border-color: var(--ok); } .cite.refuted { border-color: var(--bad); }
+  .cite.unverifiable { border-color: var(--warn); }
+  .cite blockquote { margin: 4px 0; font-size: 12.5px; }
+  .adj { display: grid; grid-template-columns: max-content max-content 1fr; gap: 2px 14px; font-size: 13px; }
+  .adj .delta { font-variant-numeric: tabular-nums; text-align: right; }
+  .decision { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin: 8px 0; }
+  .decision pre { margin-top: 8px; }
+  .conf { font-size: 15px; }
+  @media (max-width: 720px) { .wf .row { grid-template-columns: 1fr; } .wf .dur { text-align: left; } }
+</style>
+</head>
+<body>
+<main>
+
+<section class="card">
+  <h1>Run <code>{{ run.run_id }}</code>
+    <span class="pill {{ run.status }}">{{ run.status }}</span>
+    {% if run.original_run_id %}<span class="muted">(deduplicated; original <code>{{ run.original_run_id }}</code>)</span>{% endif %}
+  </h1>
+  <div class="header">
+    <span class="stat">integration <b>{{ run.integration }}</b></span>
+    <span class="stat">created <b>{{ run.created_at or "—" }}</b></span>
+    <span class="stat">latency <b>{{ run.duration }}</b></span>
+    <span class="stat">tokens <b>{{ run.tokens.total }}</b>
+      <span class="muted">(prompt {{ run.tokens.prompt }} · completion {{ run.tokens.completion }}{% if run.tokens.thinking %} · thinking {{ run.tokens.thinking }}{% endif %})</span></span>
+    <span class="stat">estimated cost <b>{{ run.cost }}</b></span>
+    <span class="stat">degraded
+      {% if run.degraded %}{% for name in run.degraded %}<span class="pill warn">{{ name }}</span> {% endfor %}{% else %}<b>none</b>{% endif %}
+    </span>
+    <span class="stat">trace <a href="{{ run.trace_url }}"><code>{{ run.trace_url }}</code></a></span>
+  </div>
+</section>
+
+{% if escalation %}
+<section class="card">
+  <h2>Escalation <span class="pill escalated">{{ escalation.reason }}</span></h2>
+  <p>{{ escalation.message }}</p>
+  <dl class="kv">
+    <dt>channels</dt><dd>{{ escalation.channels | join(", ") }}</dd>
+    <dt>delivered at</dt><dd>{{ escalation.delivered_at or "not delivered" }}</dd>
+    {% if escalation.delivery_error %}<dt>delivery error</dt><dd class="pill error">{{ escalation.delivery_error }}</dd>{% endif %}
+  </dl>
+  {% if escalation.payload %}<pre>{{ escalation.payload }}</pre>{% endif %}
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Stages</h2>
+  <table>
+    <tr><th>stage</th><th>agent</th><th>status</th><th class="num">attempts</th><th class="num">tokens</th><th class="num">duration</th><th>summary</th></tr>
+    {% for s in stages %}
+    <tr>
+      <td><code>{{ s.stage }}</code></td><td>{{ s.agent }}</td>
+      <td><span class="pill {{ s.status }}">{{ s.status }}</span></td>
+      <td class="num">{{ s.attempts }}</td><td class="num">{{ s.tokens }}</td><td class="num">{{ s.duration }}</td>
+      <td>{{ s.summary }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+
+<section class="card">
+  <h2>Waterfall <span class="muted">{{ waterfall.count }} spans · {{ waterfall.total_ms }} ms</span></h2>
+  {% if waterfall.missing %}
+  <p class="muted">No spans are recorded for this run.</p>
+  {% else %}
+  <p class="legend">{% for c in waterfall.components %}<span><i class="dot c-{{ c }}"></i>{{ c }}</span>{% endfor %}</p>
+  <div class="wf">
+    {% for r in waterfall.rows %}
+    <div class="row" data-span="{{ r.span_id }}">
+      <div>
+        <div class="name" style="padding-left: {{ r.depth * 14 }}px"><i class="dot c-{{ r.component }}"></i><code>{{ r.name }}</code>
+          {% if r.status != "ok" %}<span class="pill error">{{ r.status }}</span>{% endif %}</div>
+        {% if r.attributes %}<div class="attrs" style="padding-left: {{ r.depth * 14 }}px">{% for k, v in r.attributes %}{{ k }}=<code>{{ v }}</code>{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+        {% if r.error %}<div class="err" style="padding-left: {{ r.depth * 14 }}px">{{ r.error }}</div>{% endif %}
+      </div>
+      <div class="track"><div class="bar c-{{ r.component }}{% if r.status != "ok" %} error{% endif %}" style="left: {{ r.offset_pct }}%; width: {{ r.width_pct }}%"></div></div>
+      <div class="dur">{{ r.duration }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+{% set inv = cards.investigate %}
+<section class="card" id="investigate">
+  <h2>Investigate <span class="muted">· failure bundle</span></h2>
+  {% if inv %}
+  <div class="grid">
+    <div>
+      <h3>Job</h3>
+      <dl class="kv">
+        <dt>repository</dt><dd><code>{{ inv.job.repo }}</code></dd>
+        <dt>workflow / job</dt><dd>{{ inv.job.workflow }} / {{ inv.job.job }}</dd>
+        <dt>run</dt><dd><code>{{ inv.job.run_id }}</code> attempt {{ inv.job.attempt }} · {{ inv.job.conclusion }}</dd>
+        <dt>branch / head</dt><dd><code>{{ inv.job.branch }}</code> @ <code>{{ inv.job.head_sha }}</code></dd>
+        <dt>cold start</dt><dd>{{ "yes" if inv.cold_start else "no" }}</dd>
+      </dl>
+      <h3>Diff against the baseline</h3>
+      <dl class="kv">
+        <dt>baseline</dt><dd><code>{{ inv.diff.baseline_kind }}</code>{% if inv.diff.base_sha %} · <code>{{ inv.diff.base_sha }}</code>…<code>{{ inv.diff.head_sha }}</code>{% endif %}</dd>
+        <dt>commits</dt><dd>{{ inv.diff.commits }} in range{% if inv.diff.commits_behind %} · {{ inv.diff.commits_behind }} behind{% endif %}</dd>
+        <dt>files</dt><dd>{{ inv.diff.files | length }}{% if inv.diff.truncated %} of {{ inv.diff.total_files }} (truncated){% endif %}</dd>
+      </dl>
+      {% if inv.diff.files %}<ul class="plain">{% for f in inv.diff.files %}<li><code>{{ f.path }}</code> <span class="muted">{{ f.status }} +{{ f.additions }} −{{ f.deletions }}</span></li>{% endfor %}</ul>{% endif %}
+      {% if inv.dependency_changes %}
+      <h3>Dependency changes</h3>
+      <ul class="plain">{% for c in inv.dependency_changes %}<li><code>{{ c.ecosystem }}: {{ c.package }} {{ c.from_version or "(new)" }} → {{ c.to_version or "(removed)" }}</code> <span class="muted">{{ c.manifest_path }}</span></li>{% endfor %}</ul>
+      {% endif %}
+    </div>
+    <div>
+      <h3>Logs</h3>
+      {% for l in inv.logs %}
+      <dl class="kv">
+        <dt>job {{ l.job_id }}</dt><dd>{{ l.included_lines }} of {{ l.total_lines }} lines kept · {{ l.anchors }} anchors{% if l.anchors_dropped %} · <span class="pill error">{{ l.anchors_dropped }} anchors dropped</span>{% endif %}{% if l.excerpt_length %} · excerpt {{ l.excerpt_length }} chars (digested at the API boundary){% endif %}</dd>
+      </dl>
+      {% else %}<p class="muted">no log collected</p>{% endfor %}
+      <h3>Memory prior</h3>
+      <dl class="kv">
+        <dt>signature</dt><dd><code>{{ inv.prior.signature_id or "—" }}</code>{% if inv.prior.unavailable %} <span class="pill warn">unavailable</span>{% endif %}</dd>
+        <dt>occurrences</dt><dd>{{ inv.prior.occurrences }} · hint <code>{{ inv.prior.prior_hint }}</code></dd>
+        <dt>verdicts</dt><dd><code>{{ inv.prior.verdict_counts }}</code></dd>
+        <dt>retries in 24 h</dt><dd>{{ inv.prior.retries_in_24h }}{% if inv.prior.last_retry_outcome %} · last <code>{{ inv.prior.last_retry_outcome }}</code>{% endif %}</dd>
+      </dl>
+      {% if inv.observations %}
+      <h3>Investigator observations</h3>
+      <ul class="plain">{% for o in inv.observations %}<li>{{ o }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if inv.gateway_errors %}
+      <h3>Gateway errors</h3>
+      <ul class="plain">{% for e in inv.gateway_errors %}<li><code>{{ e }}</code></li>{% endfor %}</ul>
+      {% endif %}
+      {% if inv.additional_tool_outcomes %}
+      <h3>Additional tool calls</h3>
+      <ul class="plain">{% for o in inv.additional_tool_outcomes %}<li><code>{{ o }}</code></li>{% endfor %}</ul>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}<p class="muted">No failure bundle was produced.</p>{% endif %}
+</section>
+
+{% set dx = cards.diagnose %}
+<section class="card" id="diagnose">
+  <h2>Diagnose{% if dx %} <span class="pill info">{{ dx.category }}</span> <span class="muted">· suggested</span> <code>{{ dx.suggested_action }}</code>{% endif %}</h2>
+  {% if dx %}
+  <p><b>{{ dx.summary }}</b></p>
+  <p class="muted">{{ dx.reasoning }}</p>
+  <dl class="kv">
+    {% if dx.suspected_commit_sha %}<dt>suspected commit</dt><dd><code>{{ dx.suspected_commit_sha }}</code></dd>{% endif %}
+    {% if dx.suspected_test_ids %}<dt>suspected tests</dt><dd>{% for t in dx.suspected_test_ids %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</dd>{% endif %}
+    {% if dx.suspected_package %}<dt>suspected package</dt><dd><code>{{ dx.suspected_package }}</code></dd>{% endif %}
+  </dl>
+  <h3>Confidence</h3>
+  <p class="conf">self-reported <b>{{ dx.self_confidence }}</b> → final <b>{{ dx.final_confidence }}</b> <span class="muted">(Σ adjustments {{ dx.delta }})</span></p>
+  {% if dx.adjustments %}
+  <div class="adj">
+    {% for a in dx.adjustments %}<code>{{ a.name }}</code><span class="delta"><b>{{ a.delta }}</b></span><span class="muted">{{ a.reason }}</span>{% endfor %}
+  </div>
+  {% else %}<p class="muted">no adjustment fired — the self-reported score stood unchanged</p>{% endif %}
+  <h3>Citations ({{ dx.citations | length }}) with verify verdicts</h3>
+  {% for c in dx.citations %}
+  <div class="cite {{ c.verdict.result if c.verdict else '' }}">
+    <div><code>{{ c.claim_kind }}</code> <span class="muted">{{ c.locator }}</span>
+      {% if c.verdict %}<span class="pill {{ c.verdict.result }}">{{ c.verdict.result }}</span> <span class="muted">{{ c.verdict.detail }}{% if c.verdict.matched_locator and c.verdict.matched_locator != c.locator %} · found in {{ c.verdict.matched_locator }}{% endif %}</span>{% else %}<span class="pill skipped">not evaluated</span>{% endif %}
+    </div>
+    <blockquote><code>{{ c.quote }}</code></blockquote>
+    {% if c.note %}<div class="muted">{{ c.note }}</div>{% endif %}
+  </div>
+  {% else %}<p class="muted">no citations</p>{% endfor %}
+  {% else %}<p class="muted">No diagnosis was produced.</p>{% endif %}
+</section>
+
+{% set ev = cards.evaluate %}
+<section class="card" id="evaluate">
+  <h2>Evaluate{% if ev %} <span class="pill {{ ev.verdict }}">{{ ev.verdict }}</span>{% endif %}</h2>
+  {% if ev %}
+  <dl class="kv">
+    <dt>claims</dt><dd>{{ ev.total }} · <span class="pill verified">{{ ev.verified }} verified</span> <span class="pill refuted">{{ ev.refuted }} refuted</span> <span class="pill unverifiable">{{ ev.unverifiable }} unverifiable</span></dd>
+    <dt>confidence delta</dt><dd><b>{{ ev.confidence_delta }}</b></dd>
+    <dt>reason</dt><dd>{{ ev.reason }}</dd>
+  </dl>
+  {% else %}<p class="muted">The run did not reach the evaluate stage.</p>{% endif %}
+</section>
+
+{% set rm = cards.remediate %}
+<section class="card" id="remediate">
+  <h2>Remediate{% if rm %} <span class="pill {{ rm.status }}">{{ rm.status }}</span> <span class="muted">· plan</span> <code>{{ rm.plan.action }}</code>{% endif %}</h2>
+  {% if rm %}
+  <p class="muted">{{ rm.plan.rationale }}</p>
+  {% if rm.plan.pr_draft %}
+  <h3>PR draft</h3>
+  <dl class="kv">
+    <dt>branch</dt><dd><code>{{ rm.plan.pr_draft.branch }}</code> → <code>{{ rm.plan.pr_draft.base }}</code></dd>
+    <dt>title</dt><dd>{{ rm.plan.pr_draft.title }}</dd>
+    <dt>files</dt><dd>{% for f in rm.plan.pr_draft.files %}<code>{{ f }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</dd>
+    <dt>labels</dt><dd>{{ rm.plan.pr_draft.labels | join(", ") }}</dd>
+  </dl>
+  {% endif %}
+  {% if rm.plan.ticket_draft %}
+  <h3>Ticket draft</h3>
+  <dl class="kv"><dt>title</dt><dd>{{ rm.plan.ticket_draft.title }}</dd><dt>labels</dt><dd>{{ rm.plan.ticket_draft.labels | join(", ") }}</dd></dl>
+  {% endif %}
+  <h3>Policy decisions ({{ rm.decisions | length }})</h3>
+  {% for d in rm.decisions %}
+  <div class="decision">
+    <div><code>{{ d.tool }}</code> → <span class="pill {{ d.effect }}">{{ d.effect }}</span>
+      {% if d.downgraded_from %}<span class="muted">downgraded from</span> <span class="pill {{ d.downgraded_from }}">{{ d.downgraded_from }}</span>{% endif %}
+      <span class="muted">· rule</span> <code>{{ d.rule_id }}</code></div>
+    <div class="muted">{{ d.reason }}</div>
+    {% if d.obligations %}<div class="muted">obligations: {% for o in d.obligations %}<code>{{ o }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}
+    <pre>{{ d.rule }}</pre>
+  </div>
+  {% else %}<p class="muted">no decisions</p>{% endfor %}
+  {% if rm.executed %}
+  <h3>Executed</h3>
+  <table>
+    <tr><th>tool</th><th>ok</th><th>dry run</th><th>cached</th><th>result</th></tr>
+    {% for r in rm.executed %}
+    <tr><td><code>{{ r.tool }}</code></td><td><span class="pill {{ 'ok' if r.ok else 'error' }}">{{ "ok" if r.ok else "failed" }}</span></td>
+      <td>{{ "yes" if r.dry_run else "no" }}</td><td>{{ "yes" if r.cached else "no" }}</td>
+      <td>{% if r.error %}<span class="pill error">{{ r.error }}</span>{% else %}<code>{{ r.data }}</code>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% if rm.pending_approval %}
+  <h3>Approval</h3>
+  <dl class="kv">
+    <dt>id</dt><dd><code>{{ rm.pending_approval.approval_id }}</code> <span class="pill {{ rm.pending_approval.state }}">{{ rm.pending_approval.state }}</span></dd>
+    <dt>requested</dt><dd>{{ rm.pending_approval.requested_at }}</dd>
+    <dt>expires</dt><dd>{{ rm.pending_approval.expires_at }}</dd>
+  </dl>
+  {% endif %}
+  {% else %}
+  {% set gated = stages | selectattr("stage", "equalto", "remediate") | list %}
+  {% if gated %}<p class="muted">The remediate stage was <span class="pill {{ gated[0].status }}">{{ gated[0].status }}</span>: {{ gated[0].summary }}</p>
+  {% else %}<p class="muted">The run did not reach the remediate stage.</p>{% endif %}
+  {% endif %}
+</section>
+
+</main>
+</body>
+</html>

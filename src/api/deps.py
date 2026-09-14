@@ -31,6 +31,7 @@ route is a fault nothing injects, which is why the known-names check lives here.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -69,13 +70,20 @@ FIXTURES_ROOT: Final[Path] = REPO_ROOT / "fixtures" / "scenarios"
 #: Credential shapes scrubbed from every trace, on top of the exact values registered
 #: from config. These name specific vendors' token formats, which is domain knowledge —
 #: PLAN.md keeps it out of `harness/observability.py` deliberately, and the composition
-#: root is where it belongs. The fuller list arrives with the observability phase.
+#: root is where it belongs. Phase 5 completes PLAN's list ("Secrets never reach the
+#: trace", mechanism 3): the PEM header -- widened to take the whole block when its END
+#: line is present, so a pasted key is not left with only its first line redacted -- and
+#: the `api_key=` / `token:` / `password=` assignment shapes.
 SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{22,}"),
     re.compile(r"AIza[0-9A-Za-z_\-]{35}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{20,}"),
+    re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?"
+    ),
+    re.compile(r"(?i)(api[_-]?key|token|password)\s*[:=]\s*\S{8,}"),
 )
 
 
@@ -217,7 +225,10 @@ class AppContext:
             object.__setattr__(
                 self,
                 "memory",
-                build_memory_store(self.settings, self.recorder.redactor, fault=self.fault),
+                build_memory_store(
+                    self.settings, self.recorder.redactor, fault=self.fault,
+                    recorder=self.recorder,
+                ),
             )
         if self.notifier is None:
             object.__setattr__(
@@ -284,7 +295,29 @@ class AppContext:
             repo=repo,
             forbidden=self.forbidden,
             dry_run=self.settings.dry_run,
+            recorder=self.recorder,
         )
+
+    def match_scenario(self, subject: dict[str, object]) -> tuple[str, Path] | None:
+        """The recorded scenario a webhook delivery is a replay of, if any (Phase 5).
+
+        A replay-only deployment has no repository allowlist; its recorded scenarios are
+        what it can run, so a delivery is accepted when its Appendix C key -- repository,
+        `workflow_run.id`, `run_attempt` -- equals that of some scenario's `webhook.json`.
+        Read from disk on every call: five small files, and no cache to invalidate when a
+        fixture is recorded while the process runs.
+        """
+        wanted = _delivery_key(subject)
+        if wanted is None:
+            return None
+        for webhook in sorted(FIXTURES_ROOT.glob("*/webhook.json")):
+            try:
+                recorded = json.loads(webhook.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(recorded, dict) and _delivery_key(recorded) == wanted:
+                return webhook.parent.name, webhook.parent
+        return None
 
     def build_live_gateway(self, repo: str) -> GitHubToolGateway:
         """The real gateway, for one repository. Never built unless `gateway == "github"`.
@@ -371,8 +404,29 @@ class AppContext:
         )
 
 
+def _delivery_key(subject: dict[str, object]) -> tuple[str, int, int] | None:
+    """Appendix C's three identifiers off a `workflow_run` delivery, or `None` when the
+    body is not shaped like one."""
+    run = subject.get("workflow_run")
+    repository = subject.get("repository")
+    if not isinstance(run, dict) or not isinstance(repository, dict):
+        return None
+    try:
+        return (
+            str(repository.get("full_name", "")),
+            int(run.get("id", 0)),
+            int(run.get("run_attempt", 1)),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def build_memory_store(
-    settings: Settings, redactor: Redactor | None = None, *, fault: Fault | None = None
+    settings: Settings,
+    redactor: Redactor | None = None,
+    *,
+    fault: Fault | None = None,
+    recorder: TraceRecorder | None = None,
 ) -> SqliteMemoryStore:
     """The one `MemoryStore`, over the same file the recorder writes, scrubbing what it
     stores through the same `Redactor` the recorder uses (or one built here when a
@@ -381,13 +435,14 @@ def build_memory_store(
     `fault` is the already-guarded `HARNESS_FAULT_INJECT` (`build_fault`); only
     `sqlite_locked` is the store's -- it makes every store operation fail as if the file
     were locked (PLAN.md Phase 3 Verify step 4) -- and any other fault leaves the store
-    alone.
+    alone. `recorder` (Phase 5) is what the store writes its `memory.*` spans through.
     """
     store_fault = fault.name if fault is not None and fault.name == FAULT_SQLITE_LOCKED else None
     return SqliteMemoryStore(
         settings.database_path,
         fault_inject=store_fault,
         redactor=redactor or Redactor(build_secret_registry(settings), SECRET_PATTERNS),
+        recorder=recorder,
     )
 
 
@@ -422,7 +477,9 @@ def get_app_context() -> AppContext:
         # PLAN.md's log context budget has two homes and this is the wire between them.
         # A bare `ContextBudget()` here would make `HARNESS_LOG_CHAR_BUDGET` a silent
         # no-op, which is the failure this line exists to prevent.
-        default_budget=ContextBudget(total_chars=settings.log_char_budget)
+        default_budget=ContextBudget(total_chars=settings.log_char_budget),
+        # Phase 5: the `context.assemble` spans.
+        recorder=recorder,
     )
 
     llm: LlmClient = GeminiClient(
@@ -437,7 +494,7 @@ def get_app_context() -> AppContext:
         context_manager=context_manager,
         llm=llm,
         run_semaphore=asyncio.Semaphore(settings.max_concurrent_runs),
-        memory=build_memory_store(settings, redactor, fault=fault),
+        memory=build_memory_store(settings, redactor, fault=fault, recorder=recorder),
         engine=PolicyEngine(load_policy_spec()),
         fault=fault,
         notifier=build_notifier(settings, redactor),

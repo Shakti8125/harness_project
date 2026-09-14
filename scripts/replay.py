@@ -3,6 +3,14 @@
 
     uv run python scripts/replay.py real_regression
     uv run python scripts/replay.py --live --repo <owner>/<name> --run-id <workflow_run_id>
+    uv run python scripts/replay.py --post-signed fixtures/scenarios/flaky_test/webhook.json [--wait]
+
+`--post-signed` (PLAN.md Phase 5, Verify steps 3-4) is the webhook client: it signs the
+file's bytes with `HARNESS_GITHUB_WEBHOOK_SECRET` exactly as GitHub would, posts them to
+`--url` (default `http://127.0.0.1:8000`) with the three GitHub headers, and prints the
+status and the body's `run_id` / `status` / `original_run_id`. `--wait` then polls
+`GET /v1/runs/{id}` until the run leaves `in_progress`. A second post of the same file
+prints the `deduplicated` line Appendix C promises.
 
 Replay mode drives the same pipeline the API's `POST /v1/replay/{scenario}` drives, minus
 HTTP. Live mode (PLAN.md Phase 2, Verify step 5) fetches the named workflow run from the
@@ -29,6 +37,7 @@ import asyncio
 import json
 import secrets
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +48,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.api.deps import FIXTURES_ROOT, get_app_context  # noqa: E402
 from src.api.main import idempotency_key_for  # noqa: E402
+from src.api.webhook import DELIVERY_HEADER, EVENT_HEADER, SIGNATURE_HEADER, sign  # noqa: E402
 from src.harness.contracts import RunOutcome, RunRequest  # noqa: E402
 from src.harness.memory import MemoryStoreError  # noqa: E402
 from src.integrations.cicd.agents.investigator import parse_subject  # noqa: E402
@@ -118,6 +128,48 @@ async def print_gateway_spans(run_id: str) -> None:
         print("  every gateway span is a read")
 
 
+TERMINAL_STATUSES = frozenset({"completed", "escalated", "awaiting_approval", "failed", "deduplicated"})
+
+
+async def post_signed(path: Path, url: str, secret: str, *, wait: bool, timeout_s: float) -> int:
+    """Sign `path`'s bytes and deliver them like GitHub would; print what came back."""
+    body = path.read_bytes()
+    headers = {
+        "Content-Type": "application/json",
+        EVENT_HEADER: "workflow_run",
+        DELIVERY_HEADER: str(uuid.uuid4()),
+        SIGNATURE_HEADER: sign(secret, body),
+        "User-Agent": "GitHub-Hookshot/replay.py",
+    }
+    async with httpx.AsyncClient(base_url=url.rstrip("/"), timeout=timeout_s) as client:
+        response = await client.post("/webhooks/github", content=body, headers=headers)
+        payload: dict[str, Any] = {}
+        if response.headers.get("content-type", "").startswith(("application/json", "application/problem+json")):
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+        summary = {k: payload.get(k) for k in ("run_id", "status", "original_run_id") if k in payload}
+        if "detail" in payload:
+            summary["detail"] = payload["detail"]
+        print(response.status_code, json.dumps(summary, separators=(",", ":")))
+        run_id = payload.get("run_id")
+        if not wait or not isinstance(run_id, str) or payload.get("status") in TERMINAL_STATUSES:
+            return 0 if response.status_code < 400 else 1
+        while True:
+            await asyncio.sleep(1.0)
+            polled = await client.get(f"/v1/runs/{run_id}")
+            state = polled.json() if polled.status_code == 200 else {}
+            if state.get("status") in TERMINAL_STATUSES:
+                diagnosis = (state.get("final") or {}).get("diagnosis") or {}
+                print(
+                    f"{run_id}: {state.get('status')}"
+                    + (f" ({diagnosis.get('category')} {diagnosis.get('final_confidence'):.2f})" if diagnosis else "")
+                )
+                return 0
+            print(f"{run_id}: {state.get('status', polled.status_code)} ...", file=sys.stderr)
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("scenario", nargs="?", help="a directory under fixtures/scenarios/")
@@ -125,7 +177,19 @@ async def main() -> int:
     parser.add_argument("--repo", help="owner/name (live mode)")
     parser.add_argument("--run-id", type=int, help="the failing workflow_run id (live mode)")
     parser.add_argument("--json", action="store_true", help="print the full RunOutcome as JSON")
+    parser.add_argument("--post-signed", type=Path, metavar="WEBHOOK_JSON", help="sign and POST a webhook body to a running server")
+    parser.add_argument("--url", default="http://127.0.0.1:8000", help="the server for --post-signed")
+    parser.add_argument("--wait", action="store_true", help="with --post-signed: poll the run until it finishes")
+    parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds for --post-signed")
     args = parser.parse_args()
+
+    if args.post_signed is not None:
+        if not args.post_signed.is_file():
+            parser.error(f"no such file: {args.post_signed}")
+        from src.settings import get_settings
+
+        secret = get_settings().github_webhook_secret.get_secret_value()
+        return await post_signed(args.post_signed, args.url, secret, wait=args.wait, timeout_s=args.timeout)
 
     context = get_app_context()
     await context.initialize()

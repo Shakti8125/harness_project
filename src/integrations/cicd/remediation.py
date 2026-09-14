@@ -163,7 +163,9 @@ def idempotency_key_for(run_id: RunId, call: ToolCall) -> str:
     return f"{run_id}:{call.tool}:{digest}"
 
 
-def canonical_tool_calls(plan: RemediationPlan, job: JobRef) -> list[ToolCall]:
+def canonical_tool_calls(
+    plan: RemediationPlan, job: JobRef, *, signature_id: str | None = None
+) -> list[ToolCall]:
     """The tool calls an action implies, derived from the plan's own drafts.
 
     The mapping is fixed -- there is exactly one way to retry a run, a ticket is one
@@ -172,6 +174,10 @@ def canonical_tool_calls(plan: RemediationPlan, job: JobRef) -> list[ToolCall]:
     identifiers (run id, attempt, head sha) come from the bundle rather than from the
     model's transcription of them. An action whose content the plan does not carry (a PR
     with no `pr_draft`) derives nothing; see `normalize_plan` for what happens then.
+
+    `signature_id` (Phase 5) rides on the `create_issue` call so the live gateway can
+    embed Appendix C's `<!-- harness:signature:… -->` marker and find the open issue for
+    this failure on the next sighting instead of filing a second one.
     """
     if plan.action == "retry_job":
         return [
@@ -192,6 +198,7 @@ def canonical_tool_calls(plan: RemediationPlan, job: JobRef) -> list[ToolCall]:
                     "title": plan.ticket_draft.title,
                     "body": plan.ticket_draft.body,
                     "labels": list(plan.ticket_draft.labels),
+                    **({"signature_id": signature_id} if signature_id else {}),
                 },
             )
         ]
@@ -262,6 +269,7 @@ def normalize_plan(
     run_id: RunId,
     job: JobRef,
     forbidden: frozenset[str] = frozenset(),
+    signature_id: str | None = None,
 ) -> NormalizedPlan:
     """The plan as the harness will evaluate and store it.
 
@@ -285,7 +293,10 @@ def normalize_plan(
     """
     proposed = [call.tool for call in plan.tool_calls]
     derived = False
-    canonical = canonical_tool_calls(plan, job) if plan.action != "no_action" else []
+    canonical = (
+        canonical_tool_calls(plan, job, signature_id=signature_id)
+        if plan.action != "no_action" else []
+    )
     if canonical:
         derived = True
         calls = canonical

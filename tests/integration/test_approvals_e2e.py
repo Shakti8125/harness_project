@@ -127,9 +127,9 @@ def test_reject_then_repost_is_409(client: TestClient) -> None:
 
 
 def test_approve_re_evaluates_and_executes_through_the_gateway(client: TestClient) -> None:
-    """Approve: policy is re-evaluated, then every call runs. In this phase the PR tools
-    are registered but unimplemented, so the first call fails honestly and the plan stops
-    there -- which is exactly the state a person approving should see."""
+    """Approve: policy is re-evaluated, then every call runs. Since Phase 5 the PR tools
+    are implemented in both gateways, so the whole plan executes -- branch, file, PR --
+    each call dry-run (`HARNESS_DRY_RUN` defaults to true) and the run completes."""
     body = client.post("/v1/replay/real_regression").json()
     apr = body["final"]["remediation"]["pending_approval"]["approval_id"]
 
@@ -146,35 +146,33 @@ def test_approve_re_evaluates_and_executes_through_the_gateway(client: TestClien
     for fresh, old in zip(payload["decisions"], stored, strict=True):
         assert fresh["evaluated_at"] > old["evaluated_at"]
         assert fresh["rule_id"] == old["rule_id"]
-    assert len(payload["executed"]) == 1
-    executed = payload["executed"][0]
-    assert executed["tool"] == "create_branch"
-    assert executed["ok"] is False
-    assert executed["error"]["kind"] == "unknown"
-    assert "not implemented" in executed["error"]["message"]
+    assert [r["tool"] for r in payload["executed"]] == [
+        "create_branch", "create_or_update_file", "open_pull_request",
+    ]
+    assert all(r["ok"] for r in payload["executed"])
+    assert all(r["dry_run"] for r in payload["executed"]), "writes are opt-in (Appendix E)"
+    pull = payload["executed"][2]["data"]
+    assert pull["draft"] is True
+    assert pull["html_url"].endswith(f"/pull/{pull['number']}")
 
-    # Appendix B.2: a write that failed is a run failure. The approval was recorded, the
-    # plan was executed as far as it could be, and the run says so rather than "completed".
+    # The approval was recorded, the plan executed, and the run completed.
     run = client.get(f"/v1/runs/{body['run_id']}").json()
-    assert run["status"] == "escalated"
-    assert run["escalation"]["reason"] == "tool_failure"
-    assert run["escalation"]["payload"]["approval_id"] == apr
-    assert "create_branch" in run["escalation"]["message"]
+    assert run["status"] == "completed"
+    assert run["escalation"] is None
     assert run["final"]["remediation"]["status"] == "executed"
     assert run["final"]["remediation"]["pending_approval"]["state"] == "approved"
-    assert len(run["final"]["remediation"]["executed"]) == 1
+    assert len(run["final"]["remediation"]["executed"]) == 3
 
     listed = client.get("/v1/escalations").json()
-    assert any(
-        item["run_id"] == body["run_id"] and item["reason"] == "tool_failure" for item in listed
-    )
+    assert not any(item["run_id"] == body["run_id"] for item in listed)
 
-    # The trace records the execution attempt against the run it belongs to.
+    # The trace records every execution against the run it belongs to.
     trace = client.get(f"/v1/runs/{body['run_id']}/trace").json()
     execute_spans = [s for s in trace["spans"] if s["name"] == "remediation.execute"]
-    assert len(execute_spans) == 1
-    assert execute_spans[0]["attributes"]["tool"] == "create_branch"
-    assert execute_spans[0]["attributes"]["ok"] is False
+    assert [s["attributes"]["tool"] for s in execute_spans] == [
+        "create_branch", "create_or_update_file", "open_pull_request",
+    ]
+    assert all(s["attributes"]["ok"] and s["attributes"]["dry_run"] for s in execute_spans)
 
 
 def test_unknown_approval_is_404(client: TestClient) -> None:

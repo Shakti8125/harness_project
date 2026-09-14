@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from src.harness.observability import TraceRecorder
 
 DEFAULT_TOTAL_CHARS: Final[int] = 120_000       # ~30 k tokens
 DEFAULT_ANCHOR_WINDOW_LINES: Final[int] = 20    # +/- lines around each anchor
@@ -153,8 +156,10 @@ class ContextManager:
         *,
         default_budget: ContextBudget | None = None,
         normalizers: Sequence[Callable[[str], str]] | None = None,
+        recorder: TraceRecorder | None = None,
     ) -> None:
-        """Bind the assembler to its default budget and line normalizers.
+        """Bind the assembler to its default budget, line normalizers and, optionally, a
+        trace recorder for :meth:`assemble_traced`.
 
         ``default_budget`` is not consulted by :meth:`assemble` -- ``ContextRequest``
         carries the budget that request is assembled under, per Appendix A.3, and that
@@ -170,6 +175,10 @@ class ContextManager:
         self.normalizers = (
             tuple(normalizers) if normalizers is not None else DEFAULT_NORMALIZERS
         )
+        # Phase 5 (A.3 amended additively): the recorder `assemble_traced` writes its
+        # `context.assemble` span through. `None` -- the default, and every hand-built
+        # manager -- traces nothing; `assemble` itself never records.
+        self.recorder = recorder
 
     # -- step 1 ------------------------------------------------------------------
     def _normalize(self, content: str) -> list[str]:
@@ -388,6 +397,35 @@ class ContextManager:
             truncation=reports,
             estimated_tokens=len(joined) // CHARS_PER_TOKEN,
         )
+
+    async def assemble_traced(self, req: ContextRequest) -> ContextBundle:
+        """:meth:`assemble`, under one ``context.assemble`` span when a recorder is bound.
+
+        ``assemble`` is synchronous by contract (A.3) and stays so; this is the async
+        wrapper an agent calls from inside its own span so the budgeting shows up in the
+        trace as a child of the agent that asked for it. The span records the request's
+        shape (section keys, the character budget) and the outcome (estimated tokens and
+        every section's ``TruncationReport``), which is the evidence for the load-bearing
+        property this module states: an anchor that was dropped is on the record as
+        ``anchors_dropped``, never silently gone.
+        """
+        if self.recorder is None:
+            return self.assemble(req)
+        async with self.recorder.span(
+            "context.assemble",
+            "context_manager",
+            sections=[section.key for section in req.sections],
+            budget_chars=req.budget.total_chars,
+            reserve_chars=req.budget.reserve_chars,
+        ) as span:
+            bundle = self.assemble(req)
+            span.set_attribute("estimated_tokens", bundle.estimated_tokens)
+            span.set_attribute("text_chars", len(bundle.text))
+            span.set_attribute(
+                "truncation",
+                {key: report.model_dump(mode="json") for key, report in bundle.truncation.items()},
+            )
+            return bundle
 
 
 ContextRequest.model_rebuild()

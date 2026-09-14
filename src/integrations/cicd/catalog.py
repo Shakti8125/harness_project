@@ -142,6 +142,9 @@ CATALOG: Final[tuple[ToolSpec, ...]] = (
             "title": {"type": "string"},
             "body": {"type": "string"},
             "labels": {"type": "array", "items": {"type": "string"}},
+            # Set by the harness, never by the model: the failure signature the issue
+            # is filed for, embedded as Appendix C's marker so a repeat is a comment.
+            "signature_id": {"type": "string"},
         },
         ["title", "body"],
         side_effect="write",
@@ -165,12 +168,20 @@ WRITE_TOOLS: Final[tuple[str, ...]] = tuple(
     spec.name for spec in CATALOG if spec.side_effect != "read"
 )
 
-#: Write tools with a real body in this phase. Everything else in `WRITE_TOOLS` is
-#: registered -- so the *decision* about it is real and traceable -- and answers
-#: `ToolError(kind="unknown")` naming the phase that implements it (PLAN.md Phase 2,
-#: "Deferred"). Returned rather than raised because `invoke` raises only for programming
-#: errors, and a person approving a plan through the API is not one.
-IMPLEMENTED_WRITE_TOOLS: Final[frozenset[str]] = frozenset({"rerun_failed_jobs"})
+#: Write tools with a real body. Since Phase 5 that is every write the policy can allow;
+#: `merge_pull_request` is forbidden and refused before any gateway looks at it. A future
+#: catalog write tool without a body answers `ToolError(kind="unknown")` naming the phase
+#: that implements it -- returned rather than raised because `invoke` raises only for
+#: programming errors, and a person approving a plan through the API is not one.
+IMPLEMENTED_WRITE_TOOLS: Final[frozenset[str]] = frozenset(
+    {
+        "rerun_failed_jobs",
+        "create_branch",
+        "create_or_update_file",
+        "open_pull_request",
+        "create_issue",
+    }
+)
 
 
 def side_effect_of(tool: str) -> SideEffect:
@@ -185,7 +196,4 @@ def side_effect_of(tool: str) -> SideEffect:
 
 
 def not_implemented_message(tool: str) -> str:
-    return (
-        f"{tool!r} is registered in the catalog but not implemented in this phase; "
-        "the PR-writing and issue tools land with the trace-view/webhook phase"
-    )
+    return f"{tool!r} is registered in the catalog but no gateway implements it yet"

@@ -175,10 +175,18 @@ def make_remediation_gate(escalation_threshold: float):  # noqa: ANN201 - closur
         # should say which.
         if evaluation is not None and getattr(evaluation, "verdict", None) == "fail":
             why = getattr(evaluation, "reason", "") or "evidence refuted"
+            # Phase 5 (A.1 amended): a `fail` reached on the share rule alone -- too few
+            # claims verified, none shown false -- escalates `evidence_unverifiable`, so the
+            # reason enum says what the verdicts say. Any refuted claim is still
+            # `evidence_refuted`, whatever else the report counted.
+            refuted = getattr(evaluation, "refuted", 0)
             return GateDecision(
                 proceed=False,
                 reason=f"evaluator verdict fail: {why}",
-                escalate_as="evidence_refuted",
+                escalate_as=(
+                    "evidence_refuted" if isinstance(refuted, int) and refuted > 0
+                    else "evidence_unverifiable"
+                ),
             )
         if diagnosis.final_confidence < escalation_threshold:
             return GateDecision(

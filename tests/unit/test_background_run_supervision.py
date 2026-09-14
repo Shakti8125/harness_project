@@ -211,4 +211,6 @@ def test_neither_call_site_still_silences_ruf006() -> None:
     """
     source = Path("src/api/main.py").read_text(encoding="utf-8")
     assert "noqa: RUF006" not in source
-    assert source.count("_spawn_run(") == 3  # one definition, two call sites
+    # One definition, three call sites: `POST /v1/runs`, `POST /v1/replay/{scenario}`
+    # with `sync=false`, and -- since Phase 5 -- `POST /webhooks/github`.
+    assert source.count("_spawn_run(") == 4

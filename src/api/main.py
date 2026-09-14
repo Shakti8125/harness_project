@@ -3,9 +3,8 @@
 The run surface of PLAN.md Appendix A.12 that the built slices can back: `/healthz`,
 `/readyz`, `POST /v1/runs` (replay, and live behind two opt-ins), `GET /v1/runs/{run_id}`,
 `GET /v1/runs`, `GET /v1/runs/{run_id}/trace`, the demo path `POST /v1/replay/{scenario}`,
-and -- since the Guardrails phase -- `POST /v1/approvals/{approval_id}` and
-`GET /v1/escalations`. `/webhooks/github` and `/runs/{id}/view` arrive with the
-observability phase.
+since the Guardrails phase `POST /v1/approvals/{approval_id}` and `GET /v1/escalations`,
+and since the observability phase `POST /webhooks/github` and `GET /runs/{run_id}/view`.
 
 Errors use RFC 9457 `application/problem+json`, per A.12.
 """
@@ -29,11 +28,20 @@ from typing import Any, Final, Literal
 import aiosqlite
 from fastapi import FastAPI, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.api.deps import AppContext, RunContext, get_app_context, mint_run_id
+from src.api.trace_view import render_trace_page
+from src.api.webhook import (
+    DELIVERY_HEADER,
+    EVENT_HEADER,
+    SIGNATURE_HEADER,
+    classify_event,
+    delivery_id,
+    verify_signature,
+)
 from src.harness.contracts import (
     EscalationRecord,
     RunId,
@@ -1058,6 +1066,118 @@ async def create_run(request: Request, run_request: RunRequest) -> Response:
     )
 
 
+#: Logged once per process when a delivery arrives and no secret is configured: the
+#: route answers `401` either way, and a replay-only deployment must not fail to boot
+#: for want of a webhook secret it never uses.
+_webhook_secret_warned: Final[list[bool]] = []
+
+
+@app.post("/webhooks/github")
+async def github_webhook(request: Request) -> Response:
+    """GitHub's `workflow_run` delivery, verified, filtered, claimed, and run in the
+    background -- `202 {run_id, status}` per A.12, well inside GitHub's 10 s.
+
+    In order (PLAN.md Phase 5, "Webhook"): the signature over the raw bytes, before the
+    body is parsed (`401`); the event filter (`204` for anything but a completed run
+    with conclusion `failure`); acceptance by mode -- a live deployment checks
+    `HARNESS_ALLOWED_REPOS`, a replay deployment checks that the delivery matches a
+    recorded scenario's webhook (its recorded scenarios *are* its allowlist) -- `403`
+    otherwise; then Appendix C's key and claim, `_claim_response` for a redelivery, and
+    the same `_execute` `POST /v1/runs` spawns. No header reaches a span, a log line or
+    a problem document; the delivery id rides in `requested_by` only when GUID-shaped.
+    """
+    context = get_app_context()
+    raw = await request.body()
+    secret = context.settings.github_webhook_secret.get_secret_value()
+    if not secret.strip() and not _webhook_secret_warned:
+        _webhook_secret_warned.append(True)
+        logger.warning(
+            "webhook: HARNESS_GITHUB_WEBHOOK_SECRET is blank; every delivery is refused"
+        )
+    if not verify_signature(secret, raw, request.headers.get(SIGNATURE_HEADER)):
+        return problem(
+            request, status_code=401, title="Signature required",
+            detail=(
+                f"The {SIGNATURE_HEADER} header is missing or does not match the payload."
+            ),
+            headers={"WWW-Authenticate": 'HMAC-SHA256 realm="webhooks/github"'},
+        )
+
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return problem(
+            request, status_code=400, title="Malformed delivery",
+            detail="The delivery body is not valid JSON.",
+        )
+    verdict = classify_event(request.headers.get(EVENT_HEADER), payload)
+    if verdict.outcome == "malformed":
+        return problem(
+            request, status_code=400, title="Malformed delivery", detail=verdict.reason,
+        )
+    if verdict.outcome == "ignore":
+        logger.info("webhook: ignored delivery (%s)", verdict.reason)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    try:
+        parsed = parse_subject(payload)
+    except (TypeError, ValueError, AttributeError):
+        return problem(
+            request, status_code=400, title="Malformed delivery",
+            detail="The workflow_run object is not shaped like GitHub's.",
+        )
+    repo = parsed["repo"]
+    run_context: RunContext
+    mode: Literal["live", "replay"]
+    fixture: str | None
+    if context.settings.gateway == "github":
+        if not context.live_allowed(repo):
+            return problem(
+                request, status_code=403, title="Repository not allowlisted",
+                detail="The delivery's repository is not in HARNESS_ALLOWED_REPOS.",
+            )
+        run_context = RunContext(mode="live", repo=repo, scenario_dir=None)
+        mode, fixture = "live", None
+    else:
+        matched = context.match_scenario(payload)
+        if matched is None:
+            return problem(
+                request, status_code=403, title="Repository not allowlisted",
+                detail=(
+                    "This deployment is configured for replay only (HARNESS_GATEWAY=replay) "
+                    "and the delivery matches no recorded scenario."
+                ),
+            )
+        fixture, scenario_dir = matched
+        run_context = RunContext(mode="replay", repo=repo, scenario_dir=scenario_dir)
+        mode = "replay"
+
+    guid = delivery_id(request.headers.get(DELIVERY_HEADER))
+    run_request = RunRequest(
+        integration=INTEGRATION,
+        subject=payload,
+        idempotency_key=idempotency_key_for(payload),
+        mode=mode,
+        replay_fixture=fixture,
+        requested_by=f"webhook:github:{guid}" if guid else "webhook:github",
+    )
+    claim = await _claim_or_degrade(context.store, run_request.idempotency_key, INTEGRATION)
+    refused = _claim_response(claim)
+    if refused is not None:
+        return refused
+    if claim.took_over_from is not None:
+        logger.warning(
+            "run %s took over %s: its heartbeat went stale", claim.run_id, claim.took_over_from
+        )
+    run_id = claim.run_id
+    request.state.run_id = run_id
+    _spawn_run(_execute(context, run_request, run_context, run_id), run_id)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={"run_id": run_id, "status": "in_progress"},
+    )
+
+
 @app.get("/v1/runs")
 async def list_runs(
     status_filter: str | None = Query(None, alias="status"),
@@ -1109,6 +1229,28 @@ async def get_run_trace(request: Request, run_id: str) -> Response:
     return JSONResponse(
         status_code=status.HTTP_200_OK, content=trace.model_dump(mode="json")
     )
+
+
+@app.get("/runs/{run_id}/view", response_class=HTMLResponse)
+async def view_run(request: Request, run_id: str) -> Response:
+    """The trace view (PLAN.md Phase 5): one server-rendered page over the same bodies
+    `GET /v1/runs/{id}` and `GET /v1/runs/{id}/trace` serve -- digested and scrubbed
+    first, then rendered, so nothing reaches the HTML that could not reach the JSON."""
+    context = get_app_context()
+    outcome = await context.store.get_run(run_id)
+    if outcome is None:
+        return problem(
+            request, status_code=404, title="Run not found",
+            detail="No run with that id is recorded.", run_id=run_id,
+        )
+    trace = await context.recorder.read_trace(run_id)
+    trace_body = (
+        context.recorder.redactor.scrub(trace.model_dump(mode="json"))
+        if trace is not None else None
+    )
+    assert trace_body is None or isinstance(trace_body, dict)
+    html = render_trace_page(_serialize_run_outcome(outcome), trace_body, context.engine)
+    return HTMLResponse(content=html, status_code=status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------

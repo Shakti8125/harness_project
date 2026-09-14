@@ -174,7 +174,7 @@ class Diagnostician(LLMAgent[Diagnosis]):
         if diff_text:
             sections.append(Section(key="diff", content=diff_text, priority=_DIFF_PRIORITY))
 
-        assembled = self.context_manager.assemble(
+        assembled = await self.context_manager.assemble_traced(
             ContextRequest(
                 sections=sections,
                 budget=self.budget,

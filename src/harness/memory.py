@@ -41,7 +41,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 
 from src.harness.contracts import EscalationRecord, RunId, RunOutcome, TokenUsage
 from src.harness.errors import HarnessError
-from src.harness.observability import Redactor
+from src.harness.observability import Redactor, SpanHandle, TraceRecorder
 from src.harness.orchestrator import HEARTBEAT_STALE_AFTER_S, new_run_id
 from src.harness.storage import apply_migrations, connect
 
@@ -329,9 +329,14 @@ class SqliteMemoryStore:
         fault_inject: str | None = None,
         retry_backoff_ms: Sequence[int] = WRITE_RETRY_BACKOFF_MS,
         redactor: Redactor | None = None,
+        recorder: TraceRecorder | None = None,
     ) -> None:
         self.db_path = db_path
         self.redactor = redactor
+        # Phase 5: one `memory.*` span per signature/observation operation (PLAN's "memory
+        # query" span). Optional, so a store built by hand traces nothing; the run and
+        # approval bookkeeping is never traced (dispatch decision 3).
+        self.recorder = recorder
         self._run_id_factory = run_id_factory
         self._stale_after = timedelta(seconds=stale_after_s)
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -340,6 +345,20 @@ class SqliteMemoryStore:
         self._locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
     # -- plumbing -----------------------------------------------------------------
+    @asynccontextmanager
+    async def _span(self, name: str, **attrs: JsonValue) -> AsyncIterator[SpanHandle | None]:
+        """A ``memory`` span when a recorder is bound, else ``None``.
+
+        The span is persisted through ``storage.connect`` by the recorder, not through
+        this store's own (possibly fault-injected) connection, so a locked store still
+        gets its error span written -- the trace says where memory failed.
+        """
+        if self.recorder is None:
+            yield None
+            return
+        async with self.recorder.span(name, "memory", **attrs) as span:
+            yield span
+
     def _dump(self, model: BaseModel) -> str:
         """The model as JSON text, scrubbed through the redactor when one is configured."""
         payload: JsonValue = model.model_dump(mode="json")
@@ -437,8 +456,16 @@ class SqliteMemoryStore:
                 actions_in_window={str(a["action_taken"]): int(a["n"]) for a in actions},
             )
 
-        result: MemoryHit = await self._read(op)
-        return result
+        async with self._span("memory.lookup", signature_id=signature_id) as span:
+            result: MemoryHit = await self._read(op)
+            if span is not None:
+                span.set_attribute("found", result.record is not None)
+                span.set_attribute(
+                    "occurrences", result.record.occurrences if result.record else 0
+                )
+                span.set_attribute("recent", len(result.recent))
+                span.set_attribute("actions_in_window", dict(result.actions_in_window))
+            return result
 
     async def upsert_signature(
         self, key: SignatureKey, verdict: str | None, run_id: RunId
@@ -487,7 +514,10 @@ class SqliteMemoryStore:
                 ),
             )
 
-        await self._write(op)
+        async with self._span(
+            "memory.upsert_signature", signature_id=signature_id, verdict=verdict
+        ):
+            await self._write(op)
         return signature_id
 
     async def record_observation(self, obs: Observation) -> None:
@@ -514,7 +544,14 @@ class SqliteMemoryStore:
                 ),
             )
 
-        await self._write(op)
+        async with self._span(
+            "memory.record_observation",
+            observation_id=obs.observation_id,
+            signature_id=obs.signature_id,
+            verdict=obs.verdict,
+            action_taken=obs.action_taken,
+        ):
+            await self._write(op)
 
     async def update_observation_outcome(self, observation_id: str, outcome: str) -> None:
         async def op(db: Any) -> None:
@@ -523,7 +560,10 @@ class SqliteMemoryStore:
                 (outcome, observation_id),
             )
 
-        await self._write(op)
+        async with self._span(
+            "memory.update_observation_outcome", observation_id=observation_id, outcome=outcome
+        ):
+            await self._write(op)
 
     # -- runs ---------------------------------------------------------------------
     async def save_run(self, outcome: RunOutcome) -> None:

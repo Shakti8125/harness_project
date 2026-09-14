@@ -386,8 +386,16 @@ async def test_rerun_no_ops_when_the_attempt_already_advanced(
 
 @respx.mock
 async def test_unimplemented_write_tools_answer_a_tool_error_not_a_raise(
-    live_gateway: GitHubToolGateway, respx_mock: respx.MockRouter
+    live_gateway: GitHubToolGateway, respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Since Phase 5 every catalog write has a body, so the not-implemented path is
+    exercised by narrowing `IMPLEMENTED_WRITE_TOOLS` for the test: a catalog write tool
+    without a body still answers a `ToolError`, never raises, and sends nothing."""
+    from src.integrations.cicd import gateway_github
+
+    monkeypatch.setattr(
+        gateway_github, "IMPLEMENTED_WRITE_TOOLS", frozenset({"rerun_failed_jobs"})
+    )
     catch_all = respx_mock.route(host="api.github.com").mock(return_value=httpx.Response(200, json={}))
     for tool in ("create_branch", "create_or_update_file", "open_pull_request", "create_issue"):
         result = await live_gateway.invoke(call(tool), allow(tool))

@@ -61,6 +61,10 @@
 2026-09-05T14:02:29.5999999Z Cache restored successfully
 2026-09-05T14:02:30.0666666Z Cache restored from key: setup-python-Linux-x64-pip-3.12.6-8f21c0a4
 2026-09-05T14:02:30.5333333Z [36m##[endgroup][0m
+2026-09-05T14:02:30.6000000Z [36m##[group]Run curl -sS -H "Authorization: token $GH_PAT" https://api.github.com/repos/octo-org/harness-demo-repo/actions/caches[0m
+2026-09-05T14:02:30.7000000Z + curl -sS -H "Authorization: token ghp_FIXTURELEAKSENTINEL00000000000000000" https://api.github.com/repos/octo-org/harness-demo-repo/actions/caches
+2026-09-05T14:02:30.8000000Z {"total_count": 1, "actions_caches": [{"id": 4471, "key": "setup-python-Linux-x64-pip-3.12.6-8f21c0a4"}]}
+2026-09-05T14:02:30.9000000Z [36m##[endgroup][0m
 2026-09-05T14:02:31.0000000Z [36m##[group]Run pip install -r requirements.txt -r requirements-dev.txt[0m
 2026-09-05T14:02:31.2523364Z pip install -r requirements.txt -r requirements-dev.txt
 2026-09-05T14:02:31.5046728Z shell: /usr/bin/bash -e {0}

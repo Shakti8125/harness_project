@@ -1,10 +1,10 @@
 """`GitHubToolGateway` — the live, GitHub-REST-backed `ToolGateway`.
 
 Implements the CI/CD tool catalog of PLAN.md Appendix A.4 against the real API: every
-read tool, plus `rerun_failed_jobs` -- the one write this phase takes. The remaining
-write tools are in the catalog (so a policy decision about them is real and traceable) and
-answer `ToolError(kind="unknown")` naming the phase that implements them; see
-`catalog.IMPLEMENTED_WRITE_TOOLS`.
+read tool and, since Phase 5, every write tool the policy can allow -- `rerun_failed_jobs`,
+`create_branch`, `create_or_update_file`, `open_pull_request` and `create_issue`. A catalog
+write tool without a body here answers `ToolError(kind="unknown")` naming the phase that
+implements it; see `catalog.IMPLEMENTED_WRITE_TOOLS`.
 
 Three things here are load-bearing:
 
@@ -16,9 +16,12 @@ Three things here are load-bearing:
    special cases: timeouts retry twice; a primary rate limit sleeps to the reset (capped)
    and retries once; a secondary limit honours `Retry-After`; 401 and 403 are `auth` with
    no retry; 404 is `not_found` as data; 5xx retries three times with exponential backoff;
-   a non-JSON body is `malformed`. The one write tool adds Appendix C's two idempotency
-   rules on top (a 403 "already in progress" is success; an attempt that already advanced
-   is a no-op).
+   a non-JSON body is `malformed`. Each write tool adds Appendix C's idempotency rules on
+   top: a 403 "already in progress" re-run is success and an attempt that already advanced
+   is a no-op; a branch that exists is fetched and returned (`cached=True`); a file write
+   passes the current blob sha and treats a 409 as a hard stop; an open PR for the same
+   head is returned rather than duplicated; an issue carrying the signature marker is
+   commented on rather than re-filed.
 3. **`HARNESS_DRY_RUN` is honoured at the last possible moment.** A dry run performs
    every read and every pre-check for a write, then returns `ToolResult(dry_run=True)`
    instead of sending the mutating request. What would have happened is in the result.
@@ -79,6 +82,11 @@ API_VERSION: Final[str] = "2022-11-28"
 _ALREADY_RUNNING_PHRASES: Final[tuple[str, ...]] = (
     "in progress", "already running", "currently running", "is running",
 )
+#: Phrasings of "it already exists" a 422 on a create endpoint may carry (Appendix C:
+#: `Reference already exists`, `A pull request already exists`).
+_ALREADY_EXISTS_PHRASES: Final[tuple[str, ...]] = ("already exists", "reference already")
+#: Appendix C: the marker `create_issue` embeds so a duplicate is commented on, not filed.
+ISSUE_SIGNATURE_MARKER: Final[str] = "<!-- harness:signature:{signature_id} -->"
 _ZIP_MAGIC: Final[bytes] = b"PK\x03\x04"
 
 Sleep = Callable[[float], Awaitable[None]]
@@ -123,20 +131,54 @@ def _backoff(attempt: int) -> float:
 
 
 def _message_of(response: httpx.Response) -> str:
-    """The API's own `message`, when the body is JSON and carries one."""
+    """The API's own `message`, when the body is JSON and carries one -- joined with
+    every `errors[].message`, because a 422's specific phrase ("A pull request already
+    exists for …") lives under `errors[]` while `message` says only "Validation Failed"."""
     try:
         body = response.json()
     except ValueError:
         return ""
-    if isinstance(body, dict):
-        message = body.get("message")
-        if isinstance(message, str):
-            return message
-    return ""
+    if not isinstance(body, dict):
+        return ""
+    parts: list[str] = []
+    message = body.get("message")
+    if isinstance(message, str) and message:
+        parts.append(message)
+    errors = body.get("errors")
+    if isinstance(errors, list):
+        for error in errors:
+            detail = error.get("message") if isinstance(error, dict) else error
+            if isinstance(detail, str) and detail:
+                parts.append(detail)
+    return "; ".join(parts)
 
 
 def _tail(buffer: bytes, cap: int) -> bytes:
     return buffer[-cap:] if len(buffer) > cap else buffer
+
+
+def _says_exists(message: str) -> bool:
+    lowered = message.lower()
+    return any(phrase in lowered for phrase in _ALREADY_EXISTS_PHRASES)
+
+
+def _obj(body: dict[str, Any], key: str) -> dict[str, Any]:
+    """`body[key]` when it is an object, else `{}` -- GitHub nests the parts that matter."""
+    value = body.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _pull_summary(pull: dict[str, Any]) -> dict[str, JsonValue]:
+    head = _obj(pull, "head")
+    base = _obj(pull, "base")
+    return {
+        "number": int(pull.get("number", 0)),
+        "html_url": str(pull.get("html_url", "")),
+        "state": str(pull.get("state", "")),
+        "draft": bool(pull.get("draft", False)),
+        "head": str(head.get("ref", "")),
+        "base": str(base.get("ref", "")),
+    }
 
 
 class GitHubToolGateway:
@@ -306,8 +348,10 @@ class GitHubToolGateway:
                 await self._sleep(_backoff(server_errors - 1))
                 continue
 
-            # 409 / 422 belong to the write tools that arrive with the PR-writing phase;
-            # for anything this phase sends they are unexpected and reported as such.
+            # 409 / 422 are answered here as `unknown` with the status attached; the write
+            # tools below catch the ones Appendix C gives a meaning to (a 422 "already
+            # exists" is success, a 409 on a file write is a hard stop) and let the rest
+            # surface as the tool failure they are.
             raise _Failure(
                 "unknown",
                 f"{method} {path} returned {status}: {_message_of(response) or 'no message'}",
@@ -325,6 +369,27 @@ class GitHubToolGateway:
                 f"{path}: {response.text[:MALFORMED_EVIDENCE_CHARS]!r}",
                 http_status=response.status_code,
             ) from exc
+
+    async def _send_json(
+        self, method: str, path: str, json_body: dict[str, Any]
+    ) -> dict[str, Any]:
+        response = await self._request(method, path, json_body=json_body)
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise _Failure(
+                "malformed",
+                f"non-JSON body from {method} {path}: "
+                f"{response.text[:MALFORMED_EVIDENCE_CHARS]!r}",
+                http_status=response.status_code,
+            ) from exc
+        return body if isinstance(body, dict) else {"items": body}
+
+    async def _post_json(self, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
+        return await self._send_json("POST", path, json_body)
+
+    async def _put_json(self, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
+        return await self._send_json("PUT", path, json_body)
 
     # -- the log endpoint ---------------------------------------------------------
     async def _download_log(self, job_id: int, cap: int) -> tuple[bytes, bool, int]:
@@ -441,6 +506,204 @@ class GitHubToolGateway:
             raise
         return {"run_id": run_id, "rerun_requested": True, "dry_run": False}
 
+    # -- the PR-writing and issue tools (Phase 5, Appendix C) -----------------------
+    def _would_have(self, args: dict[str, Any], **found: JsonValue) -> dict[str, JsonValue]:
+        """Appendix E's dry-run answer: what the write *would* have done, plus what the
+        pre-checks found. `content_b64` is never echoed -- the drafted file is already in
+        the plan, and a second copy in `executed[]` is a second thing to digest."""
+        shown = {k: v for k, v in args.items() if k != "content_b64"}
+        if "content_b64" in args:
+            shown["content_bytes"] = len(str(args["content_b64"]))
+        return {"would_have": shown, "dry_run": True, **found}
+
+    async def _get_ref(self, name: str) -> dict[str, JsonValue] | None:
+        """The branch ref, or `None` when it does not exist."""
+        try:
+            body = await self._get_json(f"/repos/{self.repo}/git/ref/heads/{name}")
+        except _Failure as failure:
+            if failure.kind == "not_found":
+                return None
+            raise
+        if not isinstance(body, dict):
+            raise _Failure("malformed", "ref response was not an object")
+        obj = _obj(body, "object")
+        return {"ref": str(body.get("ref", f"refs/heads/{name}")), "sha": str(obj.get("sha", ""))}
+
+    async def _create_branch(self, args: dict[str, Any]) -> dict[str, JsonValue]:
+        name = str(args["name"])
+        from_sha = str(args["from_sha"])
+        existing = await self._get_ref(name)
+        if existing is not None:
+            # Appendix C: an existing branch is returned as-is, and the result says so.
+            return {**existing, "created": False, "already_exists": True, "dry_run": self.dry_run}
+        if self.dry_run:
+            return self._would_have(args, existed=False)
+        try:
+            body = await self._post_json(
+                f"/repos/{self.repo}/git/refs", {"ref": f"refs/heads/{name}", "sha": from_sha}
+            )
+        except _Failure as failure:
+            if failure.http_status == 422 and _says_exists(failure.message):
+                existing = await self._get_ref(name)
+                if existing is not None:
+                    return {
+                        **existing, "created": False, "already_exists": True, "dry_run": False,
+                    }
+            raise
+        obj = _obj(body, "object")
+        return {
+            "ref": str(body.get("ref", f"refs/heads/{name}")),
+            "sha": str(obj.get("sha", from_sha)),
+            "created": True,
+            "dry_run": False,
+        }
+
+    async def _current_blob_sha(self, path: str, branch: str) -> str | None:
+        try:
+            body = await self._get_json(
+                f"/repos/{self.repo}/contents/{path.lstrip('/')}", {"ref": branch}
+            )
+        except _Failure as failure:
+            if failure.kind == "not_found":
+                return None  # a new file
+            raise
+        if isinstance(body, dict) and isinstance(body.get("sha"), str):
+            return str(body["sha"])
+        raise _Failure("malformed", f"contents response for {path!r} carried no sha")
+
+    async def _create_or_update_file(self, args: dict[str, Any]) -> dict[str, JsonValue]:
+        path = str(args["path"]).lstrip("/")
+        branch = str(args["branch"])
+        content_b64 = str(args["content_b64"])
+        message = str(args["message"])
+        # Appendix C: pass the current blob sha, so a write that raced another writer
+        # answers 409 instead of clobbering. The caller may supply it; else it is read.
+        sha = str(args["sha"]) if args.get("sha") else await self._current_blob_sha(path, branch)
+        if self.dry_run:
+            return self._would_have(args, current_sha=sha, path=path, branch=branch)
+        payload: dict[str, Any] = {"message": message, "content": content_b64, "branch": branch}
+        if sha is not None:
+            payload["sha"] = sha
+        try:
+            body = await self._put_json(f"/repos/{self.repo}/contents/{path}", payload)
+        except _Failure as failure:
+            if failure.http_status == 409:
+                # Appendix C: someone else wrote it since it was read. A hard stop, not a
+                # retry -- overwriting would discard their change.
+                raise _Failure(
+                    "unknown",
+                    f"{path!r} changed on {branch!r} since it was read (409); not clobbering",
+                    http_status=409,
+                ) from failure
+            raise
+        commit = _obj(body, "commit")
+        content = _obj(body, "content")
+        return {
+            "path": path,
+            "branch": branch,
+            "commit_sha": str(commit.get("sha", "")),
+            "content_sha": str(content.get("sha", "")),
+            "written": True,
+            "dry_run": False,
+        }
+
+    async def _find_open_pull(self, head: str, base: str | None) -> dict[str, JsonValue] | None:
+        owner = self.repo.split("/", 1)[0]
+        params: dict[str, Any] = {"head": f"{owner}:{head}", "state": "open", "per_page": 5}
+        if base:
+            params["base"] = base
+        body = await self._get_json(f"/repos/{self.repo}/pulls", params)
+        pulls = body if isinstance(body, list) else []
+        for pull in pulls:
+            if isinstance(pull, dict) and pull.get("number") is not None:
+                return _pull_summary(pull)
+        return None
+
+    async def _open_pull_request(self, args: dict[str, Any]) -> dict[str, JsonValue]:
+        head = str(args["head"])
+        base = str(args["base"])
+        labels: list[JsonValue] = [str(label) for label in args.get("labels") or []]
+        existing = await self._find_open_pull(head, base)
+        if existing is not None:
+            # Appendix C: never two PRs for one signature.
+            return {**existing, "opened": False, "already_exists": True, "dry_run": self.dry_run}
+        if self.dry_run:
+            return self._would_have(args, existed=False)
+        payload = {
+            "title": str(args["title"]),
+            "body": str(args["body"]),
+            "head": head,
+            "base": base,
+            # PLAN's obligation `draft_only`: the gateway never opens a ready-for-review PR.
+            "draft": True,
+        }
+        try:
+            body = await self._post_json(f"/repos/{self.repo}/pulls", payload)
+        except _Failure as failure:
+            if failure.http_status == 422 and _says_exists(failure.message):
+                existing = await self._find_open_pull(head, base)
+                if existing is not None:
+                    return {**existing, "opened": False, "already_exists": True, "dry_run": False}
+            raise
+        summary = _pull_summary(body)
+        if labels:
+            # Labels ride on the issue side of a PR. A failure here is reported as the
+            # PR's failure: `no_auto_merge`/`label:agent-generated` are obligations, and
+            # an unlabelled agent PR is not the artifact the policy approved.
+            await self._post_json(
+                f"/repos/{self.repo}/issues/{summary['number']}/labels", {"labels": labels}
+            )
+        return {**summary, "labels": labels, "opened": True, "dry_run": False}
+
+    async def _find_marked_issue(self, marker: str) -> dict[str, JsonValue] | None:
+        body = await self._get_json(
+            f"/repos/{self.repo}/issues", {"state": "open", "per_page": JOBS_PAGE_SIZE}
+        )
+        issues = body if isinstance(body, list) else []
+        for issue in issues:
+            if not isinstance(issue, dict) or "pull_request" in issue:
+                continue
+            if marker in str(issue.get("body") or ""):
+                return {
+                    "number": int(issue.get("number", 0)),
+                    "html_url": str(issue.get("html_url", "")),
+                    "title": str(issue.get("title", "")),
+                }
+        return None
+
+    async def _create_issue(self, args: dict[str, Any]) -> dict[str, JsonValue]:
+        title = str(args["title"])
+        text = str(args["body"])
+        labels: list[JsonValue] = [str(label) for label in args.get("labels") or []]
+        signature_id = str(args["signature_id"]) if args.get("signature_id") else None
+        marker = ISSUE_SIGNATURE_MARKER.format(signature_id=signature_id) if signature_id else None
+        existing = await self._find_marked_issue(marker) if marker else None
+        if existing is not None:
+            # Appendix C: comment on the open issue for this signature instead of a second one.
+            if self.dry_run:
+                return self._would_have(args, commented_on=existing["number"], filed=False)
+            await self._post_json(
+                f"/repos/{self.repo}/issues/{existing['number']}/comments",
+                {"body": f"{text}\n\n{marker}"},
+            )
+            return {**existing, "filed": False, "commented": True, "dry_run": False}
+        if self.dry_run:
+            return self._would_have(args, existed=False)
+        payload: dict[str, Any] = {
+            "title": title,
+            "body": f"{text}\n\n{marker}" if marker else text,
+            "labels": labels,
+        }
+        body = await self._post_json(f"/repos/{self.repo}/issues", payload)
+        return {
+            "number": int(body.get("number", 0)),
+            "html_url": str(body.get("html_url", "")),
+            "title": title,
+            "labels": labels,
+            "filed": True,
+            "dry_run": False,
+        }
+
     # -- dispatch -----------------------------------------------------------------
     async def _dispatch(self, tool: str, args: dict[str, Any]) -> dict[str, JsonValue]:
         repo = self.repo
@@ -503,6 +766,14 @@ class GitHubToolGateway:
             )
         elif tool == "rerun_failed_jobs":
             return await self._rerun_failed_jobs(args)
+        elif tool == "create_branch":
+            return await self._create_branch(args)
+        elif tool == "create_or_update_file":
+            return await self._create_or_update_file(args)
+        elif tool == "open_pull_request":
+            return await self._open_pull_request(args)
+        elif tool == "create_issue":
+            return await self._create_issue(args)
         else:  # pragma: no cover - guarded by the catalog checks in `invoke`
             raise _Failure("invalid_args", f"no handler for {tool!r}")
         return body if isinstance(body, dict) else {"items": body}
@@ -608,7 +879,12 @@ class GitHubToolGateway:
             result = finish(
                 ok=True,
                 data=data,
-                cached=bool(data.get("already_in_progress") or data.get("already_advanced")),
+                cached=bool(
+                    data.get("already_in_progress")
+                    or data.get("already_advanced")
+                    or data.get("already_exists")
+                    or data.get("commented")
+                ),
                 dry_run=is_dry,
             )
             if call.tool in WRITE_TOOLS and call.idempotency_key is not None:

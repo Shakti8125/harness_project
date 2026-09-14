@@ -96,10 +96,14 @@ class EscalationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     escalation_id: str
-    reason: Literal["low_confidence", "evidence_refuted", "invalid_output", "llm_timeout",
-                    "llm_upstream", "config_error", "policy_denied", "tool_failure",
-                    "cold_start_restricted", "rate_limited", "unknown_category",
-                    "run_timeout"]
+    # Phase 5 amendment, additive: `evidence_unverifiable` is the share-rule `fail` --
+    # too few claims verified, none shown false -- which Phase 4 had to file as
+    # `evidence_refuted` for want of a member (its audit S2; backlog). The reason names
+    # what the verdicts say now.
+    reason: Literal["low_confidence", "evidence_refuted", "evidence_unverifiable",
+                    "invalid_output", "llm_timeout", "llm_upstream", "config_error",
+                    "policy_denied", "tool_failure", "cold_start_restricted",
+                    "rate_limited", "unknown_category", "run_timeout"]
     message: str
     payload: dict[str, JsonValue]
     channels: list[Literal["log", "db", "webhook"]]

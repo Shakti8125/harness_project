@@ -461,7 +461,7 @@ class Investigator(LLMAgent[InvestigationNotes]):
         if diff_text:
             sections.append(Section(key="diff", content=diff_text, priority=_DIFF_PRIORITY))
 
-        bundle = self.context_manager.assemble(
+        bundle = await self.context_manager.assemble_traced(
             ContextRequest(
                 sections=sections,
                 budget=self.budget,
@@ -535,6 +535,22 @@ class Investigator(LLMAgent[InvestigationNotes]):
             pass
 
         return AgentPrompt(text=prompt_text, evidence=evidence, degraded=degraded)
+
+    async def collect(self, state: RunState) -> _Collection:
+        """The deterministic collection alone -- every required read call, the budgeted
+        log, the baseline and diff, the memory prior -- and no model call.
+
+        What `scripts/record_fixture.py` drives (Phase 5): recording a scenario is
+        exactly "make the calls the Investigator makes and keep the answers", and that is
+        `build_prompt` minus the prompt. Clears the collection afterwards so a following
+        `run` on the same task cannot pick up a stale one.
+        """
+        await self.build_prompt(state)
+        collected = _collection.get()
+        _collection.set(None)
+        if collected is None:  # pragma: no cover - build_prompt always sets it
+            raise RuntimeError("investigator collection missing; build_prompt did not run")
+        return collected
 
     async def run(self, state: RunState) -> AgentResult[FailureBundle]:  # type: ignore[override]
         """Collect, ask the model what it observes, execute what it asks for, assemble."""

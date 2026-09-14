@@ -291,14 +291,22 @@ def test_trace_is_persisted_and_readable(client: TestClient) -> None:
     assert payload["totals"]["prompt"] == 3600
     assert payload["duration_ms"] >= 0
 
-    # Every span belongs to this run, and the agent spans hang off the run span.
+    # Every span belongs to this run; the stage spans hang off the run span (Phase 5,
+    # PLAN's "one span per stage") and the agent spans off their stage span.
     run_span = next(span for span in payload["spans"] if span["name"] == "run")
     assert run_span["parent_span_id"] is None
+    stage_spans = [span for span in payload["spans"] if span["name"] == "stage"]
+    assert [span["attributes"]["stage"] for span in stage_spans] == [
+        "investigate", "diagnose", "evaluate", "remediate",
+    ]
+    assert all(span["parent_span_id"] == run_span["span_id"] for span in stage_spans)
+    assert all(span["component"] == "orchestrator" for span in stage_spans)
     agent_spans = [span for span in payload["spans"] if span["name"] == "agent.run"]
     # Four since Phase 4: the evaluate stage records an `agent.run` span with no model
     # call under it, and its claim verdicts as `evaluation.claim` children.
     assert len(agent_spans) == 4
-    assert all(span["parent_span_id"] == run_span["span_id"] for span in agent_spans)
+    stage_ids = {span["span_id"] for span in stage_spans}
+    assert all(span["parent_span_id"] in stage_ids for span in agent_spans)
     assert "evaluation.claim" in names
 
 

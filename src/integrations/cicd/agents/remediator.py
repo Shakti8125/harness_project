@@ -181,7 +181,7 @@ class Remediator(LLMAgent[RemediationPlan]):
 
         diff_text = render_diff_patches(bundle.diff)
         if diff_text:
-            assembled = self.context_manager.assemble(
+            assembled = await self.context_manager.assemble_traced(
                 ContextRequest(
                     sections=[Section(key="diff", content=diff_text, priority=_DIFF_PRIORITY)],
                     budget=self.budget,
@@ -286,6 +286,7 @@ class Remediator(LLMAgent[RemediationPlan]):
             run_id=state.run_id,
             job=bundle.job,
             forbidden=self.engine.forbidden,
+            signature_id=bundle.prior_history.signature_id,
         )
         plan = normalized.plan
         facts = build_facts(
