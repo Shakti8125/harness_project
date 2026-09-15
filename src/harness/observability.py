@@ -304,20 +304,52 @@ _log_redactor: Redactor | None = None
 _base_record_factory: Callable[..., logging.LogRecord] | None = None
 
 
+def _scrub_log_arg(redactor: Redactor, value: object) -> object:
+    """One formatting argument, scrubbed without changing what ``%`` will do with it.
+
+    Strings are scrubbed in place. An exception is replaced by its scrubbed ``str()`` --
+    ``%s`` of an exception is that string, and an upstream error's text is exactly where
+    a token turns up. Numbers, ``None`` and anything else pass through untouched so a
+    ``%d`` keeps its integer and a formatter that unpacks the tuple sees the same shape.
+    """
+    if isinstance(value, str):
+        return redactor.scrub(value)
+    if isinstance(value, BaseException):
+        return redactor.scrub(str(value))
+    return value
+
+
 def _redacting_record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
     assert _base_record_factory is not None
     record = _base_record_factory(*args, **kwargs)
     redactor = _log_redactor
     if redactor is None:
         return record
+    if isinstance(record.msg, str):
+        record.msg = redactor.scrub(record.msg)
+    # `args` keeps its shape: a tuple stays a tuple of the same length, a mapping stays a
+    # mapping. uvicorn's access formatter unpacks the tuple positionally, and folding
+    # the arguments into `msg` broke every access line (the first live run after the
+    # Phase 5 fix round found it).
+    if isinstance(record.args, tuple):
+        record.args = tuple(_scrub_log_arg(redactor, item) for item in record.args)
+    elif isinstance(record.args, dict):
+        record.args = {
+            key: _scrub_log_arg(redactor, item) for key, item in record.args.items()
+        }
+    # A credential can straddle the boundary -- `api_key=%s` is an assignment shape only
+    # once formatted. If the formatted line still changes under the scrub, fold it: the
+    # shape of `args` is lost for this one record, which beats printing the secret.
     try:
         message = record.getMessage()
     except (TypeError, ValueError, KeyError):
         # A format string that does not match its arguments is the caller's bug; leave
         # the record for `logging` to report through its own `handleError` path.
         return record
-    record.msg = redactor.scrub(message)
-    record.args = ()
+    scrubbed = redactor.scrub(message)
+    if scrubbed != message:
+        record.msg = scrubbed
+        record.args = ()
     return record
 
 
@@ -326,9 +358,10 @@ def install_log_redaction(redactor: Redactor) -> None:
 
     Idempotent: the factory is wrapped once, and a later call only swaps the redactor it
     consults (a test builds many contexts; the newest sentinels are the ones that
-    matter). Pre-formats the message so the scrub sees what a handler would print --
-    ``args`` are folded in and cleared. The formatted traceback of ``exc_info`` is
-    produced later by the formatter and is not covered here (backlog).
+    matter). The format string and each argument are scrubbed in place -- never
+    pre-formatted, so a formatter that reads ``record.args`` itself still can. The
+    formatted traceback of ``exc_info`` is produced later by the formatter and is not
+    covered (backlog).
     """
     global _log_redactor, _base_record_factory
     _log_redactor = redactor

@@ -74,4 +74,42 @@ def test_a_record_that_cannot_format_is_left_for_logging_to_report() -> None:
     record = factory("t", logging.INFO, __file__, 1, "%s %s", ("only-one-arg",), None)
     assert record.msg == "%s %s" and record.args == ("only-one-arg",)
     scrubbed = factory("t", logging.INFO, __file__, 1, "secret %s", (SECRET,), None)
-    assert scrubbed.msg == f"secret {REDACTION_PLACEHOLDER}" and scrubbed.args == ()
+    assert scrubbed.msg == "secret %s" and scrubbed.args == (REDACTION_PLACEHOLDER,)
+    assert scrubbed.getMessage() == f"secret {REDACTION_PLACEHOLDER}"
+
+
+def test_args_keep_their_shape_for_formatters_that_unpack_them() -> None:
+    """uvicorn's `AccessFormatter` reads `record.args` positionally (five values); a
+    factory that folded them into `msg` broke every access line with a logging error
+    (found by the first live Verify run after the fix round). Scrub in place instead."""
+    install_log_redaction(_redactor())
+    factory = logging.getLogRecordFactory()
+    args = ("127.0.0.1:1234", "GET", f"/v1/runs?token={SECRET}", "1.1", 200)
+    record = factory("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d', args, None)
+    assert isinstance(record.args, tuple) and len(record.args) == 5
+    client, method, path, version, status = record.args
+    assert (client, method, version, status) == ("127.0.0.1:1234", "GET", "1.1", 200)
+    assert SECRET not in path and REDACTION_PLACEHOLDER in path
+    # The registry replaces the value, then the assignment heuristic eats `token=` too.
+    assert record.getMessage() == f'127.0.0.1:1234 - "GET /v1/runs?{REDACTION_PLACEHOLDER} HTTP/1.1" 200'
+
+
+def test_a_credential_that_straddles_msg_and_args_folds_the_record() -> None:
+    """`api_key=%s` is an assignment shape only once formatted; that one record gives up
+    its `args` shape rather than print the value."""
+    install_log_redaction(_redactor())
+    factory = logging.getLogRecordFactory()
+    record = factory("t", logging.INFO, __file__, 1, "api_key=%s ok", ("abcdefghijklmnop",), None)
+    assert record.args == () and record.getMessage() == f"{REDACTION_PLACEHOLDER} ok"
+    clean = factory("t", logging.INFO, __file__, 1, "n=%d %s", (3, "fine"), None)
+    assert clean.args == (3, "fine"), "a clean record keeps its shape"
+
+
+def test_dict_args_and_exception_args_are_scrubbed_too() -> None:
+    install_log_redaction(_redactor())
+    factory = logging.getLogRecordFactory()
+    record = factory("t", logging.INFO, __file__, 1, "key=%(k)s n=%(n)d", ({"k": TOKEN, "n": 3},), None)
+    assert record.getMessage() == f"key={REDACTION_PLACEHOLDER} n=3"
+    exc = RuntimeError(f"upstream said: token {SECRET} is invalid")
+    record = factory("t", logging.ERROR, __file__, 1, "failed: %s", (exc,), None)
+    assert SECRET not in record.getMessage() and REDACTION_PLACEHOLDER in record.getMessage()
