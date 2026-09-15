@@ -1330,11 +1330,18 @@ curl.exe -s https://shakti-agent-harness.hf.space/v1/runs | jq '.[0] | {status, 
 >     `default_green` and can be the `real_regression` / `dependency_break` step 5 expects.
 > 13. **Log lines are scrubbed at the record factory** (finding 4, MEDIUM):
 >     `install_log_redaction(redactor)`, installed once by `AppContext.__post_init__`,
->     pre-formats every log record in the process and passes it through the `Redactor`
->     -- ours, `httpx`'s, `aiosqlite`'s alike. The leak test's fifth stage is a live-mode
->     write whose `403` echoes the token and escalates `tool_failure`; with the factory
->     off it fails on the two log lines the audit named. The formatted traceback of an
->     `exc_info` is produced later by the formatter and is not covered (backlog).
+>     passes every log record in the process through the `Redactor` -- ours, `httpx`'s,
+>     `aiosqlite`'s, uvicorn's alike -- scrubbing the format string and each argument
+>     *in place* (an exception argument becomes its scrubbed `str()`; numbers pass
+>     through) and folding the record into one pre-formatted string only when a
+>     credential straddles `msg` and `args` (`api_key=%s`). As first shipped it
+>     pre-formatted and cleared `args` on every record, which broke uvicorn's
+>     `AccessFormatter` (it unpacks `record.args`) on every request; the first live
+>     Verify run caught it (`2c79035`, `backlog.md` "Audit provenance"). The leak test's
+>     fifth stage is a live-mode write whose `403` echoes the token and escalates
+>     `tool_failure`; with the factory off it fails on the two log lines the audit named.
+>     The formatted traceback of an `exc_info` is produced later by the formatter and is
+>     not covered (backlog).
 > 14. **`seed_demo_repo.sh --force` re-seeds on top of `main`** (finding 3, MEDIUM): the
 >     generated tree becomes one commit whose parent is the fetched `main` (a fast-forward,
 >     never `push --force` on `main`); only the two `demo/*` branches -- the script's own

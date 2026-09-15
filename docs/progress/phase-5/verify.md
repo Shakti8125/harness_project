@@ -178,3 +178,43 @@ The stub gate on the fixed tree, 18:02 IST: `eval.py --runs 1 --concurrency 1 --
 -> `category_accuracy 1.00 (5/5)`, `forbidden_actions_executed 0`, `cold_start 1/1
 correct, 0 label miss(es), 1 escalated` (`policy_denied` by the cold-start clause, as
 labelled), no degraded component on any row. `scrub_fixtures.py --check`: clean.
+
+## Live attempt 1 — 2026-09-15 21:08–21:25 IST (`2c79035`, the Pacific day's first spend)
+
+**Deploy.** `git push space master:main` (`bb0abf3..3216a41`, then `..2c79035`) on the
+user's instruction. The Phase 5 image answered about a minute after each push;
+`scripts/check_space.py --wait-for-new-build` at 21:08 and again after the second push:
+`healthz` ok, `readyz` with `migrations_applied`, both lists empty (no volume, fresh
+container), the unsigned `POST /webhooks/github` **`401`** with
+`WWW-Authenticate: HMAC-SHA256 realm="webhooks/github"` (the old image had no such route
+and answered `404`), an unknown run's `/view` `404 application/problem+json`, no
+credential shape in the 505 bytes served. The Hub reports the Space `RUNNING` at
+`2c79035ce6cb…` on `zero-a10g` (21:18 IST).
+
+**The regression the first live request found.** Step 1's first `POST
+/v1/replay/real_regression` (21:10 IST) came back `escalated (llm_upstream)` -- and the
+server log held a `--- Logging error --- ValueError: not enough values to unpack
+(expected 5, got 0)` traceback per request: the fix round's log record factory cleared
+`record.args` and uvicorn's `AccessFormatter` unpacks them. Fixed, tested (three tests,
+one of them a five-tuple access record), proved against a real uvicorn on port 8011
+(`0` logging errors; `"GET /v1/runs?***REDACTED*** HTTP/1.1" 200` served -- the token
+shape in the query string redacted), 898 passed, committed as `2c79035`, redeployed.
+The record of it is `backlog.md`, "Audit provenance".
+
+**Step 1 did not complete: the provider was overloaded and the overload burned the
+day's quota.** Five replays between 21:10 and 21:22 IST: every Investigator or
+Diagnostician attempt but one answered `503` (Gemini's overload, no `Retry-After`), the
+client retried each four times with sub-second backoff, and the harness escalated
+`llm_upstream` each time -- correctly, and at no token cost. But **Google counts a
+`503`'d request against the free tier's 20 requests/day**: the local database shows 20
+`llm.attempt` spans on the Pacific day (1 ok, 18 × `503`, 1 × `429`), and a direct
+probe at 21:23 IST answered `429 RESOURCE_EXHAUSTED … generate_content_free_tier_requests,
+limit: 20, model: gemini-3.6-flash`. Nothing else ran on the model today. Steps 1, 3 and
+4 and the eval's two rows are pushed to the next Pacific day (~12:30 IST, 2026-09-16),
+and a `503` storm is now a known way to lose a day (`backlog.md`).
+
+Free of the model, on the fixed tree: the local server's own access log was clean
+across the five replays (`0` logging errors, `4` served `POST` lines); the last run's
+trace shows the Investigator succeeding (`llm.attempt` ok, 1) before the Diagnostician's
+`503`, `503`, `429` -- the recovery path doing exactly what Appendix B.1 says, on a
+provider that then charged for it.

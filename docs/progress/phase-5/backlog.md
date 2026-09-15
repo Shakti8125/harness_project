@@ -35,6 +35,20 @@ still the fix, still not built, still the next phase's call.
   branch-push failure on the demo repository ever replays as `cold_start=true`, a token
   ever shows in a Space log line, or `seed_demo_repo.sh --force` ever loses a commit on
   `main`, an independent read of `deef51e..9e3b4df` is the first thing to spend on.**
+- **The fix round shipped a defect the suite could not see, and the first live run
+  caught it** (`2c79035`, 2026-09-15 21:10 IST). The log record factory (amendment 13)
+  pre-formatted every record and cleared `record.args`; uvicorn's `AccessFormatter`
+  unpacks `record.args` positionally, so every request printed a `--- Logging error ---
+  ValueError: not enough values to unpack (expected 5, got 0)` traceback and lost its
+  access line -- on the Space too, for the eleven minutes between `3216a41` and
+  `2c79035`. No test drove a formatter that reads `args`; the leak test and the unit
+  tests all read `getMessage()`. The fix scrubs `msg` and each argument in place
+  (exceptions become their scrubbed `str()`, numbers pass through) and folds a record
+  only when a credential straddles `msg` and `args`; three tests, and a real uvicorn
+  serving an access line with `?token=…` redacted. This is the coordinator-verified
+  round's first known miss, found by the Verify block doing its job, and it is exactly
+  the kind of defect the tripwires above exist for -- record it against the rule, not
+  as an exception to it.
 - `verify.md` is recorded at `66e2448`, before the fix round, with a "Fix round" section
   saying what changed about each step (nothing about the expected values). The live
   steps have not run; `phase-5-green` is **not tagged** — the tag goes on the tree that
@@ -106,6 +120,16 @@ still the fix, still not built, still the next phase's call.
   the user's.
 - **The Space serves `phase-4-green`** (`5abe6ad`), not this tree. Redeploying is the
   user's call (step 5's fourth part); the Phase 6 handoff carries the deploy note.
+- **A `503` storm burns the day.** Google counts an overloaded (`503`) request against
+  the free tier's 20 requests/day, and the client retries a `503` four times with
+  sub-second backoff when the provider sends no `Retry-After` (Appendix B.1's row).
+  2026-09-15 21:10–21:22 IST: five replays, 18 `503`s, one success, then `429
+  RESOURCE_EXHAUSTED … limit: 20` -- the day gone on requests that produced nothing.
+  The escalations were right (`llm_upstream`, then `rate_limited`); the *cost* of being
+  right was not. Backlog for Phase 6 or a settings change: back off a `503` in seconds,
+  not sub-seconds, and cap the per-run attempts on the free tier -- or stop after the
+  first `503` when `HARNESS_ENV=dev`. Until then: on an overloaded evening, probe once
+  with a tiny request (`scratchpad/probe_gemini.py`'s shape) before spending a replay.
 - **Quota.** The free tier's ~20 calls/day resets at midnight Pacific (~12:30 IST);
   2026-09-14's day was spent before this phase's build began (18 calls by 13:30 IST).
   The live steps -- Verify 1 and 3 (six calls) and the eval's `cold_start` +
