@@ -2506,8 +2506,8 @@ returns 403 for anything not on it.
 | 2 | **built** -- see the Phase 2 status block | Remediator (retry) + Guardrails + approvals, 2 fixtures, live gateway | Regression blocked pending approval; flaky *denied* by the fail-closed cap with the clause named (allow path pinned offline); 90-case deny test green |
 | 3 | **built** -- see the Phase 3 amendment | Memory | 4th flaky run shows `occurrences=3`, `likely_flaky`, retry cap bites on the 3rd |
 | 4 | **built** -- see the Phase 4 amendment | Evaluator + eval harness (Recovery shipped in 1) | Fabricated citation → escalate, no remediation; `eval.py` 5/5 (stub), live number in `verify.md` |
-| 5 | **built** -- see the Phase 5 amendment | Trace view + real webhook | Redelivery dedupes (Appendix C's five-concurrent test green); secret-leak test green; live run from the demo repo pending the user-gated deploy (`verify.md`) |
-| 6 | | Second adapter sketch | `git diff --stat -- src/harness/` is empty; contract suite green ×3 |
+| 5 | **done** -- `phase-5-green` (2026-09-17); see the Phase 5 amendment, items 1-16 | Trace view + real webhook | Redelivery dedupes (Appendix C's five-concurrent test green); secret-leak test green; Verify 1, 3, 4 run live and matched; step 5 (a real repository driving it) never run -- user-gated and left undone at close (`docs/progress/phase-5/verify.md`) |
+| 6 | **not started** -- the project closed at Phase 5 on 2026-09-17 | Second adapter sketch | `git diff --stat -- src/harness/` is empty; contract suite green ×3 |
 
 Phase 2's gate is amended by that phase's own amendment 3: with the retry-count stub failing closed,
 "flaky auto-retries" is not demonstrable until Memory is real. Either inject a stub count under the

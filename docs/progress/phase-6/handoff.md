@@ -1,5 +1,13 @@
 # Handoff — start of Phase 6 (Second Tool Gateway adapter)
 
+> **The project closed here, at Phase 5, on 2026-09-17.** Phase 6 was not started. This
+> file stays as written on 2026-09-14/15 -- it is what a Phase 6 would have needed -- with
+> these corrections from the close: the tree is `phase-5-green`, the Space serves it, the
+> live Verify steps 1, 3 and 4 ran and matched (`docs/progress/phase-5/verify.md`,
+> "Live -- 2026-09-17"), the eval's live number is 5/5 categories, and step 5 (the demo
+> repository, the PAT, live mode on the Space) was never done. §1's step table is
+> therefore history except for its last row.
+
 Written 2026-09-14 on `master` at the Phase 5 fix round (`9e3b4df`) plus the records
 commit. Phase 5's build is closed: gate green (892 passed, 2 skipped), one independent
 audit with nine findings — all nine closed in a same-day fix round, the fix round

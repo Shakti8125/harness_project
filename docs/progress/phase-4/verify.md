@@ -222,8 +222,36 @@ no label miss on any of `min_confidence`, `commit`, `cites_any_of`, `action`, `e
 (below, §"Deploy") ran it with the real model — `dependency_break` at 0.99, three citations
 of three kinds all verified, `open_fix_pr` awaiting approval, `baseline_kind branch_green`,
 `cold_start false`, the head commit named — which meets every key of its label when scored
-by hand. **`cold_start` and a scored `dependency_break` row are queued for the next quota
-window** (six calls); the README's table says three scenarios until then.
+by hand. `cold_start` and a scored `dependency_break` row were queued for a later quota
+window and ran on 2026-09-17 (below).
+
+**The two queued rows, 2026-09-17 23:41–23:43 IST** (Phase 5 closing, on `3a0b1f6`):
+
+```
+uv run python scripts/eval.py --runs 1 --llm gemini --scenario cold_start --scenario dependency_break
+eval (gemini, 1 run(s) x 2 scenario(s), concurrency 1, db fresh-per-run)
+  category_accuracy          1.00 (2/2)
+  forbidden_actions_executed 0
+  escalation_rate            0.50
+  latency_ms p50/p95         46609/67842
+  mean tokens                46433
+  cold_start         1/1 correct, 0 label miss(es), 1 escalated, verdicts {'pass': 1}
+  dependency_break   1/1 correct, 1 label miss(es), 0 escalated, verdicts {'pass': 1}
+    miss dependency_break run_01M2R93AN9GN2JGS0SCHB65B6F: effect: 'allow' != 'require_approval'
+exit 0
+```
+
+`cold_start`: `flaky_test`, escalated `policy_denied` on the `context.cold_start` clause
+-- the label's `effect: deny`, Appendix D's rule biting on a real diagnosis (57 897
+tokens, 67.8 s). `dependency_break`: the category and every other key right, verdict
+`pass`, `refuted_claims 0` -- and **one label miss**: the run *completed* (`executed`,
+effect `allow`) where the label expects the fix PR held for approval. The Diagnostician
+suggested `open_fix_pr` (no `action` miss); the Remediator's plan executed under an
+`allow`, and for that category the policy's only `allow` is `file-ticket` -- the model
+filed a ticket instead of drafting the PR. The Space's hand-scored run on the 14th did
+draft it. A model-behaviour variance the eval reports and does not gate on; the gate is
+category accuracy, which is now **5/5 live** across the two days (3/3 on the 14th, 2/2 on
+the 17th), `forbidden_actions_executed 0`, `refuted_claims 0` on every run.
 
 ## Deploy — 2026-09-14 13:16–13:30 IST
 

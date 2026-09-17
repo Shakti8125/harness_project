@@ -23,6 +23,13 @@ sandboxing, policy, memory, calibration and tracing. The domain lives entirely i
 separation is enforced by a test that walks the AST of every harness module and fails the
 build if a domain word appears.
 
+**Status (2026-09-17):** complete through Phase 5 of `PLAN.md` -- `phase-5-green` is the
+tagged tree and the one the Space serves. Six phases were planned; the sixth (a second
+domain adapter, to make the separation claim falsifiable by diff) was not started. Every
+phase carries its own record under `docs/progress/<phase>/`: the decisions it was built
+against, the Verify block's literal expected-vs-actual, the gate verdict, an independent
+audit, and what was left open.
+
 ## Try it
 
 Live at <https://shakti-agent-harness.hf.space>. There is no CLI — the surface is HTTP.
@@ -102,12 +109,13 @@ different things:
 
 | Run | Scenarios | Category accuracy | Refuted citations | Forbidden actions executed |
 |---|---|---|---|---|
-| `--llm gemini` (the model, 2026-09-14) | `real_regression`, `flaky_test`, `infra_timeout` | **3/3** | 0 | 0 |
+| `--llm gemini` (the model, 2026-09-14 and -17) | all five, one pass each | **5/5** | 0 | 0 |
 | `--llm stub` (the pipeline; canned diagnoses, real evidence checks) | all five, ×5 | 25/25 | 0 | 0 |
 
-The model run is the accuracy claim; it is three scenarios and one pass each because the
-free tier's daily quota is the binding constraint (the remaining two are queued for the next
-window — `docs/progress/phase-4/verify.md` §4 is the running record). The stub run proves
+The model run is the accuracy claim; it is one pass per scenario, over two days, because
+the free tier's daily quota is the binding constraint (`docs/progress/phase-4/verify.md`
+§4 is the record; one run of `dependency_break` filed a ticket where the label expects a
+held fix PR — right category, reported as a label miss, not gated). The stub run proves
 the plumbing — the gate, the Evaluator over the fixtures' real logs and diffs, the policy,
 the forbidden set — and says nothing about the model; its report is labelled `llm: stub` so
 the two cannot be confused. Every live diagnosis so far has had all of its citations verified

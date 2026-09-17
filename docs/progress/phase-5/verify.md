@@ -218,3 +218,73 @@ across the five replays (`0` logging errors, `4` served `POST` lines); the last 
 trace shows the Investigator succeeding (`llm.attempt` ok, 1) before the Diagnostician's
 `503`, `503`, `429` -- the recovery path doing exactly what Appendix B.1 says, on a
 provider that then charged for it.
+
+## Live — 2026-09-17 23:37–23:45 IST (`3a0b1f6`; the day's first spend, 21 requests)
+
+A one-word probe answered `OK` first (1 request). Then, on a local server over
+`./data/harness.db` with the real model:
+
+**Step 1.** `POST /v1/replay/real_regression` -> `200` in 37.8 s: `run_01M2R8VWQMXD36ATHMKCD08G5F`,
+**`awaiting_approval`**, category **`real_regression`**, self-reported 0.95 -> final
+**0.99**, verdict `pass` with **5 verified, 0 refuted, 0 unverifiable** (`commit_in_range`
+on `e2cdf1b4…`, `file_in_diff` and `quote_exists` on `src/pricing/discount.py`, two
+`test_in_log` on `log:job/601234567`), `suspected_commit_sha` the `+ 1` commit, the fix
+PR held under `open-fix-pr` (three `require_approval` decisions). One `llm.attempt`
+answered `503` and the retry succeeded (4 requests).
+
+```
+[.spans[].component] | unique
+["agent","context_manager","evaluator","gateway","guardrails","llm","memory","orchestrator"]
+spans: 35
+```
+
+**Matches**: eight components, >= 12 spans. `GET /runs/{id}/view`: `200 text/html`,
+35 345 bytes, 35 waterfall rows, five `verified` pills beside the citations, the
+`5 verified / 0 refuted / 0 unverifiable` counts, the `pass` verdict, the
+`evidence_fully_verified` adjustment itemised, `open-fix-pr` quoted from the policy
+beside the three `require_approval` decisions, and the one `error` pill on the `503`'d
+attempt -- opened in the browser (`Start-Process`).
+
+**Step 3.**
+```
+uv run python scripts/replay.py --post-signed fixtures/scenarios/flaky_test/webhook.json --wait
+202 {"run_id":"run_01M2R8YVS0TT2MB1W99236Q3D5","status":"in_progress"}
+run_01M2R8YVS0TT2MB1W99236Q3D5: completed (flaky_test 0.97)
+```
+**Matches** (3 requests, all ok): `flaky_test` at 0.97, verdict `pass`, `rerun_failed_jobs`
+allowed by `retry-suspected-flaky` and executed dry-run; the run span's `requested_by` is
+`webhook:github:06e730b2-f198-483d-9e6b-b0e89b1c380c`, the delivery's GUID.
+
+**Step 4.**
+```
+uv run python scripts/replay.py --post-signed fixtures/scenarios/flaky_test/webhook.json
+200 {"run_id":"run_01M2R8YVS0TT2MB1W99236Q3D5","status":"deduplicated","original_run_id":"run_01M2R8YVS0TT2MB1W99236Q3D5"}
+sqlite3 ./data/harness.db "select count(*) from run where idempotency_key='cicd:c6b95a115fa82abbf819069aba193c70';"        -> 1
+sqlite3 ./data/harness.db "select count(*) from observation where run_id='run_01M2R8YVS0TT2MB1W99236Q3D5';"                -> 1
+```
+**Matches**: one run, one observation, the trace holding one run's three `llm.attempt`
+spans, no model call on the redelivery. The server's access log: `0` logging errors.
+
+**The eval's two rows** (7 requests, one of them a `503` retry): `category_accuracy 1.00
+(2/2)`, `cold_start` escalated `policy_denied` on the cold-start clause as labelled,
+`dependency_break` right on category with one `effect` label miss (the Remediator filed
+a ticket where the label expects the fix PR held) -- `docs/progress/phase-4/verify.md`
+§4 has the report and the reading; the live category number is **5/5** across the two
+days.
+
+**The Space** (`scripts/check_space.py --replay real_regression`, 23:44 IST): every free
+check passed again; the replay through the real model got `503`, `503`, then an
+Investigator success, then `429` twice at the Diagnostician -- the 21st request of the
+day -- and escalated **`rate_limited`**, correctly. 19 spans across six components (the
+evaluate and remediate stages never ran), `GET /runs/{id}/view` **`200`**, 20 560 bytes,
+the escalation card reading `rate_limited`, and no credential shape in the 38 501 bytes
+served. The deployed model path is proven as far as the quota allowed: the Space called
+Gemini, got an answer, and rendered the outcome. The eight-component line on the Space is
+the one thing this closing did not see live; the local run above is its record.
+
+## Step 5 — not run, and the project closes here
+
+The demo repository was never created, no PAT minted, the Space never switched to
+`HARNESS_GATEWAY=github`. Step 5 stays user-gated and undone; the user closed the
+project on 2026-09-17 with Phase 6 not started. `phase-5-green` is tagged on the
+commit that records this section, with that stated.
