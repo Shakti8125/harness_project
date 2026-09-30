@@ -187,3 +187,22 @@ fix round. Everything is in `src/api/`, `src/integrations/`, `scripts/` and
   - The medium finding: a signed delivery shared the admission pool with anonymous replays.
   - All four findings were fixed in the next commit. Each has a test that fails on
     `5602f47`. The round is coordinator-verified, not re-audited.
+- **Early replay-mode deploy (2026-10-01, step-5 plan Stage 1e item 8):**
+  - After the audit fixes and a green gate (976 passed, 2 skipped; stub eval 5/5), the user
+    approved `git push space master:main` (`06c87db..a0a64a2`). The Space stayed
+    `HARNESS_GATEWAY=replay`.
+  - The Hub reported `RUNNING a0a64a2` 63 s after the push. Use the Hub's `runtime.sha`
+    (`https://huggingface.co/api/spaces/shakti/agent-harness`) to wait for a deploy.
+    `check_space.py --wait-for-new-build` polls for the webhook route's `401`, which every
+    image since Phase 5 already answers, so it no longer tells builds apart.
+  - `check_space.py`: ALL OK.
+  - SEC-01: `POST /v1/runs` with a 120 KB PEM-marker key answers `422` in 1.47 s, the same
+    as a benign 120 KB key (1.58-1.67 s, all network). Before the fix it took 14.5 s.
+  - SEC-08: a declared 1 MiB + 2 body and a 1.5 MiB chunked body both answer `413`
+    problem+json.
+  - Replay mode unchanged: `mode=live` still answers `501`.
+  - 0 runs listed and 0 model requests spent.
+  - The probe smoke earlier the same session spent 1 request on the Pacific day that ended
+    12:30 IST 2026-10-01. It answered `OK`, and no database records it.
+  - Session B needs no code deploy, only the Space settings change. `space/main` lags
+    `master` by the docs-only commit that records this; that commit needs no redeploy.
