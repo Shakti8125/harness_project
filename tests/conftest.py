@@ -18,6 +18,13 @@ from pathlib import Path
 
 import pytest
 
+_RETRY_DEFAULTS = {
+    "HARNESS_LLM_TRANSIENT_MAX_ATTEMPTS": "4",
+    "HARNESS_LLM_BACKOFF_BASE_S": "0.5",
+    "HARNESS_LLM_BACKOFF_MAX_S": "8.0",
+    "HARNESS_LLM_BACKOFF_JITTER": "full",
+}
+
 
 @pytest.fixture
 def tmp_db_path(tmp_path: Path) -> Path:
@@ -34,6 +41,11 @@ def isolated_settings(
     write to, ./data/harness.db.
     """
     monkeypatch.setenv("HARNESS_DATABASE_PATH", str(tmp_db_path))
+    # The local `.env` may carry the free-tier retry profile (step-5 plan, Stage 1a).
+    # Pin Appendix B.1's defaults so no attempt count in the suite depends on it;
+    # `tests/unit/test_retry_settings.py` sets the profile where it means to.
+    for name, value in _RETRY_DEFAULTS.items():
+        monkeypatch.setenv(name, value)
 
     try:
         from src.settings import get_settings

@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     escalation_threshold: float = Field(0.70, ge=0.0, le=1.0)
     log_char_budget: int = 120_000
     gemini_timeout_s: float = 60.0
+    # The transient (429/503) retry policy every agent gets. The defaults are Appendix
+    # B.1's, so nothing changes unless one is set; the free tier bills a `503`, so its
+    # profile trades attempts for longer sleeps (`.env.example`).
+    llm_transient_max_attempts: int = Field(4, ge=1, le=4)
+    llm_backoff_base_s: float = Field(0.5, gt=0, le=20)
+    llm_backoff_max_s: float = Field(8.0, gt=0, le=20)
+    llm_backoff_jitter: Literal["full", "none"] = "full"
     github_timeout_s: float = 30.0
     github_api_base: AnyHttpUrl = "https://api.github.com"  # type: ignore[assignment]
     allowed_repos: list[str] = []  # "owner/name"; empty = replay-only

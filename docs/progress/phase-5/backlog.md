@@ -130,6 +130,18 @@ still the fix, still not built, still the next phase's call.
   not sub-seconds, and cap the per-run attempts on the free tier -- or stop after the
   first `503` when `HARNESS_ENV=dev`. Until then: on an overloaded evening, probe once
   with a tiny request (`scratchpad/probe_gemini.py`'s shape) before spending a replay.
+  **Closed 2026-10-01 (step-5 plan, Stage 1)** for the "back off in seconds, cap
+  attempts" half. The transient policy is now four `HARNESS_LLM_*` settings passed to
+  every agent (`deps.retry_policy_for`; `src/harness/` untouched). The defaults are
+  B.1's, and the free-tier profile is 2 attempts with one 5 s sleep; the local `.env`
+  carries it. `tests/conftest.py` pins B.1's defaults, so the suite's attempt counts
+  never read the operator's `.env`. The probe is now `scripts/probe_gemini.py` (one
+  request; key scrubbed by its stripped value and by the `AIza`/`AQ.` shapes).
+  `scripts/quota_ledger.py` counts the Pacific day's `llm.attempt` spans in local DBs
+  and, with `--space`, on a deployment, listing who started each run. Still open: the
+  profile does not cap schema retries, so one agent can still spend 3 + 2 + 2 = 7. The
+  step-5 plan's stop rules are the guard. The "stop after the first `503` in dev" idea
+  was not built.
 - **Quota.** The free tier's ~20 calls/day resets at midnight Pacific (~12:30 IST);
   2026-09-14's day was spent before this phase's build began (18 calls by 13:30 IST).
   The live steps -- Verify 1 and 3 (six calls) and the eval's `cold_start` +

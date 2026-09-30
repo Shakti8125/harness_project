@@ -57,6 +57,7 @@ from src.harness.observability import (
     install_log_redaction,
 )
 from src.harness.orchestrator import HEARTBEAT_INTERVAL_S, Orchestrator, new_run_id
+from src.harness.recovery import RetryPolicy
 from src.harness.storage import apply_migrations
 from src.integrations.cicd.gateway_github import GitHubToolGateway
 from src.integrations.cicd.gateway_replay import ReplayToolGateway
@@ -136,6 +137,22 @@ def escalation_channels_for(settings: Settings) -> tuple[str, ...]:
     if webhook_url(settings) is not None:
         return (*ESCALATION_CHANNELS, "webhook")
     return ESCALATION_CHANNELS
+
+
+def retry_policy_for(settings: Settings) -> RetryPolicy:
+    """The transient (429/503) half of every agent's `RetryPolicy`, from settings.
+
+    Only the four `HARNESS_LLM_*` knobs are set here. `max_attempts` (the schema retries)
+    and `timeout_s` keep their defaults: the agents take their timeout from their own
+    `timeout_s`, which `build_orchestrator_for` feeds from `gemini_timeout_s`. With every
+    knob unset this equals `RetryPolicy()`.
+    """
+    return RetryPolicy(
+        transient_max_attempts=settings.llm_transient_max_attempts,
+        backoff_base_s=settings.llm_backoff_base_s,
+        backoff_max_s=settings.llm_backoff_max_s,
+        jitter=settings.llm_backoff_jitter,
+    )
 
 
 def build_fault(settings: Settings) -> Fault | None:
@@ -391,6 +408,9 @@ class AppContext:
         Phase 4: an LLM fault wraps the client *per run*, so its per-agent counters start
         fresh for every run (`faults.FaultInjectingLlmClient`); the citation fault reaches
         the Diagnostician through the wiring.
+
+        The transient retry policy comes from the `HARNESS_LLM_*` settings (`retry_policy_for`);
+        the schema retries and the per-call timeout keep their own sources.
         """
         llm = self.llm
         fabricate_citation = False
@@ -410,6 +430,7 @@ class AppContext:
                 self.settings.model_diagnostician or self.settings.gemini_model
             ),
             remediator_model=self.settings.model_remediator or self.settings.gemini_model,
+            retry_policy=retry_policy_for(self.settings),
             timeout_s=self.settings.gemini_timeout_s,
             approval_ttl_h=self.settings.approval_ttl_h,
             escalation_channels=self.escalation_channels,

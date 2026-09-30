@@ -2158,6 +2158,17 @@ route). `detail` passes through the `Redactor`.
 | Safety block / empty candidates | deterministic refusal (`SAFETY`, `RECITATION`, `BLOCKLIST`) or no candidates | no retry (deterministic) | escalate `invalid_output`, `detail.finish_reason` recorded |
 | Network unreachable | `httpx.ConnectError` | 3 attempts, exp backoff | escalate `llm_upstream` |
 
+**Amendment (2026-10-01, step-5 plan Stage 1a): the 429/503 rows are settings.** The numbers
+above are the defaults of `HARNESS_LLM_TRANSIENT_MAX_ATTEMPTS`, `HARNESS_LLM_BACKOFF_BASE_S`,
+`HARNESS_LLM_BACKOFF_MAX_S` and `HARNESS_LLM_BACKOFF_JITTER` (Appendix E), which the
+composition root passes to every agent's `RetryPolicy`; `src/harness/` is unchanged. The
+Gemini free tier bills a `503` like a success (`docs/progress/phase-5/backlog.md`, "A `503`
+storm burns the day"), so its profile (`.env.example`) trades attempts for longer sleeps:
+2 attempts, one unjittered 5 s sleep, which fits `RETRY_DELAY_BUDGET_S`. It caps only the
+transient budget. An agent's hard ceiling is still schema retries + transient + timeout
+attempts, 3 + 2 + 2 = 7 under the profile (9 with the defaults), and a schema-invalid reply
+is billed too.
+
 The deterministic-refusal list is the set that passes one admitting test: *is the refusal a
 function of the content we sent, such that asking again cannot change the answer?* See
 `recovery._TERMINAL_FINISH_REASONS` for that test applied to every member of the SDK's
@@ -2342,6 +2353,10 @@ class Settings(BaseSettings):
     escalation_threshold: float = Field(0.70, ge=0.0, le=1.0)
     log_char_budget: int = 120_000
     gemini_timeout_s: float = 60.0
+    llm_transient_max_attempts: int = Field(4, ge=1, le=4)      # amendment, 2026-10-01 (B.1)
+    llm_backoff_base_s: float = Field(0.5, gt=0, le=20)
+    llm_backoff_max_s: float = Field(8.0, gt=0, le=20)
+    llm_backoff_jitter: Literal["full", "none"] = "full"
     github_timeout_s: float = 30.0
     github_api_base: AnyHttpUrl = "https://api.github.com"
     allowed_repos: list[str] = []                  # "owner/name"; empty = replay-only

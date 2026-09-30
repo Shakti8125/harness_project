@@ -198,4 +198,11 @@ plus `HARNESS_ALLOWED_REPOS=["<you>/harness-demo-repo"]` opt the service into li
 model call. `scripts/replay.py --post-signed fixtures/scenarios/flaky_test/webhook.json`
 delivers a recorded webhook to a local server the way GitHub would, signature and all.
 
+On the free model tier, a `503` (overloaded) counts against the 20 requests a day. The
+`HARNESS_LLM_*` retry settings have a free-tier profile in `.env.example`: two attempts,
+5 s apart, instead of four within a second. `scripts/quota_ledger.py [--space URL]` counts
+the Pacific day's spend from the trace, failed attempts included, at no cost.
+`scripts/probe_gemini.py` spends one request to ask whether the model is answering, before
+you spend a replay.
+
 `PLAN.md` is the normative build plan; `docs/progress/` records each phase's verification.
