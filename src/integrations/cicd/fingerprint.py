@@ -67,6 +67,11 @@ ANCHOR_PATTERNS: Final[tuple[str, ...]] = (
 #: `<TS>` etc. are the placeholders PLAN.md names. `<WORKER>` is this module's addition.
 MESSAGE_MAX_CHARS: Final[int] = 200
 
+#: SEC-09: every cleaned line is cut to this before any pattern sees it. A CI log line is
+#: whatever a commit's test run chose to print, and the fingerprint only ever keeps 200
+#: characters of a message.
+LINE_MAX_CHARS: Final[int] = 2_000
+
 _ANSI: Final[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 #: The workflow-runner timestamp prefix on every log line (`2026-09-08T10:16:38.4190510Z `).
 _LINE_PREFIX_TS: Final[re.Pattern[str]] = re.compile(
@@ -84,8 +89,10 @@ _FAILED_LINE: Final[re.Pattern[str]] = re.compile(
 )
 #: The exception spelling both Python tracebacks and pytest's `E` lines share:
 #: `Type: message`, where `Type` is dotted, CamelCase-ish, and ends like an exception.
+#: The lookbehind keeps `search` from restarting inside an identifier (SEC-09): without
+#: it, a long identifier-like run after `Error: ` cost time quadratic in its length.
 _EXCEPTION: Final[re.Pattern[str]] = re.compile(
-    r"(?P<type>[A-Za-z_][\w]*(?:\.[A-Za-z_]\w*)*"
+    r"(?<![\w.])(?P<type>[A-Za-z_][\w]*(?:\.[A-Za-z_]\w*)*"
     r"(?:Error|Exception|Exceeded|Timeout|Warning|Fault|Failure|Interrupt|Exit|"
     r"NotFound|Denied|Refused|Reset|Abort|Aborted))"
     r"\s*:\s*(?P<message>.*)$"
@@ -93,7 +100,11 @@ _EXCEPTION: Final[re.Pattern[str]] = re.compile(
 _PYTEST_E_LINE: Final[re.Pattern[str]] = re.compile(r"^E\s+(?P<body>.*)$")
 #: pytest's section header, once cleaned: the title between the underscore rules is the
 #: test's name (`test_x`, `TestX.test_x`, `test_x[param]`) or `ERROR at <phase> of test_x`.
-_SECTION_HEADER: Final[re.Pattern[str]] = re.compile(r"^_{3,}\s+(?P<title>.+?)\s+_{3,}$")
+#: The title starts and ends on a non-space, so each run of spaces has one way to match
+#: (SEC-09: `\s+(.+?)\s+` was cubic in a run of spaces).
+_SECTION_HEADER: Final[re.Pattern[str]] = re.compile(
+    r"^_{3,}[ ]+(?P<title>\S.*?\S|\S)[ ]+_{3,}$"
+)
 #: pytest's location line under a failure section: `tests/test_x.py:34: AssertionError`.
 #: The type is here, and only here, when the assertion was a bare `assert a == b`.
 _LOCATION_LINE: Final[re.Pattern[str]] = re.compile(
@@ -137,7 +148,7 @@ def anchor_lines(log_text: str) -> list[str]:
     """Every cleaned line matching one of the integration's anchor patterns, in order."""
     lines: list[str] = []
     for raw in log_text.splitlines():
-        line = clean_line(raw)
+        line = clean_line(raw)[:LINE_MAX_CHARS]
         if _ANY_ANCHOR.search(line):
             lines.append(line)
     return lines

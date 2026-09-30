@@ -80,6 +80,12 @@ FIXTURES_ROOT: Final[Path] = REPO_ROOT / "fixtures" / "scenarios"
 #: trace", mechanism 3): the PEM header -- widened to take the whole block when its END
 #: line is present, so a pasted key is not left with only its first line redacted.
 #: Precise enough to apply everywhere, a base64-encoded file body included.
+#:
+#: The PEM body scan is bounded (SEC-01): it stops at the next `-----BEGIN ` and after
+#: `PEM_BODY_MAX_CHARS`, so input made of unterminated BEGIN lines costs linear time. The
+#: unbounded lazy body scanned to the end of the input once per BEGIN, which made 120 KB
+#: of caller text in a `422` take 14 s on the one event loop.
+PEM_BODY_MAX_CHARS: Final[int] = 16_384
 SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{22,}"),
@@ -87,7 +93,9 @@ SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{20,}"),
     re.compile(
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?"
+        r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----"
+        rf"(?:(?:(?!-----BEGIN )[\s\S]){{0,{PEM_BODY_MAX_CHARS}}}?"
+        r"-----END [A-Z ]{0,40}PRIVATE KEY-----)?"
     ),
 )
 
@@ -191,6 +199,33 @@ def build_notifier(settings: Settings, redactor: Redactor) -> EscalationNotifier
     return WebhookNotifier(url, redactor=redactor)
 
 
+class RunAdmission:
+    """How many runs may be in flight at once: admission control (SEC-07).
+
+    The semaphore limits how many runs *execute*; before this nothing limited how many
+    were *accepted*, and every accepted run is a task, a heartbeat and a claim row. A run
+    is admitted by the route that starts it and released when it finishes, and at most
+    `max_concurrent_runs` run while up to twice that many wait -- the next request is
+    refused with `429`. Not a daily quota guard: a slow trickle of runs is never refused.
+
+    Check and increment happen with no `await` between them, so on one event loop two
+    requests cannot both take the last place.
+    """
+
+    def __init__(self, max_concurrent_runs: int) -> None:
+        self.capacity = max_concurrent_runs * 3
+        self.in_flight = 0
+
+    def try_admit(self) -> bool:
+        if self.in_flight >= self.capacity:
+            return False
+        self.in_flight += 1
+        return True
+
+    def release(self) -> None:
+        self.in_flight = max(0, self.in_flight - 1)
+
+
 @dataclass(frozen=True)
 class RunContext:
     """What it takes to build the same gateway a run used.
@@ -256,6 +291,9 @@ class AppContext:
     #: Phase 4. The outbound escalation channel; `None` when no webhook URL is set.
     #: Defaulted from the settings in `__post_init__`.
     notifier: EscalationNotifier | None = None
+    #: SEC-07. Admission control over the runs the routes accept; defaulted from
+    #: `max_concurrent_runs` in `__post_init__`.
+    admission: RunAdmission | None = None
 
     def __post_init__(self) -> None:
         # Log lines are a sink like the rows and the bodies: the recorder's Redactor is
@@ -277,6 +315,16 @@ class AppContext:
             object.__setattr__(
                 self, "notifier", build_notifier(self.settings, self.recorder.redactor)
             )
+        if self.admission is None:
+            object.__setattr__(
+                self, "admission", RunAdmission(self.settings.max_concurrent_runs)
+            )
+
+    @property
+    def runs_admitted(self) -> RunAdmission:
+        """`admission`, narrowed: `__post_init__` guarantees it is set."""
+        assert self.admission is not None
+        return self.admission
 
     @property
     def escalation_channels(self) -> tuple[str, ...]:
@@ -383,8 +431,15 @@ class AppContext:
         return self.settings.gateway == "github" and repo in self.settings.allowed_repos
 
     def gateway_for(self, run_context: RunContext) -> ToolGateway:
-        """The gateway a `RunContext` describes -- the one the run used, rebuilt."""
+        """The gateway a `RunContext` describes -- the one the run used, rebuilt.
+
+        A live context is rebuilt only while this deployment still serves its repository
+        live (SEC-04): an approval stored under a live configuration and decided after the
+        deployment went back to replay, or dropped the repository, must not reach GitHub.
+        """
         if run_context.mode == "live":
+            if not self.live_allowed(run_context.repo):
+                raise PermissionError("this deployment does not serve that repository live")
             return self.build_live_gateway(run_context.repo)
         if run_context.scenario_dir is None:  # pragma: no cover - replay always names one
             raise ValueError("a replay run must name a scenario directory")

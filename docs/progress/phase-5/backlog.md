@@ -147,3 +147,37 @@ still the fix, still not built, still the next phase's call.
   The live steps -- Verify 1 and 3 (six calls) and the eval's `cold_start` +
   `dependency_break` rows (six) -- are 2026-09-15's first spend, after counting the day's
   `llm.attempt` spans with `tokens.total > 0` on that clock.
+
+## Security gate before live exposure (2026-10-01, step-5 plan Stage 1e)
+
+A security assessment of `06c87db` (kept out of the repository until its fixes are deployed)
+found that the step-5 live configuration was unsafe as the plan was written. Stage 1e is the
+fix round. Everything is in `src/api/`, `src/integrations/`, `scripts/` and
+`docker-compose.yml`; `git diff 06c87db -- src/harness/` is empty.
+
+- **Closed:**
+  - SEC-01: the PEM redaction pattern has a bounded body, so redaction is linear.
+  - SEC-08: request bodies are capped at 1 MiB.
+  - SEC-02, SEC-04, SEC-06: an operator token guards `/v1/runs` and `/v1/approvals` when
+    `HARNESS_GATEWAY=github`. `decided_by` comes from the credential, and `live_allowed` is
+    re-checked before a live approval executes.
+  - SEC-03, SEC-24: `url_segments` validates every sha, ref and file path in both gateways.
+  - SEC-05: `normalize_plan` derives the branch `agent/fix/<signature_id[:8]>` and the base,
+    and drops paths under `.github/`. The gateway refuses a file write outside `agent/fix/`.
+  - SEC-09: the fingerprint patterns are linear, lines are capped at 2,000 characters, and
+    the fingerprint runs in `asyncio.to_thread`.
+  - SEC-07: admission control answers `429` beyond `max_concurrent_runs` executing plus
+    twice that many waiting.
+  - SEC-18: compose binds `127.0.0.1`.
+  - SEC-19: the seed script sends the hook body on stdin.
+- **Carried:**
+  - SEC-10 and SEC-11 must be fixed before anyone sets `dry_run=false`.
+  - SEC-12 stays in the backlog because it is in `src/harness/`.
+  - SEC-13 to SEC-17, SEC-20 to SEC-23 and SEC-25 are low or info.
+- **Changed behaviour worth knowing:**
+  - The stub's canned plan names `agent/fix/<head sha[:8]>`, which is now replaced by the
+    signature-derived branch. No fixture's expected values pin a branch, so none changed.
+  - The Remediator prompt no longer tells the model to name the branch.
+  - Placeholder shas in `test_gateway_github.py` became hex-shaped.
+- **Tests:** each test fails on the pre-fix tree with the finding's own reproduction, and
+  the three timing tests ran past a 60 s time-box there.

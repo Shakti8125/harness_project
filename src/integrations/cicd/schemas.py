@@ -294,8 +294,8 @@ class FilePatch(BaseModel):
 class PrDraft(BaseModel):
     model_config = _MODEL_CONFIG
 
-    branch: str  # deterministic: "agent/fix/{signature_id[:8]}"
-    base: str
+    branch: str  # set by `normalize_plan`: "agent/fix/{signature_id[:8]}" (SEC-05)
+    base: str  # set by `normalize_plan`: the failing run's branch
     title: str
     body: str
     files: list[FilePatch] = Field(max_length=5)

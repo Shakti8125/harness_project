@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     github_token: SecretStr
     github_webhook_secret: SecretStr
     escalation_webhook_url: SecretStr | None = None
+    # Required by `POST /v1/runs` and `POST /v1/approvals/{id}` when `gateway == "github"`
+    # (`Authorization: Bearer …`); unset there, both refuse. Unused in replay mode.
+    operator_token: SecretStr | None = None
 
     # --- non-secret config ---
     database_path: Path = Path("./data/harness.db")

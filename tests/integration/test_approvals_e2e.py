@@ -273,6 +273,8 @@ def test_live_mode_is_403_for_a_repo_not_allowlisted(
 
     monkeypatch.setenv("HARNESS_GATEWAY", "github")
     monkeypatch.setenv("HARNESS_ALLOWED_REPOS", '["someone-else/repo"]')
+    # The operator credential (SEC-02) is presented, so the 403 is the allowlist's.
+    monkeypatch.setenv("HARNESS_OPERATOR_TOKEN", "an-operator-token-of-adequate-length")
     get_settings.cache_clear()
     webhook = json.loads(
         (Path(__file__).resolve().parents[2] / "fixtures/scenarios/real_regression/webhook.json")
@@ -285,9 +287,11 @@ def test_live_mode_is_403_for_a_repo_not_allowlisted(
                 "integration": "cicd", "subject": webhook,
                 "idempotency_key": "cicd:test-live-403", "mode": "live",
             },
+            headers={"Authorization": "Bearer an-operator-token-of-adequate-length"},
         )
     assert response.status_code == 403
     assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["title"] == "Repository not allowlisted"
 
 
 def test_replay_mode_without_a_fixture_is_422(client: TestClient) -> None:

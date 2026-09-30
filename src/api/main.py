@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -26,11 +27,12 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 import aiosqlite
-from fastapi import FastAPI, Query, Request, Response, status
+from fastapi import Depends, FastAPI, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from src.api.deps import AppContext, RunContext, get_app_context, mint_run_id
 from src.api.trace_view import render_trace_page
@@ -543,6 +545,111 @@ async def handle_unhandled_exception(request: Request, exc: Exception) -> JSONRe
     )
 
 
+#: SEC-08: the largest request body any route accepts. A `workflow_run` delivery is tens
+#: of KB, and a run request or an approval decision far less.
+MAX_REQUEST_BODY_BYTES: Final[int] = 1024 * 1024
+_BODY_TOO_LARGE_DETAIL: Final[str] = (
+    f"The request body is larger than {MAX_REQUEST_BODY_BYTES} bytes."
+)
+
+
+def _declared_length(scope: Scope) -> int | None:
+    for name, value in scope.get("headers", []):
+        if name == b"content-length":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+class BodySizeLimit:
+    """Refuse a request body over `max_bytes` with `413` before a route buffers it (SEC-08).
+
+    A declared `Content-Length` over the cap is answered here, before anything is read. A
+    body without one is counted as it streams in: the read that crosses the cap raises a
+    `413` `HTTPException`, which the application's own handler turns into the usual problem
+    document, and nothing past the cap is kept. Before this, `POST /webhooks/github`
+    buffered any body whole before checking its signature.
+    """
+
+    def __init__(self, app: ASGIApp, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        declared = _declared_length(scope)
+        if declared is not None and declared > self.max_bytes:
+            response = problem(
+                Request(scope), status_code=413, title="Content Too Large",
+                detail=_BODY_TOO_LARGE_DETAIL,
+            )
+            await response(scope, receive, send)
+            return
+        received = 0
+
+        async def counted() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise StarletteHTTPException(status_code=413, detail=_BODY_TOO_LARGE_DETAIL)
+            return message
+
+        await self.app(scope, counted, send)
+
+
+app.add_middleware(BodySizeLimit)
+
+
+# ---------------------------------------------------------------------------
+# The operator credential (SEC-02, SEC-04, SEC-06)
+# ---------------------------------------------------------------------------
+
+#: `decided_by` on an approval decided under the operator credential: the credential says
+#: who decided, not the body's free-text `actor`.
+OPERATOR_ACTOR: Final[str] = "operator"
+_BEARER = re.compile(r"^Bearer[ ]+(\S+)[ ]*$", re.IGNORECASE)
+
+
+def _operator_token_in_force() -> bool:
+    """A live deployment's run and approval routes belong to its operator."""
+    return get_app_context().settings.gateway == "github"
+
+
+async def require_operator(request: Request) -> None:
+    """On a live deployment, `POST /v1/runs` and `POST /v1/approvals/{id}` need
+    `Authorization: Bearer <HARNESS_OPERATOR_TOKEN>`.
+
+    A replay deployment is unchanged: its runs read recorded fixtures and hold no
+    credential worth taking. On a live one, the signed webhook stays the only anonymous way
+    to start a run. No token configured refuses everything (`403`, fail closed); a missing
+    or wrong credential is `401`. Neither detail names a setting. Runs as a dependency, so
+    an unauthenticated caller is refused before the body is validated.
+    """
+    settings = get_app_context().settings
+    if settings.gateway != "github":
+        return
+    configured = settings.operator_token
+    expected = configured.get_secret_value().strip() if configured is not None else ""
+    if not expected:
+        raise StarletteHTTPException(
+            status_code=403, detail="This route is not available on this deployment."
+        )
+    match = _BEARER.match(request.headers.get("authorization", ""))
+    presented = match.group(1) if match else ""
+    if not presented or not hmac.compare_digest(presented.encode(), expected.encode()):
+        raise StarletteHTTPException(
+            status_code=401,
+            detail="This route requires the operator's credential.",
+            headers={"WWW-Authenticate": 'Bearer realm="harness"'},
+        )
+
+
 async def _db_reachable(db_path: Path) -> str:
     """Phase 0 has no schema yet, so "healthy" means: the directory exists (or can be
     created), the file is openable by aiosqlite, and a trivial query round-trips.
@@ -747,6 +854,23 @@ async def _supervised(
         except MemoryStoreError:
             logger.warning("background run %s: could not record the failure", run_id)
         raise
+
+
+def _queue_full(request: Request) -> JSONResponse:
+    """SEC-07's refusal: every run slot is busy and the wait list is full."""
+    return problem(
+        request, status_code=429, title="Too many runs",
+        detail="Too many runs are queued; retry later.",
+        headers={"Retry-After": "60"},
+    )
+
+
+async def _admitted(context: AppContext, coro: Coroutine[Any, Any, RunOutcome]) -> RunOutcome:
+    """Run an admitted run and give its place back when it ends, however it ends."""
+    try:
+        return await coro
+    finally:
+        context.runs_admitted.release()
 
 
 def _spawn_run(coro: Coroutine[Any, Any, RunOutcome], run_id: RunId) -> None:
@@ -972,30 +1096,43 @@ async def replay(
         requested_by="replay",
     )
     claim_key = _fresh_key(run_request.idempotency_key) if fresh else run_request.idempotency_key
-    claim = await _claim_or_degrade(context.store, claim_key, INTEGRATION)
-    refused = _claim_response(claim)
-    if refused is not None:
-        return refused
-    run_id = claim.run_id
-    request.state.run_id = run_id  # so an unhandled exception below can still report it
+    if not context.runs_admitted.try_admit():
+        return _queue_full(request)
+    handed_off = False
+    try:
+        claim = await _claim_or_degrade(context.store, claim_key, INTEGRATION)
+        refused = _claim_response(claim)
+        if refused is not None:
+            return refused
+        run_id = claim.run_id
+        request.state.run_id = run_id  # so an unhandled exception below can still report it
 
-    run_context = RunContext(mode="replay", repo=parsed["repo"], scenario_dir=scenario_dir)
-    if not sync:
-        _spawn_run(_execute(context, run_request, run_context, run_id), run_id)
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={"run_id": run_id, "status": "in_progress"},
-        )
-
-    outcome = await _execute(context, run_request, run_context, run_id)
+        run_context = RunContext(mode="replay", repo=parsed["repo"], scenario_dir=scenario_dir)
+        run = _admitted(context, _execute(context, run_request, run_context, run_id))
+        handed_off = True
+        if not sync:
+            _spawn_run(run, run_id)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={"run_id": run_id, "status": "in_progress"},
+            )
+        outcome = await run
+    finally:
+        if not handed_off:
+            context.runs_admitted.release()
     return JSONResponse(
         status_code=status.HTTP_200_OK, content=_serialize_run_outcome(outcome)
     )
 
 
-@app.post("/v1/runs")
+@app.post("/v1/runs", dependencies=[Depends(require_operator)])
 async def create_run(request: Request, run_request: RunRequest) -> Response:
     """Accept a run and execute it in the background. `202 {run_id, status}` per A.12.
+
+    On a live deployment the caller must present the operator credential
+    (`require_operator`, SEC-02/SEC-06): the route lets the caller name the repository,
+    the head sha and the idempotency key, so anonymously it would start live runs on
+    demand and could pre-claim a real delivery's key.
 
     The run id is minted by the store's claim rather than inside the orchestrator so
     that the 202 can name the run it just accepted; the orchestrator is then wired to
@@ -1047,19 +1184,30 @@ async def create_run(request: Request, run_request: RunRequest) -> Response:
             )
         run_context = RunContext(mode="replay", repo=parsed["repo"], scenario_dir=scenario_dir)
 
-    claim = await _claim_or_degrade(
-        context.store, run_request.idempotency_key, run_request.integration
-    )
-    refused = _claim_response(claim)
-    if refused is not None:
-        return refused
-    if claim.took_over_from is not None:
-        logger.warning(
-            "run %s took over %s: its heartbeat went stale", claim.run_id, claim.took_over_from
+    if not context.runs_admitted.try_admit():
+        return _queue_full(request)
+    handed_off = False
+    try:
+        claim = await _claim_or_degrade(
+            context.store, run_request.idempotency_key, run_request.integration
         )
-    run_id = claim.run_id
-    request.state.run_id = run_id  # so an unhandled exception below can still report it
-    _spawn_run(_execute(context, run_request, run_context, run_id), run_id)
+        refused = _claim_response(claim)
+        if refused is not None:
+            return refused
+        if claim.took_over_from is not None:
+            logger.warning(
+                "run %s took over %s: its heartbeat went stale",
+                claim.run_id, claim.took_over_from,
+            )
+        run_id = claim.run_id
+        request.state.run_id = run_id  # so an unhandled exception below can still report it
+        _spawn_run(
+            _admitted(context, _execute(context, run_request, run_context, run_id)), run_id
+        )
+        handed_off = True
+    finally:
+        if not handed_off:
+            context.runs_admitted.release()
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
         content={"run_id": run_id, "status": "in_progress"},
@@ -1164,17 +1312,28 @@ async def github_webhook(request: Request) -> Response:
         replay_fixture=fixture,
         requested_by=f"webhook:github:{guid}" if guid else "webhook:github",
     )
-    claim = await _claim_or_degrade(context.store, run_request.idempotency_key, INTEGRATION)
-    refused = _claim_response(claim)
-    if refused is not None:
-        return refused
-    if claim.took_over_from is not None:
-        logger.warning(
-            "run %s took over %s: its heartbeat went stale", claim.run_id, claim.took_over_from
+    if not context.runs_admitted.try_admit():
+        return _queue_full(request)
+    handed_off = False
+    try:
+        claim = await _claim_or_degrade(context.store, run_request.idempotency_key, INTEGRATION)
+        refused = _claim_response(claim)
+        if refused is not None:
+            return refused
+        if claim.took_over_from is not None:
+            logger.warning(
+                "run %s took over %s: its heartbeat went stale",
+                claim.run_id, claim.took_over_from,
+            )
+        run_id = claim.run_id
+        request.state.run_id = run_id
+        _spawn_run(
+            _admitted(context, _execute(context, run_request, run_context, run_id)), run_id
         )
-    run_id = claim.run_id
-    request.state.run_id = run_id
-    _spawn_run(_execute(context, run_request, run_context, run_id), run_id)
+        handed_off = True
+    finally:
+        if not handed_off:
+            context.runs_admitted.release()
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
         content={"run_id": run_id, "status": "in_progress"},
@@ -1457,7 +1616,7 @@ async def _execute_approved(
     return remediation, [d.model_dump(mode="json") for d in decisions]
 
 
-@app.post("/v1/approvals/{approval_id}")
+@app.post("/v1/approvals/{approval_id}", dependencies=[Depends(require_operator)])
 async def decide_approval(
     request: Request, approval_id: str, body: ApprovalDecision
 ) -> Response:
@@ -1466,6 +1625,11 @@ async def decide_approval(
     The transition is taken under the registry's lock *before* anything executes, so two
     concurrent decisions on one approval cannot both run the plan -- the loser sees the
     winner's state and answers `409`.
+
+    On a live deployment (SEC-04) the decision needs the operator credential
+    (`require_operator`) and is recorded as `OPERATOR_ACTOR`, not as the body's `actor`;
+    and an approval whose run targets a repository this deployment no longer serves live
+    is refused before the transition, so it is neither executed nor used up.
     """
     context = get_app_context()
     memory = context.store
@@ -1497,11 +1661,20 @@ async def decide_approval(
             run_id=record.run_id,
         )
 
+    run_context = RunContext.from_json(dict(record.context))
+    if run_context.mode == "live" and not context.live_allowed(run_context.repo):
+        return problem(
+            request, status_code=403, title="Repository not served live",
+            detail="The run this approval belongs to is not served live by this deployment.",
+            run_id=record.run_id,
+        )
+
     target: Literal["approved", "rejected"] = (
         "approved" if body.decision == "approve" else "rejected"
     )
+    actor = OPERATOR_ACTOR if _operator_token_in_force() else body.actor
     record, applied = await memory.decide_approval(
-        approval_id, target, actor=body.actor, note=body.note
+        approval_id, target, actor=actor, note=body.note
     )
     if not applied:
         return problem(

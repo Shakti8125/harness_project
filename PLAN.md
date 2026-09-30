@@ -2137,6 +2137,21 @@ route). `detail` passes through the `Redactor`.
 > route answers `503` with `Retry-After`; on the run routes the request degrades and runs
 > unclaimed instead.
 
+> **Amendment (2026-10-01, step-5 plan Stage 1e).** Three rules added before any live exposure.
+> (1) **Operator credential on a live deployment.** When `HARNESS_GATEWAY=github`,
+> `POST /v1/runs` (either mode) and `POST /v1/approvals/{id}` require
+> `Authorization: Bearer <HARNESS_OPERATOR_TOKEN>`, compared in constant time. No token
+> configured answers `403`; a missing or wrong credential answers `401` with
+> `WWW-Authenticate: Bearer`. Neither detail names a setting. An approval decided under the
+> credential records `decided_by="operator"`, not the body's `actor`, and an approval whose run
+> targets a repository the deployment no longer serves live is refused `403` before the
+> single-use transition. A replay deployment is unchanged, so the signed webhook remains the only
+> anonymous way to start a live run. (2) **Bodies are capped at 1 MiB**: a larger declared
+> `Content-Length` is `413` before anything is read, and a body without one is counted as it
+> streams. (3) **Admission control**: at most `max_concurrent_runs` runs execute and up to twice
+> that many wait. A run-starting request beyond that (`/v1/runs`, `/v1/replay/{scenario}`,
+> `/webhooks/github`) is `429` with `Retry-After`. This is not a daily quota guard.
+
 `200 RunOutcome` responses are the model dump with one documented exception: raw external content carried in `final` is replaced by its length and sha256 digest at the HTTP boundary — today `final.<artifact>.logs[].excerpt` → `excerpt_length` + `excerpt_sha256` and `final.<artifact>.diff.files[].patch` → `patch_length` + `patch_sha256`. `final` is opaque to the harness, so this substitution lives in the API layer and must be extended by hand when an integration adds a raw-content field. The whole body also passes through the `Redactor`.
 
 ---
@@ -2343,6 +2358,7 @@ class Settings(BaseSettings):
     github_token: SecretStr
     github_webhook_secret: SecretStr
     escalation_webhook_url: SecretStr | None = None
+    operator_token: SecretStr | None = None        # amendment, 2026-10-01 (A.12)
 
     # --- non-secret config ---
     database_path: Path = Path("./data/harness.db")
@@ -2376,6 +2392,7 @@ class Settings(BaseSettings):
 | `HARNESS_GEMINI_API_KEY` | `.env` (gitignored) | `--env-file .env` | `fly secrets set` (encrypted at rest, injected as env) | Space **Secret**, never a Variable |
 | `HARNESS_GITHUB_TOKEN` | `.env` | `--env-file .env` | `fly secrets set` | Space Secret |
 | `HARNESS_GITHUB_WEBHOOK_SECRET` | `.env` | `--env-file .env` | `fly secrets set` | Space Secret |
+| `HARNESS_OPERATOR_TOKEN` | `.env` (live mode only) | `--env-file .env` | `fly secrets set` | Space Secret, when `HARNESS_GATEWAY=github` |
 | `HARNESS_DATABASE_PATH` | `./data/harness.db` | volume mount `./data:/app/data` | `/data/harness.db` on a 1 GB Fly volume, `[mounts]` in `fly.toml` | `./data/harness.db` on **ephemeral** disk -- resets on restart or sleep (risk 2) |
 | Everything else | `.env` / defaults | `fly.toml [env]` | `fly.toml [env]` (non-secret, committed) | Space Variables, or the defaults in `settings.py` |
 
@@ -2401,6 +2418,15 @@ one-repo demo. A GitHub App is the correct answer for anything multi-repo (per-i
 higher rate limits, no personal identity attached to bot actions) and is documented in
 `docs/ADAPTER_GUIDE.md` as the migration — the gateway takes an auth strategy object, so it is a
 constructor change. See Open Risk 3.
+
+**Amendment (2026-10-01, step-5 plan Stage 1e): the operator token and the PAT's scope.**
+`HARNESS_OPERATOR_TOKEN` is the credential A.12's amendment requires on a live deployment's run
+and approval routes. It is a `SecretStr`, so the `Redactor` registers it by type. A live deployment
+without it refuses those routes rather than serving them anonymously. While `dry_run` is true, a
+read-only PAT is enough (Actions, Contents, Metadata, Pull requests, Issues: read), because the
+write tools only run their `GET` pre-checks. The PAT must never carry the Workflows or
+Administration permissions, whatever else it is granted. The gateway also refuses a file write to
+any branch outside `agent/fix/`, and `normalize_plan` drops any drafted path under `.github/`.
 
 **Decision (`dry_run` defaults to `True`).** A fresh clone, a misconfigured env, or a forgotten flag
 results in the system *planning* actions and executing none. Turning on writes requires deliberately

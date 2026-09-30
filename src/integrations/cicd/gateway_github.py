@@ -49,7 +49,9 @@ from pydantic import JsonValue
 from src.harness.gateway import ToolCall, ToolError, ToolResult, ToolSpec
 from src.harness.guardrails import PolicyDecision
 from src.harness.observability import TraceRecorder
+from src.integrations.cicd import url_segments
 from src.integrations.cicd.catalog import (
+    AGENT_BRANCH_PREFIX,
     CATALOG,
     IMPLEMENTED_WRITE_TOOLS,
     READ_TOOLS,
@@ -534,8 +536,9 @@ class GitHubToolGateway:
 
     async def _get_ref(self, name: str) -> dict[str, JsonValue] | None:
         """The branch ref, or `None` when it does not exist."""
+        ref = url_segments.ref_path(name, name="branch")
         try:
-            body = await self._get_json(f"/repos/{self.repo}/git/ref/heads/{name}")
+            body = await self._get_json(f"/repos/{self.repo}/git/ref/heads/{ref}")
         except _Failure as failure:
             if failure.kind == "not_found":
                 return None
@@ -546,7 +549,7 @@ class GitHubToolGateway:
         return {"ref": str(body.get("ref", f"refs/heads/{name}")), "sha": str(obj.get("sha", ""))}
 
     async def _create_branch(self, args: dict[str, Any]) -> dict[str, JsonValue]:
-        name = str(args["name"])
+        name = url_segments.ref_name(args["name"], name="name")
         from_sha = str(args["from_sha"])
         existing = await self._get_ref(name)
         if existing is not None:
@@ -575,10 +578,10 @@ class GitHubToolGateway:
         }
 
     async def _current_blob_sha(self, path: str, branch: str) -> str | None:
+        url_path = url_segments.file_url_path(path)
+        ref = url_segments.ref_name(branch, name="branch")
         try:
-            body = await self._get_json(
-                f"/repos/{self.repo}/contents/{path.lstrip('/')}", {"ref": branch}
-            )
+            body = await self._get_json(f"/repos/{self.repo}/contents/{url_path}", {"ref": ref})
         except _Failure as failure:
             if failure.kind == "not_found":
                 return None  # a new file
@@ -588,8 +591,15 @@ class GitHubToolGateway:
         raise _Failure("malformed", f"contents response for {path!r} carried no sha")
 
     async def _create_or_update_file(self, args: dict[str, Any]) -> dict[str, JsonValue]:
-        path = str(args["path"]).lstrip("/")
-        branch = str(args["branch"])
+        path = url_segments.file_path(args["path"])
+        branch = url_segments.ref_name(args["branch"], name="branch")
+        if not branch.startswith(AGENT_BRANCH_PREFIX):
+            # SEC-05: the one write that lands on a branch is refused anywhere but the
+            # agent's own, before the pre-check reads anything.
+            raise _Failure(
+                "invalid_args",
+                f"refusing to write a file to a branch outside {AGENT_BRANCH_PREFIX!r}",
+            )
         content_b64 = str(args["content_b64"])
         message = str(args["message"])
         # Appendix C: pass the current blob sha, so a write that raced another writer
@@ -601,7 +611,9 @@ class GitHubToolGateway:
         if sha is not None:
             payload["sha"] = sha
         try:
-            body = await self._put_json(f"/repos/{self.repo}/contents/{path}", payload)
+            body = await self._put_json(
+                f"/repos/{self.repo}/contents/{url_segments.file_url_path(path)}", payload
+            )
         except _Failure as failure:
             if failure.http_status == 409:
                 # Appendix C: someone else wrote it since it was read. A hard stop, not a
@@ -813,15 +825,17 @@ class GitHubToolGateway:
                     ]
                     body["total_count"] = len(body["workflow_runs"])
         elif tool == "compare_commits":
-            body = await self._get_json(
-                f"/repos/{repo}/compare/{args['base']}...{args['head']}"
-            )
+            base = url_segments.sha(args["base"], name="base")
+            head = url_segments.sha(args["head"], name="head")
+            body = await self._get_json(f"/repos/{repo}/compare/{base}...{head}")
         elif tool == "get_commit":
-            body = await self._get_json(f"/repos/{repo}/commits/{args['sha']}")
+            body = await self._get_json(
+                f"/repos/{repo}/commits/{url_segments.sha(args['sha'])}"
+            )
         elif tool == "get_file_contents":
             body = await self._get_json(
-                f"/repos/{repo}/contents/{str(args['path']).lstrip('/')}",
-                {"ref": args["ref"]} if args.get("ref") else None,
+                f"/repos/{repo}/contents/{url_segments.file_url_path(args['path'])}",
+                {"ref": url_segments.ref_name(args["ref"])} if args.get("ref") else None,
             )
         elif tool == "rerun_failed_jobs":
             return await self._rerun_failed_jobs(args)

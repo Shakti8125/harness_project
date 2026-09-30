@@ -43,6 +43,7 @@ is inert bookkeeping, not evidence preservation.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 import re
@@ -352,7 +353,9 @@ class Investigator(LLMAgent[InvestigationNotes]):
         (dispatch decision 10) so the prior is computed over what is now known; a probe
         that fails is data and does not degrade anything.
         """
-        key = signature_key_for_job(job, log_text)
+        # Off the event loop (SEC-09): the log is up to 2 MiB of CI output, and every
+        # other request waits while a synchronous scan of it runs.
+        key = await asyncio.to_thread(signature_key_for_job, job, log_text)
         if self.memory is None:
             return unavailable_history(key)
         try:

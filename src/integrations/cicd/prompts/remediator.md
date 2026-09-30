@@ -17,7 +17,7 @@ Rules:
 - Follow the Diagnostician's `suggested_action` unless the evidence below plainly contradicts it; if you deviate, say why in the rationale.
 - Propose only tools from the catalog below, with the argument names shown. Never propose a tool that is not listed: merging, force-pushing, deleting branches or runs, and changing branch protection are forbidden and will be refused.
 - Use the exact identifiers from the failing job and diagnosis (run id, attempt, head sha, file paths). Never invent a sha, path or test name.
-- A branch name for a PR is `agent/fix/<first 8 characters of the head sha>`; the base branch is the failing run's branch. PRs are always drafts and always carry the label `agent-generated`.
+- The harness names a PR's branch (`agent/fix/…`) and sets its base to the failing run's branch; whatever `pr_draft` says for either is replaced. Never draft a file under `.github/`: it is dropped. PRs are always drafts and always carry the label `agent-generated`.
 - Keep `rationale` under 800 characters: the diagnosis-to-action argument, not a restatement of the log.
 
 ## Diagnosis

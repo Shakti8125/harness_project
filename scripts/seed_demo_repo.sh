@@ -48,12 +48,26 @@ done
 command -v gh >/dev/null || { echo "gh is required (https://cli.github.com)" >&2; exit 2; }
 gh auth status >/dev/null 2>&1 || { echo "gh is not logged in; run: gh auth login" >&2; exit 2; }
 
+json_string() {  # $1 as the inside of a JSON string; refuses control characters
+  local value="$1"
+  if [[ "$value" =~ [[:cntrl:]] ]]; then
+    echo "a webhook value contains a control character" >&2
+    return 2
+  fi
+  value="${value//\\/\\\\}"
+  printf '%s' "${value//\"/\\\"}"
+}
+
 register_webhook() {  # the one outward-facing call that carries the secret; stdout discarded
   : "${HARNESS_GITHUB_WEBHOOK_SECRET:?set HARNESS_GITHUB_WEBHOOK_SECRET in the environment (the secret the Space holds)}"
-  gh api -X POST "repos/$REPO/hooks" \
-    -f name=web -F active=true -f 'events[]=workflow_run' \
-    -f config[url]="$WEBHOOK_URL" -f config[content_type]=json \
-    -f config[secret]="$HARNESS_GITHUB_WEBHOOK_SECRET" >/dev/null
+  # The hook body goes to gh on stdin (SEC-19). printf and the expansions are shell
+  # builtins, so the secret is never on any process's command line. Do not run this
+  # with GH_DEBUG=api set: gh may log request bodies.
+  local url secret
+  url="$(json_string "$WEBHOOK_URL")"
+  secret="$(json_string "$HARNESS_GITHUB_WEBHOOK_SECRET")"
+  printf '{"name":"web","active":true,"events":["workflow_run"],"config":{"url":"%s","content_type":"json","secret":"%s"}}' \
+    "$url" "$secret" | gh api -X POST "repos/$REPO/hooks" --input - >/dev/null
   echo "webhook registered: $WEBHOOK_URL (workflow_run)"
 }
 
@@ -347,12 +361,16 @@ fi
 cat <<EOF
 
 Done. What is left is by hand:
-  1. A fine-grained PAT scoped to $REPO only (Appendix E): Actions read, Contents read+write,
-     Pull requests write, Issues write, Metadata read. Never a classic token.
+  1. A fine-grained PAT scoped to $REPO only, never a classic token. While HARNESS_DRY_RUN
+     is true, read-only is enough: Actions, Contents, Metadata, Pull requests, Issues.
+     Never Workflows or Administration. Appendix E's write scopes only if dry run goes off.
   2. On the Space: secrets HARNESS_GITHUB_TOKEN (the PAT) and HARNESS_GITHUB_WEBHOOK_SECRET;
      variables HARNESS_GATEWAY=github and HARNESS_ALLOWED_REPOS=["$REPO"]. HARNESS_DRY_RUN stays true.
-  3. The webhook, if not registered above (registers it and touches nothing else):
-       HARNESS_GITHUB_WEBHOOK_SECRET=... $0 $REPO --webhook-only --webhook https://<space>/webhooks/github
+  3. The webhook, if not registered above (registers it and touches nothing else). Enter
+     the secret without echo, so it is in neither your shell history nor any argv:
+       read -rs HARNESS_GITHUB_WEBHOOK_SECRET && export HARNESS_GITHUB_WEBHOOK_SECRET
+       $0 $REPO --webhook-only --webhook https://<space>/webhooks/github
+       unset HARNESS_GITHUB_WEBHOOK_SECRET
   4. Fire a failure:  gh workflow run flaky.yml -R $REPO
      then Settings -> Webhooks -> Recent Deliveries: 202; Redeliver: 202 and no second run.
 EOF

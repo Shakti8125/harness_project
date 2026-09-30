@@ -5,7 +5,9 @@ services:
       dockerfile: Dockerfile
     image: harness:local
     ports:
-      - "8000:8000"
+      # Loopback only (SEC-18): the API has unauthenticated routes, and a bare "8000:8000"
+      # publishes them to everyone on the LAN.
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     environment:

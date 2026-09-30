@@ -51,13 +51,15 @@ from src.harness.guardrails import (
     downgrade_for_warn,
 )
 from src.harness.observability import TraceRecorder, carries_redaction
-from src.integrations.cicd.catalog import side_effect_of
+from src.integrations.cicd import url_segments
+from src.integrations.cicd.catalog import AGENT_BRANCH_PREFIX, side_effect_of
 from src.integrations.cicd.rendering import new_call_id
 from src.integrations.cicd.schemas import (
     ApprovalRequest,
     Diagnosis,
     FailureBundle,
     JobRef,
+    PrDraft,
     RemediationPlan,
     RemediationResult,
 )
@@ -246,6 +248,75 @@ def canonical_tool_calls(
     return []
 
 
+#: The PR-writing tools whose branch, base and paths `normalize_plan` sets itself.
+_PR_TOOLS: Final[frozenset[str]] = frozenset(
+    {"create_branch", "create_or_update_file", "open_pull_request"}
+)
+
+
+def agent_branch(signature_id: str | None, run_id: RunId) -> str:
+    """`agent/fix/<signature_id[:8]>`: the only branch a fix plan may write (SEC-05).
+
+    Derived, never taken from the model. A run without a signature (memory unavailable and
+    no key) gets a branch of its own from its run id instead.
+    """
+    seed = signature_id or hashlib.sha256(str(run_id).encode("utf-8")).hexdigest()
+    return f"{AGENT_BRANCH_PREFIX}{seed[:8]}"
+
+
+def refused_path(path: object) -> str | None:
+    """Why a drafted file path may not be written, or `None` when it may.
+
+    A path that fails the gateway's URL rules could leave the repository (SEC-03). A path
+    under `.github/` is a workflow or repository setting: with a token that can write it,
+    that is code execution with the repository's Actions secrets (SEC-05). The check is
+    case-insensitive, whatever the host's file system.
+    """
+    try:
+        clean = url_segments.file_path(path)
+    except ValueError:
+        return "invalid path"
+    if clean.split("/", 1)[0].lower() == ".github":
+        return "path under .github/"
+    return None
+
+
+def _sanitized_pr(
+    plan: RemediationPlan, branch: str, base: str
+) -> tuple[RemediationPlan, list[str]]:
+    """The PR draft with the harness's branch and base, and only the files it may write."""
+    draft = plan.pr_draft
+    if draft is None:
+        return plan, []
+    kept = []
+    dropped = []
+    for patch in draft.files:
+        reason = refused_path(patch.path)
+        if reason is None:
+            kept.append(patch.model_copy(update={"path": url_segments.file_path(patch.path)}))
+        else:
+            dropped.append(f"create_or_update_file ({reason})")
+    clean: PrDraft = draft.model_copy(update={"branch": branch, "base": base, "files": kept})
+    return plan.model_copy(update={"pr_draft": clean}), dropped
+
+
+def _sanitized_pr_call(call: ToolCall, branch: str, base: str) -> ToolCall | None:
+    """A model-proposed PR call with the harness's branch and base; `None` for a file
+    write whose path may not be written."""
+    args = dict(call.args)
+    if call.tool == "create_branch":
+        args["name"] = branch
+    elif call.tool == "create_or_update_file":
+        if refused_path(args.get("path")) is not None:
+            return None
+        args["path"] = url_segments.file_path(args.get("path"))
+        args["branch"] = branch
+    elif call.tool == "open_pull_request":
+        args["head"] = branch
+        args["base"] = base
+    return call.model_copy(update={"args": args})
+
+
 class NormalizedPlan:
     """What `normalize_plan` hands back, beside the plan itself.
 
@@ -290,7 +361,15 @@ def normalize_plan(
 
     Every surviving call gets a fresh harness-minted `call_id`; every side-effecting call
     gets Appendix C's `idempotency_key`. Read calls keep no key -- nothing to protect.
+
+    SEC-05: a fix plan's branch, base and file paths are the harness's, not the model's.
+    The branch is always `agent_branch(signature_id, run_id)`, the base is the failing
+    run's branch, and a file under `.github/` or with a path the gateway would refuse is
+    dropped and named in `dropped`. This runs before the plan is judged, so the approval
+    shows what would actually be written.
     """
+    branch = agent_branch(signature_id, run_id)
+    plan, dropped_files = _sanitized_pr(plan, branch, job.branch)
     proposed = [call.tool for call in plan.tool_calls]
     derived = False
     canonical = (
@@ -302,13 +381,23 @@ def normalize_plan(
         calls = canonical
     else:
         allowed = TOOLS_FOR_ACTION.get(plan.action, frozenset())
-        calls = [call for call in plan.tool_calls if call.tool in allowed]
+        calls = []
+        for call in plan.tool_calls:
+            if call.tool not in allowed:
+                continue
+            if call.tool in _PR_TOOLS:
+                sanitized = _sanitized_pr_call(call, branch, job.branch)
+                if sanitized is None:
+                    dropped_files.append(f"{call.tool} ({refused_path(call.args.get('path'))})")
+                    continue
+                call = sanitized
+            calls.append(call)
     kept = {call.tool for call in calls}
     for call in plan.tool_calls:
         if call.tool in forbidden and call.tool not in kept:
             calls.append(call)
             kept.add(call.tool)
-    dropped = [tool for tool in proposed if tool not in kept]
+    dropped = [tool for tool in proposed if tool not in kept] + dropped_files
 
     normalized: list[ToolCall] = []
     for call in calls:

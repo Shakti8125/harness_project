@@ -126,8 +126,8 @@ async def test_find_last_successful_run_drops_the_failing_head(
 async def test_timeout_retries_twice_then_reports_timeout(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter, sleeps: Sleeps
 ) -> None:
-    route = respx_mock.get(f"{API}/commits/abc").mock(side_effect=httpx.ReadTimeout("slow"))
-    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
+    route = respx_mock.get(f"{API}/commits/abc1234").mock(side_effect=httpx.ReadTimeout("slow"))
+    result = await gateway.invoke(call("get_commit", sha="abc1234"), allow("get_commit"))
     assert not result.ok and result.error is not None
     assert result.error.kind == "timeout"
     assert result.error.retryable is True
@@ -140,14 +140,14 @@ async def test_primary_rate_limit_sleeps_to_the_reset_and_retries_once(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter, sleeps: Sleeps
 ) -> None:
     reset = int(time.time()) + 30
-    route = respx_mock.get(f"{API}/commits/abc").mock(
+    route = respx_mock.get(f"{API}/commits/abc1234").mock(
         side_effect=[
             httpx.Response(403, headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset)}, json={"message": "API rate limit exceeded"}),
-            httpx.Response(200, json={"sha": "abc"}),
+            httpx.Response(200, json={"sha": "abc1234"}),
         ]
     )
-    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
-    assert result.ok and result.data == {"sha": "abc"}
+    result = await gateway.invoke(call("get_commit", sha="abc1234"), allow("get_commit"))
+    assert result.ok and result.data == {"sha": "abc1234"}
     assert route.call_count == 2
     assert len(sleeps.durations) == 1
     assert 25 <= sleeps.durations[0] <= 31
@@ -158,12 +158,12 @@ async def test_primary_rate_limit_beyond_60s_is_reported_not_slept(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter, sleeps: Sleeps
 ) -> None:
     reset = int(time.time()) + 600
-    route = respx_mock.get(f"{API}/commits/abc").mock(
+    route = respx_mock.get(f"{API}/commits/abc1234").mock(
         return_value=httpx.Response(
             403, headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset)}, json={}
         )
     )
-    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
+    result = await gateway.invoke(call("get_commit", sha="abc1234"), allow("get_commit"))
     assert not result.ok and result.error is not None
     assert result.error.kind == "rate_limited"
     assert result.error.retry_after_s is not None and result.error.retry_after_s > 60
@@ -176,10 +176,10 @@ async def test_primary_rate_limit_beyond_60s_is_reported_not_slept(
 async def test_secondary_limit_honours_retry_after_up_to_twice(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter, sleeps: Sleeps
 ) -> None:
-    route = respx_mock.get(f"{API}/commits/abc").mock(
+    route = respx_mock.get(f"{API}/commits/abc1234").mock(
         return_value=httpx.Response(403, headers={"retry-after": "7"}, json={"message": "abuse"})
     )
-    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
+    result = await gateway.invoke(call("get_commit", sha="abc1234"), allow("get_commit"))
     assert not result.ok and result.error is not None
     assert result.error.kind == "rate_limited"
     assert result.error.retry_after_s == 7
@@ -191,10 +191,10 @@ async def test_secondary_limit_honours_retry_after_up_to_twice(
 async def test_401_is_auth_with_no_retry(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter, sleeps: Sleeps
 ) -> None:
-    route = respx_mock.get(f"{API}/commits/abc").mock(
+    route = respx_mock.get(f"{API}/commits/abc1234").mock(
         return_value=httpx.Response(401, json={"message": "Bad credentials"})
     )
-    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
+    result = await gateway.invoke(call("get_commit", sha="abc1234"), allow("get_commit"))
     assert not result.ok and result.error is not None
     assert result.error.kind == "auth"
     assert result.error.retryable is False
@@ -207,14 +207,14 @@ async def test_401_is_auth_with_no_retry(
 async def test_403_scope_is_auth_naming_the_accepted_scopes(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter
 ) -> None:
-    respx_mock.get(f"{API}/commits/abc").mock(
+    respx_mock.get(f"{API}/commits/abc1234").mock(
         return_value=httpx.Response(
             403,
             headers={"x-accepted-oauth-scopes": "repo"},
             json={"message": "Resource not accessible by personal access token"},
         )
     )
-    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
+    result = await gateway.invoke(call("get_commit", sha="abc1234"), allow("get_commit"))
     assert not result.ok and result.error is not None
     assert result.error.kind == "auth"
     assert "repo" in result.error.message
@@ -225,8 +225,8 @@ async def test_403_scope_is_auth_naming_the_accepted_scopes(
 async def test_404_on_a_read_is_not_found_data(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter
 ) -> None:
-    respx_mock.get(f"{API}/compare/a...b").mock(return_value=httpx.Response(404, json={}))
-    result = await gateway.invoke(call("compare_commits", base="a", head="b"), allow("compare_commits"))
+    respx_mock.get(f"{API}/compare/aaaaaaa...bbbbbbb").mock(return_value=httpx.Response(404, json={}))
+    result = await gateway.invoke(call("compare_commits", base="aaaaaaa", head="bbbbbbb"), allow("compare_commits"))
     assert not result.ok and result.error is not None
     assert result.error.kind == "not_found"
     assert result.error.http_status == 404
@@ -236,8 +236,8 @@ async def test_404_on_a_read_is_not_found_data(
 async def test_5xx_retries_three_times_with_backoff(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter, sleeps: Sleeps
 ) -> None:
-    route = respx_mock.get(f"{API}/commits/abc").mock(return_value=httpx.Response(502))
-    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
+    route = respx_mock.get(f"{API}/commits/abc1234").mock(return_value=httpx.Response(502))
+    result = await gateway.invoke(call("get_commit", sha="abc1234"), allow("get_commit"))
     assert not result.ok and result.error is not None
     assert result.error.kind == "upstream_5xx"
     assert result.error.retryable is True
@@ -250,10 +250,10 @@ async def test_5xx_retries_three_times_with_backoff(
 async def test_malformed_body_keeps_bounded_evidence(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter
 ) -> None:
-    respx_mock.get(f"{API}/commits/abc").mock(
+    respx_mock.get(f"{API}/commits/abc1234").mock(
         return_value=httpx.Response(200, content=b"<html>" + b"x" * 5000)
     )
-    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
+    result = await gateway.invoke(call("get_commit", sha="abc1234"), allow("get_commit"))
     assert not result.ok and result.error is not None
     assert result.error.kind == "malformed"
     assert len(result.error.message) < 700
@@ -446,13 +446,13 @@ async def test_a_malformed_rate_limit_reset_is_still_a_rate_limit(
     gateway: GitHubToolGateway, respx_mock: respx.MockRouter, sleeps: Sleeps
 ) -> None:
     """Finding 4: a non-numeric `x-ratelimit-reset` was classified `invalid_args`."""
-    route = respx_mock.get(f"{API}/commits/abc").mock(
+    route = respx_mock.get(f"{API}/commits/abc1234").mock(
         side_effect=[
             httpx.Response(403, headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "soon"}, json={}),
-            httpx.Response(200, json={"sha": "abc"}),
+            httpx.Response(200, json={"sha": "abc1234"}),
         ]
     )
-    result = await gateway.invoke(call("get_commit", sha="abc"), allow("get_commit"))
+    result = await gateway.invoke(call("get_commit", sha="abc1234"), allow("get_commit"))
     assert result.ok
     assert route.call_count == 2
     assert sleeps.durations == [60.0]

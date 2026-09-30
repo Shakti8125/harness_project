@@ -46,6 +46,7 @@ from pydantic import JsonValue
 from src.harness.gateway import ToolCall, ToolError, ToolResult, ToolSpec
 from src.harness.guardrails import PolicyDecision
 from src.harness.observability import TraceRecorder
+from src.integrations.cicd import url_segments
 from src.integrations.cicd.catalog import (
     CATALOG,
     IMPLEMENTED_WRITE_TOOLS,
@@ -253,9 +254,20 @@ class ReplayToolGateway:
                     }
                 )
 
+            # SEC-24: a sha or a path becomes part of a file name under the scenario
+            # directory, so it is held to the live gateway's rules first.
+            if call.tool == "compare_commits":
+                url_segments.sha(args["base"], name="base")
+                url_segments.sha(args["head"], name="head")
+            elif call.tool == "get_commit":
+                url_segments.sha(args["sha"])
+            elif call.tool == "get_file_contents":
+                url_segments.file_path(args["path"])
             slug = self._fixture_slug(call.tool, args)
         except KeyError as exc:
             return failure("invalid_args", f"missing required argument {exc}")
+        except ValueError as exc:
+            return failure("invalid_args", str(exc))
 
         if slug is None:
             return failure("invalid_args", f"no fixture mapping for tool {call.tool!r}")

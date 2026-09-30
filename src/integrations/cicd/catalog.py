@@ -184,6 +184,12 @@ IMPLEMENTED_WRITE_TOOLS: Final[frozenset[str]] = frozenset(
 )
 
 
+#: The only branches the agent may write to (SEC-05). `normalize_plan` names every fix
+#: branch `agent/fix/<signature>`, whatever the model wrote, and the live gateway refuses a
+#: file write to any other branch -- so a model persuaded to target `main` cannot commit.
+AGENT_BRANCH_PREFIX: Final[str] = "agent/fix/"
+
+
 def side_effect_of(tool: str) -> SideEffect:
     """The catalog's side-effect class for `tool` -- `"destructive"` when it is not listed.
 
