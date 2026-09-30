@@ -210,6 +210,11 @@ class RunAdmission:
 
     Check and increment happen with no `await` between them, so on one event loop two
     requests cannot both take the last place.
+
+    A signed webhook delivery is admitted with `admit_trusted`: counted, so anonymous
+    callers see it in the total, but never refused. Otherwise anyone could fill the pool
+    with replays and make a real delivery answer `429`, and GitHub does not redeliver on
+    its own (Stage 1e audit, finding 1).
     """
 
     def __init__(self, max_concurrent_runs: int) -> None:
@@ -221,6 +226,9 @@ class RunAdmission:
             return False
         self.in_flight += 1
         return True
+
+    def admit_trusted(self) -> None:
+        self.in_flight += 1
 
     def release(self) -> None:
         self.in_flight = max(0, self.in_flight - 1)

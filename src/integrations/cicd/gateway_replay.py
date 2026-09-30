@@ -82,26 +82,35 @@ def fixture_slug_for(repo: str, tool: str, args: dict[str, Any]) -> str | None:
 
     Module-level so `scripts/record_fixture.py` writes the file the replay gateway will
     look for: one rule, two callers.
+
+    Every part of the slug is held to the live gateway's rules first (SEC-24): the slug is
+    a file name under the scenario directory, and a `\\` in any caller- or model-supplied
+    part walked out of it on Windows. The ids are integers; a bad part raises `ValueError`.
     """
-    slug = repo_slug(repo)
+    slug = repo_slug(url_segments.repo_name(repo))
     if tool == "list_workflow_run_jobs":
         return (
-            f"repos-{slug}-actions-runs-{args['run_id']}"
-            f"-attempts-{args.get('attempt', 1)}-jobs"
+            f"repos-{slug}-actions-runs-{int(args['run_id'])}"
+            f"-attempts-{int(args.get('attempt', 1))}-jobs"
         )
     if tool in ("find_last_successful_run", "search_workflow_runs"):
         # Appendix D's chain asks the same path twice with a different `branch=` query
         # (the failing branch, then the default branch), and the README's rule for two
         # recordings of one path is a suffix: `-branch-<name>`, slashes as dashes.
-        base = f"repos-{slug}-actions-workflows-{args['workflow_id']}-runs"
-        branch = str(args.get("branch") or "")
-        return f"{base}-branch-{branch.replace('/', '-')}" if branch else base
+        base = f"repos-{slug}-actions-workflows-{int(args['workflow_id'])}-runs"
+        raw_branch = args.get("branch")
+        if not raw_branch:
+            return base
+        branch = url_segments.ref_name(raw_branch, name="branch")
+        return f"{base}-branch-{branch.replace('/', '-')}"
     if tool == "compare_commits":
-        return f"repos-{slug}-compare-{args['base']}-{args['head']}"
+        base_sha = url_segments.sha(args["base"], name="base")
+        head_sha = url_segments.sha(args["head"], name="head")
+        return f"repos-{slug}-compare-{base_sha}-{head_sha}"
     if tool == "get_commit":
-        return f"repos-{slug}-commits-{args['sha']}"
+        return f"repos-{slug}-commits-{url_segments.sha(args['sha'])}"
     if tool == "get_file_contents":
-        return f"repos-{slug}-contents-{str(args['path']).replace('/', '-')}"
+        return f"repos-{slug}-contents-{url_segments.file_path(args['path']).replace('/', '-')}"
     return None
 
 
@@ -254,15 +263,8 @@ class ReplayToolGateway:
                     }
                 )
 
-            # SEC-24: a sha or a path becomes part of a file name under the scenario
-            # directory, so it is held to the live gateway's rules first.
-            if call.tool == "compare_commits":
-                url_segments.sha(args["base"], name="base")
-                url_segments.sha(args["head"], name="head")
-            elif call.tool == "get_commit":
-                url_segments.sha(args["sha"])
-            elif call.tool == "get_file_contents":
-                url_segments.file_path(args["path"])
+            # SEC-24: `fixture_slug_for` holds every part of the file name to the live
+            # gateway's rules and raises `ValueError` for one that fails them.
             slug = self._fixture_slug(call.tool, args)
         except KeyError as exc:
             return failure("invalid_args", f"missing required argument {exc}")

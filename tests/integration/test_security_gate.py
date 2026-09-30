@@ -351,3 +351,46 @@ async def test_a_deduplicated_request_gives_its_place_back(
             again = await client.post("/v1/replay/flaky_test", params={"fresh": "false"})
             assert again.json()["status"] == "deduplicated"
     assert context.runs_admitted.in_flight == 0
+
+
+async def test_a_signed_delivery_is_admitted_when_anonymous_runs_fill_the_pool(
+    tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Stage 1e audit's finding 1: anonymous replays could make a real delivery 429,
+    and GitHub does not redeliver on its own -- SEC-06's harm by a new route."""
+    monkeypatch.setenv("HARNESS_GITHUB_WEBHOOK_SECRET", SECRET)
+    get_settings.cache_clear()
+    llm = GatedLlm()
+    settings = get_settings().model_copy(update={"max_concurrent_runs": 1})
+    context = use(make_context(settings, tmp_db_path, llm), monkeypatch)
+    await context.initialize()
+    body = (FIXTURES_ROOT / "flaky_test" / "webhook.json").read_bytes()
+    transport = httpx.ASGITransport(app=api_main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://harness") as client:
+        filled = [
+            await client.post("/v1/replay/flaky_test", params={"sync": "false"}) for _ in range(3)
+        ]
+        assert [r.status_code for r in filled] == [202, 202, 202]
+        assert (await client.post("/v1/replay/flaky_test", params={"sync": "false"})).status_code == 429
+
+        delivery = await client.post(
+            "/webhooks/github", content=body,
+            headers={
+                "Content-Type": "application/json", EVENT_HEADER: "workflow_run",
+                DELIVERY_HEADER: str(uuid.uuid4()), SIGNATURE_HEADER: sign(SECRET, body),
+            },
+        )
+        assert delivery.status_code == 202, delivery.text
+
+        llm.gate.set()
+        for response in [*filled, delivery]:
+            run_id = response.json()["run_id"]
+            for _ in range(1000):
+                if (await client.get(f"/v1/runs/{run_id}")).json()["status"] != "in_progress":
+                    break
+                await asyncio.sleep(0.01)
+        for _ in range(100):
+            if context.runs_admitted.in_flight == 0:
+                break
+            await asyncio.sleep(0.01)
+    assert context.runs_admitted.in_flight == 0

@@ -2149,8 +2149,10 @@ route). `detail` passes through the `Redactor`.
 > anonymous way to start a live run. (2) **Bodies are capped at 1 MiB**: a larger declared
 > `Content-Length` is `413` before anything is read, and a body without one is counted as it
 > streams. (3) **Admission control**: at most `max_concurrent_runs` runs execute and up to twice
-> that many wait. A run-starting request beyond that (`/v1/runs`, `/v1/replay/{scenario}`,
-> `/webhooks/github`) is `429` with `Retry-After`. This is not a daily quota guard.
+> that many wait. An anonymous run-starting request beyond that (`/v1/runs`,
+> `/v1/replay/{scenario}`) is `429` with `Retry-After`. A signed delivery is counted but never
+> refused, so that anonymous traffic cannot turn a real failure away. This is not a daily
+> quota guard.
 
 `200 RunOutcome` responses are the model dump with one documented exception: raw external content carried in `final` is replaced by its length and sha256 digest at the HTTP boundary — today `final.<artifact>.logs[].excerpt` → `excerpt_length` + `excerpt_sha256` and `final.<artifact>.diff.files[].patch` → `patch_length` + `patch_sha256`. `final` is opaque to the harness, so this substitution lives in the API layer and must be extended by hand when an integration adds a raw-content field. The whole body also passes through the `Redactor`.
 

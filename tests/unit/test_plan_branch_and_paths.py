@@ -117,3 +117,26 @@ def test_a_run_without_a_signature_still_gets_an_agent_branch() -> None:
     draft = normalized.plan.pr_draft
     assert draft is not None and draft.branch.startswith("agent/fix/")
     assert len(draft.branch) == len("agent/fix/") + 8
+
+
+def test_a_file_write_without_a_string_path_is_dropped_not_written_as_none() -> None:
+    """The Stage 1e audit's finding 4: `file_path(None)` validated `str(None)`."""
+    plan = RemediationPlan.model_validate({
+        "rationale": "Fix it.",
+        "action": "open_fix_pr",
+        "tool_calls": [
+            {"call_id": "tc_model000001", "tool": "create_or_update_file",
+             "args": {"branch": "main", "content_b64": "eA==", "message": "m"}},
+            {"call_id": "tc_model000002", "tool": "create_or_update_file",
+             "args": {"branch": "main", "path": 42, "content_b64": "eA==", "message": "m"}},
+        ],
+        "pr_draft": None,
+        "ticket_draft": None,
+    })
+
+    normalized = normalize_plan(
+        plan, run_id="run_01M2R8VWQMXD36ATHMKCD08G5F", job=job(), signature_id=SIGNATURE
+    )
+
+    assert normalized.plan.tool_calls == []
+    assert normalized.dropped.count("create_or_update_file (invalid path)") == 2

@@ -167,7 +167,7 @@ fix round. Everything is in `src/api/`, `src/integrations/`, `scripts/` and
   - SEC-09: the fingerprint patterns are linear, lines are capped at 2,000 characters, and
     the fingerprint runs in `asyncio.to_thread`.
   - SEC-07: admission control answers `429` beyond `max_concurrent_runs` executing plus
-    twice that many waiting.
+    twice that many waiting. Signed deliveries are counted but never refused.
   - SEC-18: compose binds `127.0.0.1`.
   - SEC-19: the seed script sends the hook body on stdin.
 - **Carried:**
@@ -181,3 +181,9 @@ fix round. Everything is in `src/api/`, `src/integrations/`, `scripts/` and
   - Placeholder shas in `test_gateway_github.py` became hex-shaped.
 - **Tests:** each test fails on the pre-fix tree with the finding's own reproduction, and
   the three timing tests ran past a 60 s time-box there.
+- **Audit provenance:**
+  - `4e6261c..5602f47` was independently audited by one `phase-reviewer` dispatch
+    (`review-security.md`). The verdict was FIX FIRST, with 1 medium and 3 low findings.
+  - The medium finding: a signed delivery shared the admission pool with anonymous replays.
+  - All four findings were fixed in the next commit. Each has a test that fails on
+    `5602f47`. The round is coordinator-verified, not re-audited.

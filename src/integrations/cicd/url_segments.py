@@ -7,10 +7,12 @@ leaves the repository -- httpx resolves dot segments before sending, so
 `?` or `#` rewrites the query or drops the rest of the URL. The replay gateway turns the
 same values into file names under a scenario directory.
 
-Each function returns the value to use, or raises `ValueError`. Both gateways already turn
-a `ValueError` from argument handling into `ToolError(kind="invalid_args")` before
-anything is sent, so a refused value costs no request -- which matters in dry run too,
-where the pre-check `GET`s still carry the token.
+Each function takes the raw value, refuses anything that is not a `str` (a missing
+argument must not become the path `"None"`), and returns the value to use or raises
+`ValueError`. Every pattern is matched whole (`fullmatch`): `$` alone also matches before
+a trailing newline. Both gateways already turn a `ValueError` from argument handling into
+`ToolError(kind="invalid_args")` before anything is sent, so a refused value costs no
+request -- which matters in dry run too, where the pre-check `GET`s still carry the token.
 """
 
 from __future__ import annotations
@@ -20,7 +22,9 @@ from typing import Final
 from urllib.parse import quote
 
 #: A commit sha, abbreviated or full, lower-case hex as GitHub returns it.
-_SHA: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{7,40}$")
+_SHA: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{7,40}")
+#: `owner/name` as GitHub spells them: letters, digits, `-`, `_` and `.`.
+_REPO: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 #: Characters git's `check-ref-format` refuses anywhere in a ref name, with the ASCII
 #: control characters and DEL. A space is one of them.
 _REF_FORBIDDEN: Final[re.Pattern[str]] = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]")
@@ -31,16 +35,32 @@ _MAX_REF_CHARS: Final[int] = 255
 _MAX_PATH_CHARS: Final[int] = 1024
 
 
+def _text(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} is missing or not a string")
+    return value
+
+
 def sha(value: object, *, name: str = "sha") -> str:
-    text = str(value)
-    if not _SHA.match(text):
+    text = _text(value, name)
+    if not _SHA.fullmatch(text):
         raise ValueError(f"{name} is not a commit sha")
+    return text
+
+
+def repo_name(value: object, *, name: str = "repo") -> str:
+    """`owner/name`, with no dot segment."""
+    text = _text(value, name)
+    if not _REPO.fullmatch(text) or ".." in text or any(
+        part in (".", "..") for part in text.split("/")
+    ):
+        raise ValueError(f"{name} is not an owner/name repository")
     return text
 
 
 def ref_name(value: object, *, name: str = "ref") -> str:
     """A branch name (or a sha, which is also a valid name) under git's ref-name rules."""
-    text = str(value)
+    text = _text(value, name)
     if not text or len(text) > _MAX_REF_CHARS:
         raise ValueError(f"{name} is empty or too long")
     if (
@@ -64,7 +84,7 @@ def ref_path(value: object, *, name: str = "ref") -> str:
 
 def file_path(value: object, *, name: str = "path") -> str:
     """A repository-relative file path. A leading `/` is dropped, as before."""
-    text = str(value).lstrip("/")
+    text = _text(value, name).lstrip("/")
     if not text or len(text) > _MAX_PATH_CHARS or _PATH_FORBIDDEN.search(text):
         raise ValueError(f"{name} is not a valid repository file path")
     parts = text.split("/")

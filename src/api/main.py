@@ -1312,8 +1312,8 @@ async def github_webhook(request: Request) -> Response:
         replay_fixture=fixture,
         requested_by=f"webhook:github:{guid}" if guid else "webhook:github",
     )
-    if not context.runs_admitted.try_admit():
-        return _queue_full(request)
+    # A verified delivery is counted but never refused: see `RunAdmission.admit_trusted`.
+    context.runs_admitted.admit_trusted()
     handed_off = False
     try:
         claim = await _claim_or_degrade(context.store, run_request.idempotency_key, INTEGRATION)

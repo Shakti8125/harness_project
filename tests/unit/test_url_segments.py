@@ -174,3 +174,55 @@ def test_the_rules() -> None:
     for bad in ("", "/", "a//b", "a/./b", "a/../b", "..", "a\\b", "a?b", "a#b", "a%2e", "a\nb"):
         with pytest.raises(ValueError):
             url_segments.file_path(bad)
+
+
+# ---------------------------------------------------------------------------
+# The Stage 1e audit's findings 2 and 3 (docs/progress/phase-5/review-security.md)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_replay_gateway_refuses_every_file_name_part_that_walks_the_tree(repo_root: Path) -> None:
+    """Finding 2: only the sha and path were checked; a branch or a string id still walked."""
+    gateway = ReplayToolGateway(
+        scenario_dir=repo_root / "fixtures/scenarios/flaky_test", repo=REPO, forbidden=()
+    )
+
+    for tool, args in (
+        ("find_last_successful_run", {"workflow_id": 9001, "branch": "x\\..\\..\\..\\real_regression\\webhook"}),
+        ("find_last_successful_run", {"workflow_id": "9001-runs\\..\\..\\..\\real_regression\\webhook", "branch": "main"}),
+        ("list_workflow_run_jobs", {"run_id": "x\\..\\..\\..\\real_regression\\api\\GET_repos-octo-org-harness-demo-repo-actions-runs-501234567", "attempt": 1}),
+        ("list_workflow_run_jobs", {"run_id": 501234890, "attempt": "1-jobs\\..\\..\\x"}),
+    ):
+        result = await gateway.invoke(call(tool, **args), allow(tool))
+        assert not result.ok and result.error is not None
+        assert result.error.kind == "invalid_args", (tool, args, result.error)
+
+    walked = ReplayToolGateway(
+        scenario_dir=repo_root / "fixtures/scenarios/flaky_test",
+        repo="x\\..\\..\\..\\real_regression\\webhook/y", forbidden=(),
+    )
+    result = await walked.invoke(call("get_commit", sha="a" * 40), allow("get_commit"))
+    assert not result.ok and result.error is not None and result.error.kind == "invalid_args"
+
+
+async def test_the_replay_gateway_still_serves_its_own_recordings(repo_root: Path) -> None:
+    gateway = ReplayToolGateway(
+        scenario_dir=repo_root / "fixtures/scenarios/flaky_test", repo=REPO, forbidden=()
+    )
+
+    result = await gateway.invoke(
+        call("find_last_successful_run", workflow_id=9001, branch="main"), allow("find_last_successful_run")
+    )
+
+    assert result.ok, result.error
+
+
+async def test_a_sha_with_a_trailing_newline_is_invalid_args_not_a_crash(
+    gateway: GitHubToolGateway, respx_mock: respx.MockRouter
+) -> None:
+    """Finding 3: `$` matched before a trailing newline, and httpx then raised out of invoke."""
+    result = await gateway.invoke(call("get_commit", sha="abcdef1\n"), allow("get_commit"))
+
+    assert not result.ok and result.error is not None
+    assert result.error.kind == "invalid_args"
+    assert len(respx_mock.calls) == 0
