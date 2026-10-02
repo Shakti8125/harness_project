@@ -24,6 +24,12 @@ _RETRY_DEFAULTS = {
     "HARNESS_LLM_BACKOFF_MAX_S": "8.0",
     "HARNESS_LLM_BACKOFF_JITTER": "full",
 }
+_EXPOSURE_DEFAULTS = {
+    "HARNESS_GATEWAY": "replay",
+    "HARNESS_ALLOWED_REPOS": "[]",
+    "HARNESS_DRY_RUN": "true",
+    "HARNESS_OPERATOR_TOKEN": "",
+}
 
 
 @pytest.fixture
@@ -45,6 +51,11 @@ def isolated_settings(
     # Pin Appendix B.1's defaults so no attempt count in the suite depends on it;
     # `tests/unit/test_retry_settings.py` sets the profile where it means to.
     for name, value in _RETRY_DEFAULTS.items():
+        monkeypatch.setenv(name, value)
+    # Likewise its live settings (step-5 plan, Stage 4): with `HARNESS_GATEWAY=github` and an
+    # operator token in `.env`, a replay-mode approval test answered `401`. Tests that mean
+    # live mode set these themselves.
+    for name, value in _EXPOSURE_DEFAULTS.items():
         monkeypatch.setenv(name, value)
 
     try:

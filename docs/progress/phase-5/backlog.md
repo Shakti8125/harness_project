@@ -206,3 +206,53 @@ fix round. Everything is in `src/api/`, `src/integrations/`, `scripts/` and
     12:30 IST 2026-10-01. It answered `OK`, and no database records it.
   - Session B needs no code deploy, only the Space settings change. `space/main` lags
     `master` by the docs-only commit that records this; that commit needs no redeploy.
+
+## Step 5, Session B — first live day (2026-10-03, stopped at Stage 4a)
+
+- **Stage 2 (the user's GitHub prep, 2026-10-03):**
+  - A new webhook secret and `HARNESS_OPERATOR_TOKEN` are in the local `.env`. Both were
+    checked by shape only.
+  - <https://github.com/Shakti8125/harness-demo-repo> (public) was seeded without
+    `--webhook`, and has 0 hooks. `main` is `a9dc5d6`, green on all four workflows.
+  - The failing runs are `37067659434` (regression, `demo/regression` `22b0865`,
+    `assert 91 == 90`) and `37067665280` (dependency, `demo/dependency` `0122e95`, pydantic
+    2.9's `BaseSettings` `ImportError`).
+  - A fine-grained PAT, read-only on the demo repo, expires **2026-11-01 21:50 UTC**. Read
+    checks answer `200`. Hooks, branch protection, Actions settings and secrets answer `403`.
+- **The day:** the ledger read 0 of 20 at the start, for the Pacific day from 2026-10-02
+  07:00 UTC. The probe answered `OK` at 03:26 IST.
+- **4a, attempt 1** (`run_01M3Z9XR80CPTMAX5TNT89VEWT`, 2 requests, both `ok`):
+  `escalated (unknown_category)`.
+  - The diagnosis named `22b0865` and the `+ 1` correctly, but answered `unknown` "due to
+    missing baseline run". Every gateway span was a read.
+  - **Cause, a script defect:** `replay.py --live` took the subject's `repository` from
+    `GET /actions/runs/{id}`. That is GitHub's *minimal* repository, which has no
+    `default_branch`, so Appendix D's `default_green` step was skipped. `demo/regression`
+    has no green run of its own, so the baseline degraded to `head_commit_only`, a cold start.
+  - A real webhook payload carries the full repository, so the webhook path is unaffected.
+  - **Fixed:** `fetch_workflow_run` in `replay.py` and `record_fixture.py` now fetches
+    `GET /repos/{repo}` as well.
+  - The recorder test's mock had served the webhook's full repository from the run
+    endpoint, which hid the defect. It now serves a minimal one.
+  - The new test fails on the old scripts with `KeyError: 'default_branch'`.
+- **4a, attempt 2** (`run_01M3ZA49P2VVGCKCQG2SWSWP0A`, 2 requests, both `503`):
+  `escalated (llm_upstream)`.
+  - The baseline now resolved as `default_green`: `find_last_successful_run` on the branch,
+    then on `main`, then `compare_commits`.
+  - Both attempts of the Investigator's model call got `503`, four minutes after the probe's
+    `OK`, at about 15:00 PDT.
+  - **Stop rule applied:** Session B stopped for the Pacific day. No retry.
+- **Day total: 5 of 20.** That is the probe plus 4 in the ledger: 2 `ok` and 2
+  `LlmUpstreamError`.
+- **Test isolation:** the suite read the live `.env`. With Stage 4's settings in it,
+  `test_approvals_e2e::test_reject_then_repost_is_409` and
+  `test_security_gate::test_a_live_deployment_without_an_operator_token_refuses_both_routes`
+  answered `401`.
+  - `conftest.py` now pins `HARNESS_GATEWAY`, `HARNESS_ALLOWED_REPOS`, `HARNESS_DRY_RUN`
+    and `HARNESS_OPERATOR_TOKEN`, as it already pins the retry profile.
+  - The token-less test now sets the token blank instead of deleting it. Blank and unset
+    take the same path.
+  - The suite cannot ignore `.env` outright, because its required secrets come from there.
+  - Result: 978 passed and 2 skipped with the live `.env` in place.
+- **Next:** resume after the 12:30 IST reset. Run the ledger, probe, and re-run 4a. The
+  Space is untouched (`RUNNING a0a64a2`, replay mode).

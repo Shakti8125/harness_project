@@ -28,7 +28,7 @@ from src.harness.context_manager import ContextBudget, ContextManager
 from src.harness.contracts import RunRequest
 from src.harness.observability import REDACTION_PLACEHOLDER, Redactor, TraceRecorder
 from src.harness.orchestrator import RunState, new_run_id
-from src.integrations.cicd.agents.investigator import Investigator
+from src.integrations.cicd.agents.investigator import Investigator, parse_subject
 from src.integrations.cicd.wiring import INTEGRATION
 from src.settings import get_settings
 from tests.stubs import ScenarioStubLlm
@@ -57,11 +57,17 @@ def _fixture(name: str) -> Any:
     return json.loads((SCENARIO / "api" / name).read_text(encoding="utf-8"))
 
 
+def minimal_repository(repository: dict[str, Any]) -> dict[str, Any]:
+    """The run API's `repository`: GitHub's minimal repository, with no `default_branch`."""
+    return {k: v for k, v in repository.items() if k in ("id", "node_id", "name", "full_name", "private", "owner", "html_url", "url")}
+
+
 def mock_github(router: respx.MockRouter) -> None:
     webhook = json.loads((SCENARIO / "webhook.json").read_text(encoding="utf-8"))
     router.get(f"{API}/actions/runs/{RUN_ID}").mock(
-        return_value=httpx.Response(200, json={**webhook["workflow_run"], "repository": webhook["repository"]})
+        return_value=httpx.Response(200, json={**webhook["workflow_run"], "repository": minimal_repository(webhook["repository"])})
     )
+    router.get(API).mock(return_value=httpx.Response(200, json=webhook["repository"]))
     router.get(f"{API}/actions/runs/{RUN_ID}/attempts/1/jobs").mock(
         return_value=httpx.Response(200, json=_fixture(f"GET_repos-octo-org-harness-demo-repo-actions-runs-{RUN_ID}-attempts-1-jobs.json"))
     )
@@ -151,6 +157,22 @@ async def test_recording_replays_like_the_committed_scenario(
 
     printed = capsys.readouterr().out
     assert "recorded recorded_regression" in printed and "baseline branch_green" in printed
+
+
+@pytest.mark.parametrize("script", ["record_fixture", "replay"])
+@respx.mock
+async def test_a_live_subject_carries_the_default_branch_the_run_api_omits(
+    script: str, respx_mock: respx.MockRouter
+) -> None:
+    """Session B, Stage 4a: `replay.py --live` on a fresh `demo/regression` run escalated
+    `unknown_category`, because the run API's minimal `repository` has no `default_branch`
+    and Appendix D's `default_green` step never ran."""
+    mock_github(respx_mock)
+    fetch = load_script(script).fetch_workflow_run
+    subject = await fetch(REPO, RUN_ID, "ghp_" + "t" * 36, "https://api.github.com")
+    assert subject["repository"]["default_branch"] == "main"
+    assert parse_subject(subject)["default_branch"] == "main"
+    assert parse_subject(subject)["repo"] == REPO
 
 
 async def test_recording_refuses_a_repository_not_allowlisted(context: AppContext, tmp_path: Path) -> None:

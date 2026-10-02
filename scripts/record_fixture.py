@@ -54,7 +54,14 @@ from src.integrations.cicd.wiring import INTEGRATION  # noqa: E402
 
 
 async def fetch_workflow_run(repo: str, run_id: int, token: str, api_base: str) -> dict[str, Any]:
-    """The `workflow_run` object, in the shape the webhook would have delivered it."""
+    """The `workflow_run` object, in the shape the webhook would have delivered it.
+
+    The run API's `repository` is GitHub's *minimal* repository, which has no
+    `default_branch`; the webhook's is the full object. Without `default_branch`, Appendix
+    D's `default_green` step is skipped, and a branch with no green run of its own (a
+    fresh `demo/*` branch) degrades to `head_commit_only` and a cold start. So the full
+    repository is fetched as well.
+    """
     async with httpx.AsyncClient(
         base_url=api_base.rstrip("/"),
         headers={
@@ -67,11 +74,10 @@ async def fetch_workflow_run(repo: str, run_id: int, token: str, api_base: str) 
         response = await client.get(f"/repos/{repo}/actions/runs/{run_id}")
         response.raise_for_status()
         run = response.json()
-    return {
-        "action": "completed",
-        "workflow_run": run,
-        "repository": run.get("repository") or {"full_name": repo},
-    }
+        response = await client.get(f"/repos/{repo}")
+        response.raise_for_status()
+        repository = response.json()
+    return {"action": "completed", "workflow_run": run, "repository": repository}
 
 
 class RecordingToolGateway:

@@ -77,7 +77,9 @@ def live_settings(monkeypatch: pytest.MonkeyPatch, *, token: str | None = TOKEN,
     if token is not None:
         monkeypatch.setenv("HARNESS_OPERATOR_TOKEN", token)
     else:
-        monkeypatch.delenv("HARNESS_OPERATOR_TOKEN", raising=False)
+        # Blank, not deleted: a deleted variable lets the local `.env`'s token through.
+        # `require_operator` treats blank and unset alike.
+        monkeypatch.setenv("HARNESS_OPERATOR_TOKEN", "")
     get_settings.cache_clear()
     return get_settings()
 
