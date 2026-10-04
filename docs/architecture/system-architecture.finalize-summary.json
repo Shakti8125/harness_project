@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "D:\\Documents\\harness_project\\.archify\\architecture-agent-harness-20261004-154908\\candidate.json",
+    "sha256": "ff38b1d4d96a46196d2b6e72eab2694c6f72220de3ed92a2699587f75d0319f1",
+    "bytes": 22212
+  },
+  "artifact": {
+    "path": "D:\\Documents\\harness_project\\docs\\architecture\\system-architecture.html",
+    "sha256": "0be42869f287d102194e6b798eba9ecf131e74abc24e882daf77e9eca89ac995",
+    "bytes": 808632
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "D:\\Documents\\harness_project\\docs\\architecture\\system-architecture.finalize.json",
+    "summaryReceipt": "D:\\Documents\\harness_project\\docs\\architecture\\system-architecture.finalize-summary.json",
+    "browserCheckReceipt": "D:\\Documents\\harness_project\\docs\\architecture\\system-architecture.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.0.1",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-04T10:19:55.129Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 9803,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "read-tools",
+            "from": "investigator",
+            "to": "gateway",
+            "label": "read: jobs · log · diff",
+            "collectionIndex": 17,
+            "artifactIndex": 18
+          },
+          "right": {
+            "id": "investigator-llm",
+            "from": "investigator",
+            "to": "llm",
+            "label": "notes",
+            "collectionIndex": 18,
+            "artifactIndex": 19
+          },
+          "point": [
+            700,
+            599
+          ],
+          "sharedNode": "investigator"
+        }
+      ],
+      "detours": [],
+      "truncated": false
+    },
+    "hints": [
+      "investigator → gateway and investigator → llm cross next to investigator: move node gateway or llm so the two reach investigator from different sides (for example one level with it, one directly above or below it)."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

@@ -1,0 +1,881 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Agent Harness System Architecture",
+    "output": "docs/architecture/system-architecture.html",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "repository": {
+      "url": "https://github.com/Shakti8125/harness_project.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "90cbb0ef76017fbec9b83a344b7ad440e19bcb83"
+    }
+  },
+  "components": [
+    {
+      "id": "callers",
+      "type": "external",
+      "label": "HTTP callers",
+      "sublabel": "curl · Gradio UI · operator",
+      "pos": [
+        310,
+        20
+      ],
+      "size": [
+        170,
+        58
+      ],
+      "sources": [
+        {
+          "path": "app.py",
+          "line": 47,
+          "end_line": 59,
+          "label": "Gradio UI calls the API in-process"
+        },
+        {
+          "path": "src/api/main.py",
+          "line": 1048,
+          "end_line": 1126,
+          "label": "POST /v1/replay/{scenario}"
+        },
+        {
+          "path": "src/api/main.py",
+          "line": 1619,
+          "end_line": 1629,
+          "label": "POST /v1/approvals/{id}"
+        }
+      ]
+    },
+    {
+      "id": "github-hooks",
+      "type": "external",
+      "label": "GitHub",
+      "sublabel": "workflow_run webhook",
+      "pos": [
+        620,
+        20
+      ],
+      "size": [
+        160,
+        58
+      ],
+      "sources": [
+        {
+          "path": "src/api/main.py",
+          "line": 1223,
+          "end_line": 1258,
+          "label": "POST /webhooks/github"
+        }
+      ]
+    },
+    {
+      "id": "webhook-guard",
+      "type": "security",
+      "label": "Webhook guard",
+      "sublabel": "HMAC · event filter · dedup",
+      "pos": [
+        620,
+        280
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/api/webhook.py",
+          "line": 53,
+          "end_line": 73,
+          "label": "verify_signature (HMAC-SHA256)"
+        },
+        {
+          "path": "src/api/webhook.py",
+          "line": 90,
+          "end_line": 124,
+          "label": "classify_event and delivery_id"
+        },
+        {
+          "path": "src/api/main.py",
+          "line": 1284,
+          "end_line": 1316,
+          "label": "allowlist refusal, then admit_trusted"
+        }
+      ]
+    },
+    {
+      "id": "request-guard",
+      "type": "security",
+      "label": "Request guards",
+      "sublabel": "1 MiB · token · queue cap",
+      "pos": [
+        310,
+        150
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/api/main.py",
+          "line": 550,
+          "end_line": 606,
+          "label": "BodySizeLimit: 413 past 1 MiB"
+        },
+        {
+          "path": "src/api/main.py",
+          "line": 615,
+          "end_line": 652,
+          "label": "require_operator: token when live"
+        },
+        {
+          "path": "src/api/deps.py",
+          "line": 202,
+          "end_line": 236,
+          "label": "RunAdmission: 429 past the cap"
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI app",
+      "sublabel": "routes · claim · approvals",
+      "tag": ":8000 · Space :7860",
+      "pos": [
+        310,
+        280
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/api/main.py",
+          "line": 890,
+          "end_line": 936,
+          "label": "_execute: claim, run, save outcome"
+        },
+        {
+          "path": "src/api/deps.py",
+          "line": 271,
+          "end_line": 337,
+          "label": "AppContext composition root"
+        },
+        {
+          "path": "src/api/main.py",
+          "line": 1396,
+          "end_line": 1422,
+          "label": "GET /runs/{id}/view trace page"
+        }
+      ]
+    },
+    {
+      "id": "orchestrator",
+      "type": "backend",
+      "label": "Orchestrator",
+      "sublabel": "stage loop · gate · suspend",
+      "tag": "run budget · heartbeat",
+      "pos": [
+        310,
+        420
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/harness/orchestrator.py",
+          "line": 365,
+          "end_line": 470,
+          "label": "run(): stages, gate, wait_for"
+        },
+        {
+          "path": "src/harness/orchestrator.py",
+          "line": 206,
+          "end_line": 226,
+          "label": "heartbeating keeps the claim"
+        },
+        {
+          "path": "src/integrations/cicd/wiring.py",
+          "line": 208,
+          "end_line": 240,
+          "label": "the four StageSpecs"
+        }
+      ]
+    },
+    {
+      "id": "escalation-hook",
+      "type": "external",
+      "label": "Escalation webhook",
+      "sublabel": "opt-in outbound POST",
+      "pos": [
+        620,
+        423
+      ],
+      "size": [
+        160,
+        58
+      ],
+      "sources": [
+        {
+          "path": "src/harness/orchestrator.py",
+          "line": 328,
+          "end_line": 362,
+          "label": "_escalate awaits the notifier"
+        },
+        {
+          "path": "src/harness/escalation.py",
+          "line": 122,
+          "end_line": 156,
+          "label": "WebhookNotifier POST"
+        },
+        {
+          "path": "src/api/deps.py",
+          "line": 190,
+          "end_line": 200,
+          "label": "built only when the URL is set"
+        }
+      ]
+    },
+    {
+      "id": "investigator",
+      "type": "backend",
+      "label": "Investigator",
+      "sublabel": "fingerprint · FailureBundle",
+      "pos": [
+        310,
+        560
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/integrations/cicd/agents/investigator.py",
+          "line": 351,
+          "end_line": 372,
+          "label": "signature key (off the loop) and prior"
+        },
+        {
+          "path": "src/integrations/cicd/agents/investigator.py",
+          "line": 603,
+          "end_line": 643,
+          "label": "run(): collect, ask model, assemble"
+        },
+        {
+          "path": "src/integrations/cicd/fingerprint.py",
+          "line": 164,
+          "end_line": 272,
+          "label": "failure anchor and fingerprint"
+        }
+      ]
+    },
+    {
+      "id": "diagnostician",
+      "type": "backend",
+      "label": "Diagnostician",
+      "sublabel": "cited, calibrated Diagnosis",
+      "pos": [
+        310,
+        700
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/integrations/cicd/agents/diagnostician.py",
+          "line": 116,
+          "end_line": 146,
+          "label": "LLM agent with confidence model"
+        },
+        {
+          "path": "src/integrations/cicd/agents/diagnostician.py",
+          "line": 249,
+          "end_line": 260,
+          "label": "calibrate the confidence"
+        }
+      ]
+    },
+    {
+      "id": "evaluator",
+      "type": "backend",
+      "label": "Evidence evaluator",
+      "sublabel": "5 claim checkers",
+      "tag": "no model call",
+      "pos": [
+        310,
+        840
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/integrations/cicd/agents/evaluator.py",
+          "line": 183,
+          "end_line": 195,
+          "label": "deterministic claim checks"
+        },
+        {
+          "path": "src/integrations/cicd/agents/evaluator.py",
+          "line": 165,
+          "end_line": 176,
+          "label": "records the verdict in memory"
+        },
+        {
+          "path": "src/integrations/cicd/claim_checkers.py",
+          "line": 229,
+          "end_line": 448,
+          "label": "quote, diff, dep, test, commit"
+        }
+      ]
+    },
+    {
+      "id": "remediator",
+      "type": "backend",
+      "label": "Remediator",
+      "sublabel": "normalize · policy · act/hold",
+      "pos": [
+        310,
+        980
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/integrations/cicd/agents/remediator.py",
+          "line": 310,
+          "end_line": 335,
+          "label": "decide_plan, then execute or hold"
+        },
+        {
+          "path": "src/integrations/cicd/remediation.py",
+          "line": 337,
+          "end_line": 420,
+          "label": "normalize_plan: agent/fix/, no .github/"
+        },
+        {
+          "path": "src/integrations/cicd/remediation.py",
+          "line": 481,
+          "end_line": 530,
+          "label": "execute_plan through the gateway"
+        }
+      ]
+    },
+    {
+      "id": "policy",
+      "type": "security",
+      "label": "Policy engine",
+      "sublabel": "policy.yaml · deny default",
+      "pos": [
+        310,
+        1120
+      ],
+      "size": [
+        170,
+        60
+      ],
+      "sources": [
+        {
+          "path": "src/harness/guardrails.py",
+          "line": 207,
+          "end_line": 241,
+          "label": "PolicyEngine.decide"
+        },
+        {
+          "path": "src/integrations/cicd/policy.yaml",
+          "line": 1,
+          "end_line": 30,
+          "label": "default deny, forbidden set, rules"
+        },
+        {
+          "path": "src/integrations/cicd/remediation.py",
+          "line": 421,
+          "end_line": 455,
+          "label": "decide_plan and plan_verdict"
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "SQLite harness.db",
+      "sublabel": "run · approval · escalation",
+      "tag": "signature · observation · span",
+      "pos": [
+        40,
+        420
+      ],
+      "size": [
+        160,
+        624
+      ],
+      "sources": [
+        {
+          "path": "src/harness/migrations/001_init.sql",
+          "line": 1,
+          "end_line": 65,
+          "label": "the seven tables"
+        },
+        {
+          "path": "src/harness/memory.py",
+          "line": 298,
+          "end_line": 300,
+          "label": "SqliteMemoryStore"
+        },
+        {
+          "path": "src/settings.py",
+          "line": 42,
+          "end_line": 42,
+          "label": "database_path ./data/harness.db"
+        }
+      ]
+    },
+    {
+      "id": "trace-recorder",
+      "type": "backend",
+      "label": "Trace recorder",
+      "sublabel": "Redactor · span writer",
+      "pos": [
+        40,
+        1120
+      ],
+      "size": [
+        160,
+        60
+      ],
+      "sources": [
+        {
+          "path": "src/harness/observability.py",
+          "line": 194,
+          "end_line": 267,
+          "label": "Redactor scrubs secrets"
+        },
+        {
+          "path": "src/harness/observability.py",
+          "line": 399,
+          "end_line": 432,
+          "label": "TraceRecorder and run_scope"
+        },
+        {
+          "path": "src/harness/observability.py",
+          "line": 492,
+          "end_line": 542,
+          "label": "_persist writes trace_span"
+        }
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "backend",
+      "label": "LLM runtime",
+      "sublabel": "budget · retry profile",
+      "tag": "schema-constrained JSON",
+      "pos": [
+        620,
+        670
+      ],
+      "size": [
+        160,
+        160
+      ],
+      "sources": [
+        {
+          "path": "src/harness/recovery.py",
+          "line": 280,
+          "end_line": 380,
+          "label": "repair, halve prompt, backoff"
+        },
+        {
+          "path": "src/api/deps.py",
+          "line": 150,
+          "end_line": 164,
+          "label": "HARNESS_LLM_* retry profile"
+        },
+        {
+          "path": "src/harness/context_manager.py",
+          "line": 151,
+          "end_line": 160,
+          "label": "ContextManager: anchor-safe budget"
+        }
+      ]
+    },
+    {
+      "id": "gemini",
+      "type": "external",
+      "label": "Gemini API",
+      "sublabel": "google-genai SDK",
+      "pos": [
+        900,
+        720
+      ],
+      "size": [
+        120,
+        60
+      ],
+      "sources": [
+        {
+          "path": "src/harness/llm.py",
+          "line": 578,
+          "end_line": 627,
+          "label": "GeminiClient generate_content"
+        }
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "ToolGateway",
+      "sublabel": "validated URL segments",
+      "tag": "forbidden re-check · dry-run",
+      "pos": [
+        1060,
+        560
+      ],
+      "size": [
+        140,
+        484
+      ],
+      "sources": [
+        {
+          "path": "src/harness/gateway.py",
+          "line": 67,
+          "end_line": 100,
+          "label": "invoke: forbidden set checked first"
+        },
+        {
+          "path": "src/api/deps.py",
+          "line": 437,
+          "end_line": 455,
+          "label": "gateway_for: replay or live"
+        },
+        {
+          "path": "src/integrations/cicd/url_segments.py",
+          "line": 44,
+          "end_line": 98,
+          "label": "sha, ref and path validated"
+        }
+      ]
+    },
+    {
+      "id": "fixtures",
+      "type": "database",
+      "label": "Recorded scenarios",
+      "sublabel": "fixtures/scenarios/*",
+      "pos": [
+        1060,
+        1130
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "sources": [
+        {
+          "path": "src/integrations/cicd/gateway_replay.py",
+          "line": 121,
+          "end_line": 181,
+          "label": "ReplayToolGateway reads api/ and logs/"
+        },
+        {
+          "path": "src/integrations/cicd/gateway_replay.py",
+          "line": 78,
+          "end_line": 115,
+          "label": "every file-name part validated"
+        }
+      ]
+    },
+    {
+      "id": "github-api",
+      "type": "external",
+      "label": "GitHub REST API",
+      "sublabel": "allowlist · dry run",
+      "pos": [
+        900,
+        1130
+      ],
+      "size": [
+        120,
+        60
+      ],
+      "sources": [
+        {
+          "path": "src/integrations/cicd/gateway_github.py",
+          "line": 202,
+          "end_line": 237,
+          "label": "GitHubToolGateway httpx client"
+        },
+        {
+          "path": "src/api/deps.py",
+          "line": 421,
+          "end_line": 440,
+          "label": "live only when gateway=github"
+        },
+        {
+          "path": "src/integrations/cicd/gateway_github.py",
+          "line": 593,
+          "end_line": 603,
+          "label": "refuses writes outside agent/fix/"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Triage pipeline · src/integrations/cicd",
+      "wraps": [
+        "investigator",
+        "diagnostician",
+        "evaluator",
+        "remediator"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "caller-requests",
+      "from": "callers",
+      "to": "request-guard",
+      "label": "HTTP /v1/*"
+    },
+    {
+      "id": "admitted",
+      "from": "request-guard",
+      "to": "api",
+      "label": "admitted",
+      "variant": "security"
+    },
+    {
+      "id": "webhook-delivery",
+      "from": "github-hooks",
+      "to": "webhook-guard",
+      "label": "signed POST",
+      "variant": "security"
+    },
+    {
+      "id": "verified-event",
+      "from": "webhook-guard",
+      "to": "api",
+      "label": "verified event",
+      "variant": "security"
+    },
+    {
+      "id": "api-store",
+      "from": "api",
+      "to": "store",
+      "label": "claim · outcome · approval",
+      "fromSide": "left",
+      "toSide": "top"
+    },
+    {
+      "id": "api-runs",
+      "from": "api",
+      "to": "orchestrator",
+      "label": "execute run (background)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "heartbeat",
+      "from": "orchestrator",
+      "to": "store",
+      "label": "heartbeat"
+    },
+    {
+      "id": "escalate",
+      "from": "orchestrator",
+      "to": "escalation-hook",
+      "label": "escalate (opt-in)",
+      "variant": "dashed"
+    },
+    {
+      "id": "run-stages",
+      "from": "orchestrator",
+      "to": "investigator",
+      "label": "4 stages, in order",
+      "variant": "emphasis"
+    },
+    {
+      "id": "bundle",
+      "from": "investigator",
+      "to": "diagnostician",
+      "label": "FailureBundle",
+      "variant": "emphasis"
+    },
+    {
+      "id": "diagnosis",
+      "from": "diagnostician",
+      "to": "evaluator",
+      "label": "Diagnosis",
+      "variant": "emphasis"
+    },
+    {
+      "id": "gate",
+      "from": "evaluator",
+      "to": "remediator",
+      "label": "gate: not refuted · conf ≥ 0.70",
+      "variant": "security"
+    },
+    {
+      "id": "decide-plan",
+      "from": "remediator",
+      "to": "policy",
+      "label": "decide each call"
+    },
+    {
+      "id": "read-prior",
+      "from": "investigator",
+      "to": "store",
+      "label": "lookup prior"
+    },
+    {
+      "id": "record-verdict",
+      "from": "evaluator",
+      "to": "store",
+      "label": "record verdict"
+    },
+    {
+      "id": "record-action",
+      "from": "remediator",
+      "to": "store",
+      "label": "record action"
+    },
+    {
+      "id": "persist-spans",
+      "from": "trace-recorder",
+      "to": "store",
+      "label": "trace_span rows"
+    },
+    {
+      "id": "read-tools",
+      "from": "investigator",
+      "to": "gateway",
+      "label": "read: jobs · log · diff",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "investigator-llm",
+      "from": "investigator",
+      "to": "llm",
+      "label": "notes",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "diagnostician-llm",
+      "from": "diagnostician",
+      "to": "llm",
+      "label": "diagnosis"
+    },
+    {
+      "id": "remediator-llm",
+      "from": "remediator",
+      "to": "llm",
+      "label": "plan",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "act",
+      "from": "remediator",
+      "to": "gateway",
+      "label": "allowed tool calls",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "model-call",
+      "from": "llm",
+      "to": "gemini",
+      "label": "generate_content"
+    },
+    {
+      "id": "replay-reads",
+      "from": "gateway",
+      "to": "fixtures",
+      "label": "replay (default)"
+    },
+    {
+      "id": "live-calls",
+      "from": "gateway",
+      "to": "github-api",
+      "label": "live REST",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Harness / domain seam",
+      "items": [
+        "src/harness has no CI/CD vocabulary; tests/test_layering.py fails the build if a domain word or import appears",
+        "The CI/CD domain is injected at one composition root, src/api/deps.py (AppContext)"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Gate before remediate",
+      "items": [
+        "Any refuted citation escalates as evidence_refuted",
+        "Too few claims verified escalates as evidence_unverifiable",
+        "final_confidence below 0.70 escalates as low_confidence; category unknown escalates too",
+        "The run budget bounds every stage with asyncio.wait_for; a timeout ends the run"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Acting safely",
+      "items": [
+        "policy.yaml denies by default; the gateway re-checks the forbidden set on its own",
+        "A held plan is saved as an approval row; POST /v1/approvals re-runs the policy, then executes through the gateway",
+        "Approvals are single-use: 409 once decided, 410 once expired",
+        "HARNESS_DRY_RUN defaults to true, so write tools report what they would do"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Live-mode gate",
+      "items": [
+        "A 1 MiB body cap answers 413 on every route before the body is read",
+        "In live mode POST /v1/runs and /v1/approvals need the operator token (401 without it); a decision is recorded as decided by the operator",
+        "Admission answers 429 past 3 x max_concurrent_runs; a verified webhook delivery is counted but never refused",
+        "Every sha, ref and path from the model or a caller is validated and encoded before it reaches a URL or a fixture file name",
+        "The harness names the fix branch agent/fix/<signature>, drops .github/ paths, and the gateway refuses writes outside agent/fix/"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Trace and redaction",
+      "items": [
+        "Every stage, tool call and model attempt is a span, bound to its run by run_scope",
+        "The Redactor scrubs secrets from spans, log lines, stored rows and served bodies",
+        "GET /v1/runs/{id}/trace and /runs/{id}/view read spans back, scrubbed again on the way out"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Deployment",
+      "items": [
+        "Docker: uvicorn serves src.api.main:app on :8000 as UID 1000; compose publishes it on 127.0.0.1 only",
+        "HF Space: app.py mounts the same app under Gradio on :7860",
+        "HARNESS_GATEWAY=replay by default; live mode needs gateway=github plus an allowlisted repo",
+        "Since 2026-10-04 the Space runs live: gateway=github, Shakti8125/harness-demo-repo allowlisted, gemini-3.5-flash-lite, dry run on",
+        "HARNESS_FAULT_INJECT wraps the LLM client for failure drills"
+      ]
+    }
+  ]
+}

@@ -225,4 +225,5 @@ the Pacific day's spend from the trace, failed attempts included, at no cost.
 `scripts/probe_gemini.py` spends one request to ask whether the model is answering, before
 you spend a replay.
 
+`docs/USAGE.md` is the step-by-step guide to running, configuring and operating it.
 `PLAN.md` is the normative build plan; `docs/progress/` records each phase's verification.

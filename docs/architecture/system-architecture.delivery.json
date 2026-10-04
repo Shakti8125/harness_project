@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "94142282-2646-4cc6-afac-6c31513c5638",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "D:\\Documents\\harness_project\\.archify\\architecture-agent-harness-20261004-154908\\candidate.json",
+  "output": "D:\\Documents\\harness_project\\docs\\architecture\\system-architecture.html",
+  "specification": {
+    "sha256": "ff38b1d4d96a46196d2b6e72eab2694c6f72220de3ed92a2699587f75d0319f1",
+    "bytes": 22212
+  },
+  "artifact": {
+    "sha256": "0be42869f287d102194e6b798eba9ecf131e74abc24e882daf77e9eca89ac995",
+    "bytes": 808632
+  }
+}
