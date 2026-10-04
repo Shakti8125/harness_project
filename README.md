@@ -118,10 +118,22 @@ the free tier's daily quota is the binding constraint (`docs/progress/phase-4/ve
 held fix PR — right category, reported as a label miss, not gated). The stub run proves
 the plumbing — the gate, the Evaluator over the fixtures' real logs and diffs, the policy,
 the forbidden set — and says nothing about the model; its report is labelled `llm: stub` so
-the two cannot be confused. Every live diagnosis so far has had all of its citations verified
-by the Evaluator; the refuted-citation path is demonstrated by fault injection
+the two cannot be confused. Every `gemini-3.6-flash` diagnosis so far has had all of its
+citations verified by the Evaluator. On the lighter `gemini-3.5-flash-lite`, one of two live
+Space runs quoted a test id in the wrong form; the Evaluator refuted it and the run
+escalated, as designed. The refuted-citation path is also demonstrated by fault injection
 (`HARNESS_FAULT_INJECT=diagnostician_fabricate_citation`), which escalates the run and skips
 the Remediator.
+
+**Live, end to end (step 5, 2026-10-04).** A real failing GitHub Actions run on
+[`Shakti8125/harness-demo-repo`](https://github.com/Shakti8125/harness-demo-repo) was delivered
+by GitHub's webhook to the Space, running in live mode with dry run on. The delivery got
+`202`, and the run completed as `flaky_test` (0.99, all three citations verified) with the
+re-run of the failed jobs executed as a dry run. A redelivery was deduplicated, with no
+second run. A local live run on the seeded regression was diagnosed `real_regression`
+against the right commit, and its fix PR was held for approval. These ran on
+`gemini-3.5-flash-lite`, because `gemini-3.6-flash` answered `503` on most calls those days
+(`docs/progress/phase-5/verify.md`, "Step 5 — Live").
 
 ## The part worth reading
 

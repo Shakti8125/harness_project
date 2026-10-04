@@ -122,6 +122,8 @@ naming one run, one `run` row, one `observation` row, exactly one
 
 ## Step 5 — live end to end
 
+> **Ran 2026-10-03 to 2026-10-04 and passed on the Space.** See "Step 5 — Live" at the end of this file.
+
 **Not run. User-gated**, in four parts, none of which this session may take alone:
 the demo repository (`scripts/seed_demo_repo.sh <you>/harness-demo-repo` creates a public
 repository on the user's account), a fine-grained PAT (Appendix E's scopes), the Space's
@@ -284,7 +286,79 @@ the one thing this closing did not see live; the local run above is its record.
 
 ## Step 5 — not run, and the project closes here
 
+> **Superseded.** The project was reopened for step 5, which ran and passed on 2026-10-04.
+> See "Step 5 — Live" below.
+
 The demo repository was never created, no PAT minted, the Space never switched to
 `HARNESS_GATEWAY=github`. Step 5 stays user-gated and undone; the user closed the
 project on 2026-09-17 with Phase 6 not started. `phase-5-green` is tagged on the
 commit that records this section, with that stated.
+
+## Step 5 — Live — 2026-10-03 to 2026-10-04 (step-5 plan, Session B)
+
+The section above was superseded: step 5 ran, under `docs/progress/phase-5/step5-live-plan.md`.
+The Space served `a0a64a2` throughout. Session B changed only its settings:
+`HARNESS_GATEWAY=github`, `HARNESS_ALLOWED_REPOS=["Shakti8125/harness-demo-repo"]`, the PAT,
+the webhook secret, `HARNESS_OPERATOR_TOKEN`, the free-tier `HARNESS_LLM_*` profile and, at the
+end, `HARNESS_GEMINI_MODEL`. Dry run stayed on.
+
+**Setup.**
+- **Demo repo:** <https://github.com/Shakti8125/harness-demo-repo> (public), seeded without
+  `--webhook`.
+- **Token:** a fine-grained PAT, read-only on that repo, expiring 2026-11-01.
+- **Hook:** `691556146` (`workflow_run`), registered with
+  `seed_demo_repo.sh --webhook-only`. The secret went on stdin. GitHub's own `ping` got `204`.
+
+**Result: step 5 passed on the Space with `gemini-3.5-flash-lite`.**
+
+| Command | Literal expected | Actual |
+|---|---|---|
+| `POST /v1/runs` `mode=live`, no token (0 requests) | `403`/`401`, where replay mode answered `501` | `401` "This route requires the operator's credential". `/v1/approvals` also `401`. |
+| Signed `ping`; a signed failure from a repo not on the allowlist (0 requests) | `204`; `403` | `204`; `403` "not in HARNESS_ALLOWED_REPOS" |
+| `gh workflow run flaky.yml` → Recent Deliveries | `202` | `202` in 0.06 s. `requested` and `in_progress` got `204`, as did a green flaky run. |
+| `curl …/v1/runs/run_01M42WSXWW9F9Y2ZMV7H69995N` | `completed`, `flaky_test` | `completed` in about 8 s; `flaky_test` 0.99. The Evaluator verified 3/3 claims. `rerun_failed_jobs` was allowed by `retry-suspected-flaky` and executed `dry_run=True`. |
+| Redeliver from the UI | PLAN says `202`; the invariant is no second run | `200` in 0.06 s, the same GUID `a99d4e70-…`, and the Space still lists 2 runs. A duplicate of a finished run answers `200 deduplicated` (step 4 above). |
+| Account for every run (`quota_ledger.py --space`) | none unexplained | 2 runs, both `webhook:github:<GUID>` of our two failing deliveries |
+| 4a: `replay.py --live … --run-id 37067659434` (local) | `default_green`, `real_regression`, the "Round discounts up" commit, `awaiting_approval` with `open-fix-pr`, branch `agent/fix/<8 hex>`, no `.github/`, every span a read | All as expected: base `59c7694` → head `22b0865`, confidence 0.99, `agent/fix/6349b35d`, touching only `src/pricing/discount.py`, 5 read spans |
+
+**Getting there took three Pacific days.** Every model request is counted, failed ones
+included.
+- **2026-10-02 PT, 5 requests (`gemini-3.6-flash`):**
+  - 4a attempt 1 escalated `unknown_category`. `replay.py --live` built its subject from
+    the run API's minimal repository, which has no `default_branch`, so the run was a
+    `head_commit_only` cold start. Fixed in `1f32fd7`.
+  - 4a attempt 2 resolved `default_green`, then got two `503`s and escalated
+    `llm_upstream`. The stop rule applied.
+- **2026-10-03 PT, 14 requests on `gemini-3.6-flash`, plus 4 on `3.5-flash` and 1 on
+  `3.5-flash-lite`, each from its own pool:**
+  - 4a attempt 3: the Diagnostician got two `503`s.
+  - Space run `run_01M40QZJ…`: the Diagnostician got two `503`s. The user then chose to
+    spend the day's remainder.
+  - Space run `run_01M42V1M…`: the Investigator got two `503`s.
+  - Space run `run_01M42V3W…` reached every agent. It diagnosed `flaky_test` 0.85
+    correctly, but escalated `policy_denied`: every flaky run, including the seeded green
+    one, sat on `a9dc5d6`. `find_last_successful_run` drops runs on the failing commit, so
+    the run was a cold start, and `retry-suspected-flaky` requires `cold_start: false`.
+  - With the user's OK, a README commit (`59c7694`) moved the demo repo's `main` past the
+    seeded baselines.
+  - `3.5-flash` 4a: the Diagnostician got two `503`s.
+- **2026-10-04 PT, 8 requests on `gemini-3.5-flash-lite`, 0 errors:**
+  - 4a passed.
+  - Space run `run_01M42WQE…` diagnosed `flaky_test` 0.80, but escalated
+    `evidence_refuted`. Its `test_in_log` quote carried pytest's trailing ` FAILED`, which
+    the prompt forbids and no anchor line contains.
+  - Space run `run_01M42WSX…` passed.
+
+**The model, recorded against the eval.**
+- The eval's 5/5 is `gemini-3.6-flash`. Over these days it answered `503` on 5 of its 6
+  runs, while every tiny probe answered `OK`. The failures were not a request deadline:
+  the timeout sent is 60 s, and the failures came at 3-29 s.
+- `gemini-3.5-flash` failed the same way once.
+- At the user's request the Space was switched to `gemini-3.5-flash-lite`. It answered
+  every call, in 2-3 s. One of its two Space runs carried a malformed citation, and the
+  Evaluator caught it, as designed.
+- So step 5's pass is on the lighter model. Its accuracy over the five scenarios was not
+  measured.
+
+Not run: 4b (optional), the optional Space re-run of the regression, and recording the live
+failure as a fixture.

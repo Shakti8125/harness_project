@@ -256,3 +256,37 @@ fix round. Everything is in `src/api/`, `src/integrations/`, `scripts/` and
   - Result: 978 passed and 2 skipped with the live `.env` in place.
 - **Next:** resume after the 12:30 IST reset. Run the ledger, probe, and re-run 4a. The
   Space is untouched (`RUNNING a0a64a2`, replay mode).
+
+### Session B, completed (2026-10-03 to 2026-10-04)
+
+Step 5 passed on the Space. `verify.md`, "Step 5 — Live", has the commands, the results and
+every request. What it found, none of it changed here:
+
+- **A green run on the failing commit is never a baseline.** `find_last_successful_run`
+  drops runs whose `head_sha` is the failing one. So a flaky failure on a commit that already
+  passed once is a `head_commit_only` cold start, and `retry-suspected-flaky` (which requires
+  `cold_start: false`) refuses the rerun. The run escalates `policy_denied`, despite a correct
+  `flaky_test` diagnosis.
+  - That same-commit pass is arguably the strongest flakiness evidence there is. A
+    `same_commit_green` baseline kind would need an Appendix D amendment, a policy rule and
+    tests.
+- **The seed script's flaky and infra baselines sit on `main`'s only commit.** Every later
+  dispatch therefore hits the item above. The seed should push one more commit after the
+  baselines go green. The workaround here was the README commit `59c7694`.
+- **`gemini-3.6-flash` answered `503` on 5 of its 6 runs** over 2026-10-02 to 10-03 PT,
+  while every 8-token probe answered `OK`. `gemini-3.5-flash` failed the same way once.
+  - The Space now sets `HARNESS_GEMINI_MODEL=gemini-3.5-flash-lite`, which answered every
+    call in 2-3 s.
+  - The eval's 5/5 is still `3.6-flash`. The eval has not been run on lite.
+- **Lite is looser with citation formats.** One of its two Space runs quoted
+  `…::test_job_runs_within_deadline FAILED` for `test_in_log`. The prompt asks for the test
+  id alone, the Evaluator refuted it, and the run escalated `evidence_refuted`. Two options
+  were left open: a prompt example, or a checker that strips pytest's status word.
+- **The provider's error text is not kept** (by design: it can echo request content). Telling
+  overload from a deadline needed a local wrapper around `classify_provider_error`. A
+  scrubbed, length-capped `error.provider_status` attribute on `llm.attempt` would have
+  answered it from the trace.
+- **Redelivery through the API needs the `admin:repo_hook` scope**, which `gh` lacked. The
+  UI's Redeliver works.
+- **Leftovers:** local approval `apr_99baccde1b5189f5` from 4a, expiring 2026-10-05, is to be
+  left to expire.
