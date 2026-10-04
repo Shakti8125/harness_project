@@ -61,15 +61,23 @@ curl -s $BASE/v1/runs/$RID/trace | jq '.spans | length'
 ```
 
 `subject` is a GitHub `workflow_run` webhook body — the whole delivery or just the inner
-object — and the scenario is named separately by `replay_fixture`. `mode` must be `"replay"`:
-the live gateway arrives in a later phase, and asking for `"live"` returns a `501` that says
-so. Every error is RFC 9457 `application/problem+json`.
+object — and the scenario is named separately by `replay_fixture`. On a replay deployment
+(the default) `mode` must be `"replay"`, and `"live"` returns a `501` that says so. Every
+error is RFC 9457 `application/problem+json`.
+
+> **The hosted Space runs in live mode** (since 2026-10-04, step 5): `HARNESS_GATEWAY=github`,
+> one allowlisted demo repository, dry run on. There, `POST /v1/runs` and `POST /v1/approvals`
+> belong to the operator (`Authorization: Bearer <HARNESS_OPERATOR_TOKEN>`; `401` without it),
+> so the asynchronous example above answers `401`. `POST /v1/replay/{scenario}` stays open,
+> and so do `GET /v1/runs/{id}`, its trace and its view.
 
 > **Heads up on quota.** The free model tier allows **20 requests per day** and one replay
 > costs three, so the demo can be exhausted by about six requests (the day resets at
 > midnight Pacific). Nothing worse is exposed — `HARNESS_DRY_RUN=true` and
-> `HARNESS_GATEWAY=replay` are the defaults, so no live repository is ever touched, and the
-> one write the policy allows on its own (re-running a flaky job) is executed dry-run.
+> `HARNESS_GATEWAY=replay` are the defaults, so no live repository is touched unless an
+> operator allowlists one (the Space allowlists only its demo repository), and the one write
+> the policy allows on its own (re-running a flaky job) is executed dry-run. The Space runs
+> `gemini-3.5-flash-lite`; the evaluation below was measured on `gemini-3.6-flash`.
 
 `real_regression` is a recorded scenario: an off-by-one in a `discount()` helper makes two
 pricing tests fail. The system fetches the job list, downloads a 3,800-line job log,

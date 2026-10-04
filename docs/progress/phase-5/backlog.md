@@ -290,3 +290,18 @@ every request. What it found, none of it changed here:
   UI's Redeliver works.
 - **Leftovers:** local approval `apr_99baccde1b5189f5` from 4a, expiring 2026-10-05, is to be
   left to expire.
+- **Exposure at close (2026-10-04), the user's choice: left live.**
+  - **Live settings:** hook `691556146` is active. The Space runs `HARNESS_GATEWAY=github`
+    with the demo repo allowlisted, the PAT, the operator token and
+    `HARNESS_GEMINI_MODEL=gemini-3.5-flash-lite`. Dry run is on.
+  - **What spends quota:** every red run on the demo repo spends the Space's quota. Only
+    the owner can push or dispatch there, and no workflow has a schedule.
+  - **While live:** the README's `POST /v1/runs` example answers `401`, and the README
+    says so. SEC-10 (medium in live mode) is carried.
+  - **The PAT expires 2026-11-01.** A red run after that still spends model requests,
+    because the Investigator runs on whatever the gateway returns. Before then, roll back:
+    delete the hook, set `HARNESS_GATEWAY=replay`, remove `HARNESS_ALLOWED_REPOS` and the
+    token secret. Or mint a new read-only PAT.
+- **Records:** `docs/security/assessment-2026-09-30.md` now has a status line per finding,
+  and is committed alongside `docs/progress/phase-5/step5-live-plan.md`. The tag is
+  `phase-5-step5-live`; `phase-5-green` is unchanged.
